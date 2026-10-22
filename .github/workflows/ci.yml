@@ -13,6 +13,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # A fresh runner's first `dotnet` (Roslyn's build host starts one) would otherwise do its first-run setup.
+  DOTNET_NOLOGO: 1
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
   # Roslyn's server as a dotnet tool, for the test that runs it (it skips, saying why, without one).
   ROSLYN_VERSION: 5.8.0-1.26266.2
 

@@ -20,7 +20,7 @@ pub fn start_roslyn(
     folder: &Path,
     solution: Option<&Path>,
     log_folder: &Path,
-    events: impl Fn(ServerEvent) + Send + 'static,
+    events: impl Fn(ServerEvent) + Send + Sync + 'static,
 ) -> Result<LanguageServer, ServerFailed> {
     let program = roslyn_server().ok_or_else(|| {
         ServerFailed("Roslyn's language server was not found: dotnet tool install -g roslyn-language-server".into())

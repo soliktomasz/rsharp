@@ -16,7 +16,8 @@ rsharp-languages = { path = "crates/rsharp-languages" }
 # runtime_shaders: macOS compiles gpui's Metal shaders at start, so a build needs no Metal toolchain.
 gpui = { version = "0.2.2", features = ["runtime_shaders"] }
 futures = "0.3"
-libc = "0.2"
+# Held below 0.2.190, which dropped ENOATTR on Linux: gpui 0.2.2's xattr 0.2.3 (through its tar crate) needs it.
+libc = ">=0.2.186, <0.2.190"
 log = { version = "0.4", features = ["std"] }
 ropey = "1.6"
 serde = { version = "1", features = ["derive"] }

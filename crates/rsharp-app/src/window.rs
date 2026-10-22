@@ -300,6 +300,7 @@ impl MainWindow {
                 }
                 _ => {}
             },
+            ServerEvent::Stderr(line) => log::warn!(target: "roslyn", "{line}"),
             ServerEvent::Ended => {
                 log::warn!("Roslyn stopped");
                 self.server = None;

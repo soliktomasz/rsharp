@@ -36,6 +36,8 @@ pub enum ServerEvent {
         method: String,
         params: Value,
     },
+    /// A line the server wrote to its error output: how it says why it cannot start, or crashed.
+    Stderr(String),
     /// The server's output closed: it ended or crashed.
     Ended,
 }
@@ -51,17 +53,25 @@ pub struct LanguageServer {
 
 impl LanguageServer {
     /// Starts the server and reads it on a thread of its own, telling `events` what it says unasked.
-    pub fn start(mut command: Command, events: impl Fn(ServerEvent) + Send + 'static) -> io::Result<Self> {
-        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+    pub fn start(mut command: Command, events: impl Fn(ServerEvent) + Send + Sync + 'static) -> io::Result<Self> {
+        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = process::spawn(command)?;
         let input = Arc::new(Mutex::new(child.process.stdin.take().expect("stdin was piped")));
         let output = child.process.stdout.take().expect("stdout was piped");
+        let errors = child.process.stderr.take().expect("stderr was piped");
+        let events = Arc::new(events);
+        let error_events = events.clone();
+        std::thread::Builder::new().name("lsp-stderr".into()).spawn(move || {
+            for line in BufReader::new(errors).lines().map_while(Result::ok) {
+                error_events(ServerEvent::Stderr(line));
+            }
+        })?;
         let pending: Pending = Arc::default();
         let reader_input = input.clone();
         let reader_pending = pending.clone();
         std::thread::Builder::new()
             .name("lsp-reader".into())
-            .spawn(move || read(BufReader::new(output), &reader_input, &reader_pending, &events))?;
+            .spawn(move || read(BufReader::new(output), &reader_input, &reader_pending, &*events))?;
         Ok(Self { input, pending, next_id: AtomicI64::new(1), _child: child })
     }
 
@@ -178,11 +188,27 @@ mod tests {
             let _ = sender.send(event);
         })
         .expect("Roslyn started and answered initialize");
-        let loaded = std::iter::from_fn(|| events.recv_timeout(std::time::Duration::from_secs(180)).ok()).any(|event| {
-            matches!(event, ServerEvent::Notification { ref method, .. } if method == "workspace/projectInitializationComplete")
-        });
+        // What Roslyn said on the way, so a failure names why it never loaded.
+        let mut said = Vec::new();
+        let loaded =
+            std::iter::from_fn(|| events.recv_timeout(std::time::Duration::from_secs(180)).ok()).any(|event| {
+                match event {
+                    ServerEvent::Notification { method, .. } if method == "workspace/projectInitializationComplete" => {
+                        return true;
+                    }
+                    ServerEvent::Notification { method, params } if method == "window/logMessage" => {
+                        if params["type"].as_u64().is_some_and(|t| t <= 2) {
+                            said.push(params["message"].as_str().unwrap_or_default().to_string());
+                        }
+                    }
+                    ServerEvent::Notification { method, .. } => said.push(method),
+                    ServerEvent::Stderr(line) => said.push(format!("stderr: {line}")),
+                    ServerEvent::Ended => said.push("the server ended".into()),
+                }
+                false
+            });
         drop(server);
         let _ = std::fs::remove_dir_all(&folder);
-        assert!(loaded, "Roslyn never said the folder's project had loaded");
+        assert!(loaded, "Roslyn never said the folder's project had loaded; it said:\n{}", said.join("\n"));
     }
 }

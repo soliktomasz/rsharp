@@ -135,6 +135,12 @@ impl Drop for Lifeline {
 #[cfg(windows)]
 struct Lifeline(windows_sys::Win32::Foundation::HANDLE);
 
+// A job's handle may be used and closed from any thread; the language server's child is shared across them.
+#[cfg(windows)]
+unsafe impl Send for Lifeline {}
+#[cfg(windows)]
+unsafe impl Sync for Lifeline {}
+
 #[cfg(windows)]
 impl Lifeline {
     fn watch(child: &std::process::Child) -> io::Result<Self> {
