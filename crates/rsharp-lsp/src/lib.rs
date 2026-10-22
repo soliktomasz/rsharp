@@ -196,12 +196,11 @@ mod tests {
                     ServerEvent::Notification { method, .. } if method == "workspace/projectInitializationComplete" => {
                         return true;
                     }
-                    ServerEvent::Notification { method, params } if method == "window/logMessage" => {
-                        if params["type"].as_u64().is_some_and(|t| t <= 2) {
-                            said.push(params["message"].as_str().unwrap_or_default().to_string());
-                        }
+                    // Every message, information included: where a stalled load stopped is only said at that level.
+                    ServerEvent::Notification { method, params } => {
+                        let text = params["message"].as_str().or(params["value"]["message"].as_str());
+                        said.push(format!("{method}: {}", text.unwrap_or_default()));
                     }
-                    ServerEvent::Notification { method, .. } => said.push(method),
                     ServerEvent::Stderr(line) => said.push(format!("stderr: {line}")),
                     ServerEvent::Ended => said.push("the server ended".into()),
                 }
