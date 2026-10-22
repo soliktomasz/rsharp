@@ -107,8 +107,9 @@ struct Lifeline(std::process::Child);
 impl Lifeline {
     fn watch(child: &std::process::Child) -> io::Result<Self> {
         let mut watchdog = Command::new("/bin/sh");
+        // No `--`: dash, Debian's and Ubuntu's /bin/sh, reads it as a pid and kills nothing.
         watchdog
-            .args(["-c", "read _ ; kill -KILL -- -$0 2>/dev/null", &child.id().to_string()])
+            .args(["-c", "read _ ; kill -KILL -$0 2>/dev/null", &child.id().to_string()])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
