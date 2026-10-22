@@ -27,7 +27,7 @@ pub fn start_roslyn(
     })?;
     let mut command = Command::new(program);
     command
-        .args(["--stdio", "--logLevel", "Information", "--telemetryLevel", "off"])
+        .args(["--stdio", "--logLevel", "Trace", "--telemetryLevel", "off"])
         .arg("--extensionLogDirectory")
         .arg(log_folder)
         .args(["--clientProcessId", &std::process::id().to_string()])
