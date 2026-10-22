@@ -76,7 +76,9 @@ terminal and takes focus for a moment.
   a gpui global that editors observe; `settings_dialog.rs` Rider's searchable Settings window (a new setting is
   a field, an `Opt` on a page, and what follows it). `find_bar.rs` is find and replace over the editor, one
   per window, following the active tab. `buffer.rs` is an open file's text, undo, tree, problems and server, shared by
-  every editor of it; `editor_area.rs` the groups of tabs, split right and down, pinned tabs and the tabs closed. `editor.rs` is the code editor (a gpui `Element` that shapes
+  every editor of it; `editor_area.rs` the groups of tabs, split right and down, pinned tabs and the tabs closed;
+  `editor_window.rs` a tab dragged out into a window of its own. Every buffer in the process is found by its file
+  (`buffer::find`), so a file in two windows is one text; the last editor of a file gone, the server is told. `editor.rs` is the code editor (a gpui `Element` that shapes
   only the lines on screen; the parse runs on the background executor; Roslyn told every change and asked for
   diagnostics once typing pauses), `theme.rs` every colour, `assets.rs` the carried fonts and icons,
   `keymap.rs` Rider's keys, `launch.rs` the command line, `workspace.rs` the folder and its solution, `bench.rs`

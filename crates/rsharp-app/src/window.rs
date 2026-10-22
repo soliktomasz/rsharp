@@ -46,6 +46,7 @@ actions!(
         CloseTabsToLeft,
         CloseTabsToRight,
         ReopenClosedTab,
+        OpenTabInNewWindow,
         ExplorerUp,
         ExplorerDown,
         ExplorerExpand,
@@ -94,6 +95,8 @@ pub struct MainWindow {
     area: EditorArea,
     /// A tab's menu while open, where it was asked for.
     tab_menu: Option<Point<Pixels>>,
+    /// A tab being dragged, and whether the pointer is outside the window, where letting go opens it in a window.
+    tab_drag: Option<(TabDrag, bool)>,
     server: Option<Arc<LanguageServer>>,
     server_state: ServerState,
     /// Roslyn's work under way, by its progress token, with its title.
@@ -127,6 +130,7 @@ impl MainWindow {
             problems_focus: cx.focus_handle(),
             area: EditorArea::default(),
             tab_menu: None,
+            tab_drag: None,
             server: None,
             server_state: ServerState::None,
             progress: Vec::new(),
@@ -141,7 +145,7 @@ impl MainWindow {
 
     pub fn open_workspace(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
         self.save_state(cx);
-        self.leave_editors(cx);
+        self.leave_editors();
         let path = rsharp_core::paths::canonical(path);
         let workspace = Workspace::open(&path);
         window.set_window_title(&workspace.name());
@@ -420,25 +424,21 @@ impl MainWindow {
         let index = match self.area.tab_of(group, &path, cx) {
             Some(index) => index,
             None => {
-                let buffer = match self.area.buffer_of(&path, cx) {
+                let buffer = match crate::buffer::find(&path, cx) {
                     Some(buffer) => buffer,
-                    None => {
-                        let bytes = match std::fs::read(&path) {
-                            Ok(bytes) => bytes,
-                            Err(error) => {
-                                log::warn!("Could not open {}: {error}", path.display());
-                                self.said = Some(format!("Could not open {}: {error}", path.display()).into());
-                                cx.notify();
-                                return;
-                            }
-                        };
-                        let buffer = cx.new(|cx| Buffer::new(path.clone(), &bytes, cx));
-                        if let Some(server) = self.server.clone().filter(|_| is_csharp(&path)) {
-                            buffer.update(cx, |b, cx| b.attach_server(server, cx));
+                    None => match crate::buffer::open(path.clone(), cx) {
+                        Ok(buffer) => buffer,
+                        Err(error) => {
+                            log::warn!("Could not open {}: {error}", path.display());
+                            self.said = Some(format!("Could not open {}: {error}", path.display()).into());
+                            cx.notify();
+                            return;
                         }
-                        buffer
-                    }
+                    },
                 };
+                if let Some(server) = self.server.clone().filter(|_| is_csharp(&path)) {
+                    buffer.update(cx, |b, cx| b.attach_server(server, cx));
+                }
                 let editor = self.new_editor(buffer, cx);
                 self.area.add(editor, false)
             }
@@ -460,20 +460,10 @@ impl MainWindow {
         editor
     }
 
-    /// An editor gone: its file leaves the server once no other editor shows it.
-    fn release(&mut self, editor: Entity<CodeEditor>, cx: &mut Context<Self>) {
-        let buffer = editor.read(cx).buffer.clone();
-        if self.area.editors().all(|e| e.read(cx).buffer != buffer) {
-            buffer.update(cx, |b, _| b.detach_server());
-        }
-    }
-
-    /// Every editor closed, as a folder closing or another opening does.
-    fn leave_editors(&mut self, cx: &mut Context<Self>) {
-        let area = std::mem::take(&mut self.area);
-        for editor in area.editors() {
-            editor.read(cx).buffer.clone().update(cx, |b, _| b.detach_server());
-        }
+    /// Every editor closed, as a folder closing or another opening does; a file no other window shows leaves the
+    /// server as its buffer goes.
+    fn leave_editors(&mut self) {
+        self.area = EditorArea::default();
         self.find_bar = None;
         self.tab_menu = None;
     }
@@ -494,9 +484,7 @@ impl MainWindow {
     fn close_tabs(&mut self, which: impl Fn(usize) -> bool, window: &mut Window, cx: &mut Context<Self>) {
         let group = self.area.current;
         for index in self.area.unpinned(group, which) {
-            if let Some(editor) = self.area.close(group, index, cx) {
-                self.release(editor, cx);
-            }
+            self.area.close(group, index, cx);
         }
         self.focus_editor(window, cx);
     }
@@ -512,6 +500,30 @@ impl MainWindow {
         editor.update(cx, |e, cx| e.place_caret(caret.line, caret.column, cx));
         self.area.split(right, editor);
         self.focus_editor(window, cx);
+    }
+
+    /// Open Tab in New Window, or a tab let go outside the window: the tab moves to a window of its own at `at` on
+    /// the screen, an editor of the same buffer.
+    fn move_to_new_window(
+        &mut self,
+        group: usize,
+        index: usize,
+        at: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self.area.groups.get(group).and_then(|g| g.tabs.get(index)) else { return };
+        let (buffer, caret) = {
+            let read = tab.editor.read(cx);
+            (read.buffer.clone(), read.caret())
+        };
+        let editor = cx.new(|cx| CodeEditor::new(buffer, cx));
+        editor.update(cx, |e, cx| e.place_caret(caret.line, caret.column, cx));
+        self.close_tab(group, index, window, cx);
+        let editor = editor.clone();
+        cx.defer(move |cx| {
+            crate::editor_window::open(editor, at, cx);
+        });
     }
 
     fn reopen_closed_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -532,9 +544,7 @@ impl MainWindow {
     }
 
     fn close_tab(&mut self, group: usize, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(editor) = self.area.close(group, index, cx) {
-            self.release(editor, cx);
-        }
+        self.area.close(group, index, cx);
         self.focus_editor(window, cx);
     }
 
@@ -620,7 +630,7 @@ impl MainWindow {
     /// Back to the Welcome screen, the folder's state kept, as Rider's File | Close Solution.
     pub fn close_solution(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.save_state(cx);
-        self.leave_editors(cx);
+        self.leave_editors();
         self.workspace = None;
         self.opened_as = None;
         self.rows.clear();
@@ -850,6 +860,21 @@ impl Render for MainWindow {
             .text_size(px(13.))
             .relative()
             .track_focus(&self.root_focus)
+            // A tab dragged out past the window's edge and let go there opens in a window of its own.
+            .on_drag_move(cx.listener(|w, event: &gpui::DragMoveEvent<TabDrag>, _, cx| {
+                let outside = !event.bounds.contains(&event.event.position);
+                w.tab_drag = Some((event.drag(cx).clone(), outside));
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|w, _, _, _| w.tab_drag = None))
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|w, event: &gpui::MouseUpEvent, window, cx| {
+                    if let Some((drag, true)) = w.tab_drag.take() {
+                        let at = window.bounds().origin + event.position;
+                        w.move_to_new_window(drag.group, drag.index, at, window, cx);
+                    }
+                }),
+            )
             .on_action(cx.listener(Self::choose_folder))
             .on_action(cx.listener(|w, _: &FindAction, window, cx| w.find_action(window, cx)))
             // Each acts only while it has something to act on, so menus and Find Action grey it otherwise.
@@ -1518,6 +1543,7 @@ impl MainWindow {
         let pinned = tab.pinned;
         let editor = tab.editor.read(cx);
         let name = editor.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name_for_drag = name.clone();
         let selected = self.area.groups[group].active == Some(index);
         let current = group == self.area.current;
         let modified = editor.is_modified(cx);
@@ -1582,6 +1608,9 @@ impl MainWindow {
                     })),
             )
             .on_click(cx.listener(move |w, _: &ClickEvent, window, cx| w.show_tab(group, index, window, cx)))
+            .on_drag(TabDrag { group, index, name: SharedString::from(name_for_drag) }, |drag, _, _, cx| {
+                cx.new(|_| drag.clone())
+            })
             // shortcut: the menu acts on the tab it opened on by showing it first; Rider leaves the tab shown as it was.
             .on_mouse_down(
                 MouseButton::Right,
@@ -1606,17 +1635,22 @@ impl MainWindow {
         let split = self.area.is_split();
         let closed = !self.area.closed.is_empty();
         d.when(active.is_some(), |d| {
-            d.on_action(cx.listener(|w, _: &SplitRight, window, cx| w.split(true, window, cx)))
-                .on_action(cx.listener(|w, _: &SplitDown, window, cx| w.split(false, window, cx)))
-                .on_action(cx.listener(|w, _: &PinTab, _, cx| {
-                    let group = w.area.current;
-                    if let Some(at) = w.area.group().active {
-                        let pinned = w.area.group().tabs[at].pinned;
-                        w.area.pin(group, at, !pinned);
-                        w.save_state(cx);
-                        cx.notify();
-                    }
-                }))
+            d.on_action(cx.listener(|w, _: &OpenTabInNewWindow, window, cx| {
+                let (group, index) = (w.area.current, w.area.group().active.unwrap_or(0));
+                let at = window.bounds().origin + gpui::point(px(80.), px(80.));
+                w.move_to_new_window(group, index, at, window, cx)
+            }))
+            .on_action(cx.listener(|w, _: &SplitRight, window, cx| w.split(true, window, cx)))
+            .on_action(cx.listener(|w, _: &SplitDown, window, cx| w.split(false, window, cx)))
+            .on_action(cx.listener(|w, _: &PinTab, _, cx| {
+                let group = w.area.current;
+                if let Some(at) = w.area.group().active {
+                    let pinned = w.area.group().tabs[at].pinned;
+                    w.area.pin(group, at, !pinned);
+                    w.save_state(cx);
+                    cx.notify();
+                }
+            }))
         })
         .when(others, |d| {
             d.on_action(cx.listener(move |w, _: &CloseOtherTabs, window, cx| {
@@ -1642,9 +1676,7 @@ impl MainWindow {
                 // From the last group, so one closing as it empties leaves the earlier ones' indices standing.
                 for group in (0..w.area.groups.len()).rev() {
                     for index in w.area.unpinned(group, |_| true) {
-                        if let Some(editor) = w.area.close(group, index, cx) {
-                            w.release(editor, cx);
-                        }
+                        w.area.close(group, index, cx);
                     }
                 }
                 w.focus_editor(window, cx)
@@ -1652,15 +1684,11 @@ impl MainWindow {
         })
         .when(split, |d| {
             d.on_action(cx.listener(|w, _: &Unsplit, window, cx| {
-                for editor in w.area.unsplit(false, cx) {
-                    w.release(editor, cx);
-                }
+                w.area.unsplit(false, cx);
                 w.focus_editor(window, cx)
             }))
             .on_action(cx.listener(|w, _: &UnsplitAll, window, cx| {
-                for editor in w.area.unsplit(true, cx) {
-                    w.release(editor, cx);
-                }
+                w.area.unsplit(true, cx);
                 w.focus_editor(window, cx)
             }))
         })
@@ -1983,6 +2011,34 @@ impl Render for FloatDrag {
 }
 
 /// A tool window's stripe button, carried in a drag, drawn as a chip of its title.
+/// A tab on its way somewhere: its group and index, and its name for the preview under the pointer.
+#[derive(Clone)]
+pub struct TabDrag {
+    group: usize,
+    index: usize,
+    name: SharedString,
+}
+
+impl Render for TabDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(10.))
+            .h(px(28.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .rounded(px(6.))
+            .bg(theme::tab_selected())
+            .border_1()
+            .border_color(theme::tab_selected_border())
+            .text_color(theme::text())
+            .font_family(theme::UI_FONT)
+            .text_size(px(13.))
+            .child(icon(file_icon(&self.name), 16.))
+            .child(self.name.clone())
+    }
+}
+
 #[derive(Clone)]
 struct DraggedTool(Tool);
 

@@ -2,7 +2,6 @@
 //! worked in last the current group. A file open in two groups is two editors of one buffer. Pinned tabs come
 //! first; closed tabs are remembered for Reopen Closed Tab.
 
-use crate::buffer::Buffer;
 use crate::editor::CodeEditor;
 use gpui::{App, Entity};
 use std::path::PathBuf;
@@ -70,11 +69,6 @@ impl EditorArea {
 
     pub fn is_split(&self) -> bool {
         self.groups.len() > 1
-    }
-
-    /// The buffer of a file open anywhere, for another editor of it.
-    pub fn buffer_of(&self, path: &PathBuf, cx: &App) -> Option<Entity<Buffer>> {
-        self.editors().find(|e| e.read(cx).path == *path).map(|e| e.read(cx).buffer.clone())
     }
 
     /// The tab of a file in a group.

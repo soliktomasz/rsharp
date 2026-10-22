@@ -3,11 +3,12 @@
 //! scroll and folds, and is told of each change made through another so its carets keep their place.
 
 use crate::editor::Diagnostic;
-use gpui::{Context, EntityId, EventEmitter, Task};
+use gpui::{App, AppContext, Context, Entity, EntityId, EventEmitter, Global, Task, WeakEntity};
 use rsharp_languages::{FoldRegion, edit as edit_tree, folds, parse};
 use rsharp_lsp::LanguageServer;
 use rsharp_text::{Change, Document, EditPlan, Selection};
 use serde_json::json;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -35,6 +36,35 @@ pub struct Buffer {
 }
 
 impl EventEmitter<BufferEvent> for Buffer {}
+
+/// Every buffer open in the process, by its file, so a file shown in the main window and an editor window is one
+/// text.
+#[derive(Default)]
+struct Buffers(HashMap<PathBuf, WeakEntity<Buffer>>);
+
+impl Global for Buffers {}
+
+/// The buffer of a file open anywhere in the process.
+pub fn find(path: &PathBuf, cx: &App) -> Option<Entity<Buffer>> {
+    cx.try_global::<Buffers>()?.0.get(path)?.upgrade()
+}
+
+/// Reads a file into a new buffer, known from now to every window.
+pub fn open(path: PathBuf, cx: &mut App) -> std::io::Result<Entity<Buffer>> {
+    let bytes = std::fs::read(&path)?;
+    let buffer = cx.new(|cx| Buffer::new(path.clone(), &bytes, cx));
+    let buffers = &mut cx.default_global::<Buffers>().0;
+    buffers.retain(|_, b| b.upgrade().is_some());
+    buffers.insert(path, buffer.downgrade());
+    Ok(buffer)
+}
+
+/// The last editor of a file gone: the server is told it is closed.
+impl Drop for Buffer {
+    fn drop(&mut self) {
+        self.detach_server();
+    }
+}
 
 impl Buffer {
     pub fn new(path: PathBuf, bytes: &[u8], cx: &mut Context<Self>) -> Self {

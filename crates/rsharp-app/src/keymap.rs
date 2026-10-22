@@ -52,6 +52,7 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("escape", CloseFind, Some("FindBar")),
         KeyBinding::new("enter", ReplaceOne, Some("ReplaceField")),
         KeyBinding::new("secondary-w", CloseTab, None),
+        KeyBinding::new("shift-f4", OpenTabInNewWindow, None),
         KeyBinding::new("secondary-o", OpenFolder, None),
         KeyBinding::new(if mac { "cmd-1" } else { "alt-1" }, ToggleSolution, None),
         KeyBinding::new(if mac { "cmd-6" } else { "alt-6" }, ToggleProblems, None),

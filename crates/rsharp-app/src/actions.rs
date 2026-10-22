@@ -13,8 +13,8 @@ use crate::editor::{
 use crate::find_bar::{Find, FindNext, FindPrevious, Replace};
 use crate::keymap::{OpenSettings, Quit};
 use crate::window::{
-    CloseAllButPinned, CloseAllTabs, CloseOtherTabs, CloseTabsToLeft, CloseTabsToRight, PinTab, ReopenClosedTab,
-    SplitDown, SplitRight, Unsplit, UnsplitAll,
+    CloseAllButPinned, CloseAllTabs, CloseOtherTabs, CloseTabsToLeft, CloseTabsToRight, OpenTabInNewWindow, PinTab,
+    ReopenClosedTab, SplitDown, SplitRight, Unsplit, UnsplitAll,
 };
 use crate::window::{
     CloseSolution, CloseTab, FindAction, FloatToolWindow, HideToolWindow, OpenFolder, RestoreDefaultLayout,
@@ -53,6 +53,7 @@ pub static ALL: &[IdeAction] = &[
     ide!("Split Down", "Window", ["split horizontally", "editor tabs"], SplitDown),
     ide!("Unsplit", "Window", ["editor tabs"], Unsplit),
     ide!("Unsplit All", "Window", ["editor tabs"], UnsplitAll),
+    ide!("Open Tab in New Window", "Window", ["move to new window", "editor tabs"], OpenTabInNewWindow),
     ide!("Settings…", "File", ["preferences", "options"], OpenSettings),
     ide!("Undo", "Edit", [], Undo),
     ide!("Redo", "Edit", [], Redo),

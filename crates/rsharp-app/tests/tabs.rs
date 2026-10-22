@@ -110,3 +110,37 @@ fn the_tab_menu_splits_the_tab_it_was_opened_on(cx: &mut TestAppContext) {
     click(cx, "tab menu: Split Down");
     assert_eq!(groups(&main, cx), [vec!["a.cs", "b.cs"], vec!["a.cs"]], "the menu did not split the tab it opened on");
 }
+
+#[gpui::test]
+fn a_tab_dragged_out_of_the_window_opens_in_a_window_of_its_own_over_the_same_text(cx: &mut TestAppContext) {
+    let run = Run::new("drag-out", &[("a.cs", "int a;\n"), ("b.cs", "")]);
+    let (main, cx) = run.window(cx);
+    main.update_in(cx, |main, window, cx| {
+        main.open_workspace(&run.folder, window, cx);
+        main.open_file(&run.folder.join("a.cs"), None, window, cx);
+        main.open_file(&run.folder.join("b.cs"), None, window, cx);
+    });
+    cx.run_until_parked();
+
+    let from = cx.debug_bounds("tab 0 a.cs").expect("a.cs has a tab").center();
+    let to = gpui::point(gpui::px(-40.), gpui::px(-40.));
+    cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    for step in 1..=8 {
+        cx.simulate_mouse_move(from + (to - from) * (step as f32 / 8.), Some(MouseButton::Left), Modifiers::default());
+    }
+    cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+
+    assert_eq!(groups(&main, cx), [["b.cs"]], "the tab dragged out stayed in the main window");
+    let opened = cx
+        .update(|_, cx| cx.windows().into_iter().find_map(|w| w.downcast::<rsharp_app::editor_window::EditorWindow>()));
+    let opened = opened.expect("no editor window opened for the tab let go outside");
+    let tabs = cx.update(|_, cx| opened.read(cx).map(|w| w.tabs(cx)).unwrap());
+    assert_eq!(tabs, ["a.cs"]);
+
+    main.update_in(cx, |main, window, cx| main.open_file(&run.folder.join("a.cs"), Some((0, 0)), window, cx));
+    cx.simulate_input("var ");
+    cx.run_until_parked();
+    let texts = cx.update(|_, cx| opened.read(cx).map(|w| w.texts(cx)).unwrap());
+    assert_eq!(texts, ["var int a;\n"], "the editor window did not show what the main window typed in the same file");
+}
