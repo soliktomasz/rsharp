@@ -1,5 +1,5 @@
-//! A long random editing session, every key checked against a plain string: what keeps the rope, the carets
-//! and undo honest. Keep it passing rather than narrowing it.
+//! A long random editing session, every key checked against a plain string, with soft wrap on: what keeps the rope,
+//! the carets, undo and the wrapped rows honest. Keep it passing rather than narrowing it.
 
 use rsharp_text::*;
 
@@ -19,6 +19,9 @@ impl Random {
     }
 }
 
+/// Narrow, so most lines wrap, and the pieces typed cross a row's edge.
+const WRAP: usize = 7;
+
 const PIECES: &[&str] = &["a", "x", " ", "\n", "é", "😀", "{", "}", "var x = 1;", "\n    ", "ż"];
 
 fn boundary(text: &str, random: &mut Random) -> usize {
@@ -30,7 +33,7 @@ fn boundary(text: &str, random: &mut Random) -> usize {
 }
 
 #[test]
-fn every_key_of_a_long_session_leaves_the_text_a_plain_string_would_hold() {
+fn every_key_of_a_long_session_leaves_the_text_a_plain_string_would_hold_and_its_wrapped_rows_true() {
     for seed in 1..=20u64 {
         let mut random = Random(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
         let mut document = Document::new("class C\n{\n}\n");
@@ -39,8 +42,10 @@ fn every_key_of_a_long_session_leaves_the_text_a_plain_string_would_hold() {
         let mut future: Vec<String> = Vec::new();
 
         let mut typing: Option<&str> = None;
+        let mut rows: Option<Rows> = None;
         for key in 0..2_000 {
             let op = random.below(11);
+            let mut changes: Vec<Change> = Vec::new();
             let before = model.clone();
             let carets_before = document.selections().to_vec();
             match op {
@@ -52,7 +57,7 @@ fn every_key_of_a_long_session_leaves_the_text_a_plain_string_would_hold() {
                     let joins = typing.is_some_and(|last| !(piece == " " && last != " "));
                     document.set_selections(at.iter().map(|o| Selection::caret(*o)).collect());
                     let plan = insert(document.text(), document.selections(), piece);
-                    document.apply(EditPlan { kind: EditKind::Typing, ..plan });
+                    changes = document.apply(EditPlan { kind: EditKind::Typing, ..plan });
                     for o in at.iter().rev() {
                         model.insert_str(*o, piece);
                     }
@@ -68,7 +73,7 @@ fn every_key_of_a_long_session_leaves_the_text_a_plain_string_would_hold() {
                     at.dedup();
                     let piece = PIECES[random.below(PIECES.len())];
                     document.set_selections(at.iter().map(|o| Selection::caret(*o)).collect());
-                    document.apply(insert(document.text(), document.selections(), piece));
+                    changes = document.apply(insert(document.text(), document.selections(), piece));
                     for o in at.iter().rev() {
                         model.insert_str(*o, piece);
                     }
@@ -78,7 +83,7 @@ fn every_key_of_a_long_session_leaves_the_text_a_plain_string_would_hold() {
                     document.set_selections(vec![Selection { anchor: a, head: b }]);
                     // Runs of deleting join in their own test; here each one is a step the model can count.
                     let plan = backspace(document.text(), document.selections());
-                    document.apply(EditPlan { kind: EditKind::Other, ..plan });
+                    changes = document.apply(EditPlan { kind: EditKind::Other, ..plan });
                     if a != b {
                         model.replace_range(a.min(b)..a.max(b), "");
                     } else if let Some(c) = model[..a].chars().next_back() {
@@ -89,20 +94,20 @@ fn every_key_of_a_long_session_leaves_the_text_a_plain_string_would_hold() {
                     let a = boundary(&model, &mut random);
                     document.set_selections(vec![Selection::caret(a)]);
                     let plan = delete(document.text(), document.selections());
-                    document.apply(EditPlan { kind: EditKind::Other, ..plan });
+                    changes = document.apply(EditPlan { kind: EditKind::Other, ..plan });
                     if let Some(c) = model[a..].chars().next() {
                         model.replace_range(a..a + c.len_utf8(), "");
                     }
                 }
                 6..=7 => {
                     if let Some(previous) = history.pop() {
-                        document.undo().expect("undo had a step to take back");
+                        changes = document.undo().expect("undo had a step to take back");
                         future.push(std::mem::replace(&mut model, previous));
                     }
                 }
                 _ => {
                     if let Some(next) = future.pop() {
-                        document.redo().expect("redo had a step to put back");
+                        changes = document.redo().expect("redo had a step to put back");
                         history.push(std::mem::replace(&mut model, next));
                     }
                 }
@@ -121,6 +126,16 @@ fn every_key_of_a_long_session_leaves_the_text_a_plain_string_would_hold() {
                 model,
                 "seed {seed}, key {key}: the text drifted from what was typed"
             );
+            // Soft wrap on: the rows carried through each change must be the rows made afresh.
+            let fresh = Rows::build(document.text(), &[], Some(WRAP));
+            let carried = match (&changes[..], rows.as_mut()) {
+                ([change], Some(rows)) => rows.apply_change(document.text(), change, &[], Some(WRAP)),
+                _ => false,
+            };
+            if !carried {
+                rows = Some(Rows::build(document.text(), &[], Some(WRAP)));
+            }
+            assert_eq!(rows.as_ref(), Some(&fresh), "seed {seed}, key {key}: the wrapped rows drifted from the text");
         }
     }
 }

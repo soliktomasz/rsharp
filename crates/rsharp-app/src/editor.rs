@@ -9,7 +9,7 @@ use gpui::{
     MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, ScrollWheelEvent, ShapedLine, Style, Subscription,
     TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill, font, point, prelude::*, px, relative, size,
 };
-use rsharp_languages::{FoldRegion, Highlight, highlights, matching_bracket};
+use rsharp_languages::{FoldRegion, Highlight, folds, folds_in, highlights, matching_bracket};
 use rsharp_text::*;
 use std::ops::Range;
 use std::path::PathBuf;
@@ -111,9 +111,9 @@ pub struct CodeEditor {
     block: Option<(Place, Place, Vec<Selection>)>,
     /// Column Selection Mode: a drag and Shift with the arrows select a column.
     pub column_mode: bool,
-    /// The regions that fold, from the buffer's last parse and kept in step with every edit since, each with
-    /// whether it is folded here.
-    pub folds: Vec<(FoldRegion, bool)>,
+    /// The regions folded here, sorted, kept in step with every edit; the others are found in the tree as the lines
+    /// on screen or a fold action need them.
+    pub folded: Vec<FoldRegion>,
     /// Lines wider than the view go on in rows below (View | Active Editor | Soft-Wrap).
     pub soft_wrap: bool,
     rows: Rows,
@@ -190,8 +190,8 @@ struct Layout {
     first_row: usize,
     lines: Vec<ShapedLine>,
     /// The gutter's chevrons and the folded regions' placeholders, each with the fold it stands for.
-    chevrons: Vec<(Bounds<Pixels>, usize)>,
-    placeholders: Vec<(Bounds<Pixels>, usize)>,
+    chevrons: Vec<(Bounds<Pixels>, FoldRegion)>,
+    placeholders: Vec<(Bounds<Pixels>, FoldRegion)>,
 }
 
 impl CodeEditor {
@@ -200,6 +200,7 @@ impl CodeEditor {
         let subscription = cx.subscribe(&buffer, |editor, buffer, event: &BufferEvent, cx| {
             match event {
                 BufferEvent::Edited { changes, by } => {
+                    let before = editor.version;
                     editor.sync(&buffer, cx);
                     // The editor that made the change has its carets from it already.
                     if *by != cx.entity_id() {
@@ -213,16 +214,17 @@ impl CodeEditor {
                             .collect();
                         editor.set_selections(carets);
                         editor.map_folds(changes);
+                        editor.rows_after(before, changes);
                     }
                 }
-                BufferEvent::Parsed => editor.take_regions(&buffer, cx),
+                BufferEvent::Parsed => {}
             }
             cx.notify();
         });
         cx.observe_global::<crate::settings::Settings>(|_, cx| cx.notify()).detach();
         cx.observe(&buffer, |_, _, cx| cx.notify()).detach();
         let read = buffer.read(cx);
-        let mut editor = Self {
+        Self {
             path: read.path.clone(),
             text: read.document.text().clone(),
             version: read.document.version(),
@@ -238,7 +240,7 @@ impl CodeEditor {
             column_drag: None,
             block: None,
             column_mode: false,
-            folds: Vec::new(),
+            folded: Vec::new(),
             soft_wrap: false,
             rows: Rows::Lines,
             rows_key: None,
@@ -249,9 +251,7 @@ impl CodeEditor {
             line_height: px(crate::settings::settings(cx).line_height()),
             _buffer_events: subscription,
             pending: None,
-        };
-        editor.take_regions(&buffer, cx);
-        editor
+        }
     }
 
     /// The text and its version as the buffer has them now.
@@ -261,15 +261,8 @@ impl CodeEditor {
         self.version = read.document.version();
     }
 
-    /// The regions a parse found, each folded here if one folded before started where it does.
-    fn take_regions(&mut self, buffer: &Entity<Buffer>, cx: &App) {
-        let folded: Vec<usize> = self.folds.iter().filter(|(_, folded)| *folded).map(|(f, _)| f.range.start).collect();
-        self.folds = buffer.read(cx).regions.iter().map(|f| (f.clone(), folded.contains(&f.range.start))).collect();
-        self.fold_generation += 1;
-    }
-
     fn map_folds(&mut self, changes: &[Change]) {
-        for (fold, _) in &mut self.folds {
+        for fold in &mut self.folded {
             for change in changes {
                 fold.range = map_through(fold.range.start, change)..map_through(fold.range.end, change);
             }
@@ -357,8 +350,10 @@ impl CodeEditor {
     /// buffer's event comes after, too late for a key that follows).
     fn edited(&mut self, carets: Vec<Selection>, changes: &[Change], cx: &mut Context<Self>) {
         let buffer = self.buffer.clone();
+        let before = self.version;
         self.sync(&buffer, cx);
         self.map_folds(changes);
+        self.rows_after(before, changes);
         self.set_selections(carets);
         self.goal_columns = None;
         self.autoscroll = true;
@@ -425,12 +420,24 @@ impl CodeEditor {
         }
     }
 
+    /// After a change, the rows of only the lines it touched made again, where the rows were made for the text
+    /// just before it; anything else (several changes, a fold beside it) leaves them to be made whole.
+    fn rows_after(&mut self, before: u64, changes: &[Change]) {
+        let wrap = self.columns.filter(|_| self.soft_wrap);
+        let made_for = Some((before, self.fold_generation, wrap));
+        if let ([change], true) = (changes, self.rows_key == made_for)
+            && self.rows.apply_change(&self.text, change, &self.hidden_lines(), wrap)
+        {
+            self.rows_key = Some((self.version, self.fold_generation, wrap));
+        }
+    }
+
     /// The lines folded regions hide, every one after a region's first through its last, sorted and merged.
     fn hidden_lines(&self) -> Vec<Range<usize>> {
         let text = &self.text;
         let len = text.len_bytes();
         let mut hidden: Vec<Range<usize>> = Vec::new();
-        for (fold, _) in self.folds.iter().filter(|(_, folded)| *folded) {
+        for fold in &self.folded {
             let first = text.byte_to_line(fold.range.start.min(len));
             let last = text.byte_to_line(fold.range.end.min(len));
             if last <= first {
@@ -466,11 +473,11 @@ impl CodeEditor {
         text.char_to_byte(text.byte_to_char(row.start) + goal)
     }
 
-    /// Folds or unfolds the regions `which` picks, the carets kept on rows that show.
-    fn set_folded(&mut self, which: impl Fn(usize, &FoldRegion, bool) -> bool, cx: &mut Context<Self>) {
-        for (i, (fold, folded)) in self.folds.iter_mut().enumerate() {
-            *folded = which(i, fold, *folded);
-        }
+    /// Changes what is folded, the carets kept on rows that show.
+    fn set_folded(&mut self, change: impl FnOnce(&mut Vec<FoldRegion>), cx: &mut Context<Self>) {
+        change(&mut self.folded);
+        self.folded.sort_by_key(|f| (f.range.start, std::cmp::Reverse(f.range.end)));
+        self.folded.dedup();
         self.fold_generation += 1;
         // A caret in what folded goes to the end of the fold's first line, as Rider moves it.
         let text = self.text.clone();
@@ -491,15 +498,30 @@ impl CodeEditor {
         cx.notify();
     }
 
-    /// The widest region starting on the caret's line, else the innermost holding it, that `wanted` takes.
-    fn fold_at_caret(&self, wanted: impl Fn(bool) -> bool) -> Option<usize> {
+    fn toggle_fold(&mut self, region: FoldRegion, cx: &mut Context<Self>) {
+        self.set_folded(
+            |folded| match folded.iter().position(|f| *f == region) {
+                Some(at) => drop(folded.remove(at)),
+                None => folded.push(region),
+            },
+            cx,
+        );
+    }
+
+    /// The widest region starting on the caret's line, else the innermost holding it, folded here or not as `folded`
+    /// asks (either, for none).
+    fn fold_at_caret(&self, folded: Option<bool>, cx: &App) -> Option<FoldRegion> {
         let text = &self.text;
         let len = text.len_bytes();
         let line = text.byte_to_line(self.primary().head);
+        let tree = self.buffer.read(cx).tree.as_ref()?;
+        let around = text.line_to_byte(line)..line_end(text, line);
         let lines =
             |f: &FoldRegion| text.byte_to_line(f.range.start.min(len))..=text.byte_to_line(f.range.end.min(len));
-        let starts = self.folds.iter().position(|(f, folded)| *lines(f).start() == line && wanted(*folded));
-        starts.or_else(|| self.folds.iter().rposition(|(f, folded)| lines(f).contains(&line) && wanted(*folded)))
+        let wanted = |f: &FoldRegion| folded.is_none_or(|want| self.folded.contains(f) == want);
+        let regions = folds_in(tree, text, around);
+        let starts = regions.iter().find(|f| *lines(f).start() == line && *lines(f).end() > line && wanted(f));
+        starts.or_else(|| regions.iter().rev().find(|f| lines(f).contains(&line) && wanted(f))).cloned()
     }
 
     /// Unfolds what hides a caret, as Rider does when a caret lands in folded lines (Undo, Find, a jump).
@@ -509,14 +531,13 @@ impl CodeEditor {
         let mut opened = false;
         for s in self.carets.as_slice() {
             let line = text.byte_to_line(s.head);
-            for (fold, folded) in self.folds.iter_mut().filter(|(_, folded)| *folded) {
+            self.folded.retain(|fold| {
                 let first = text.byte_to_line(fold.range.start.min(len));
                 let last = text.byte_to_line(fold.range.end.min(len));
-                if line > first && line <= last {
-                    *folded = false;
-                    opened = true;
-                }
-            }
+                let hides = line > first && line <= last;
+                opened |= hides;
+                !hides
+            });
         }
         if opened {
             self.fold_generation += 1;
@@ -632,13 +653,13 @@ impl CodeEditor {
 
     fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus);
-        let hit = |marks: &[(Bounds<Pixels>, usize)]| {
-            marks.iter().find(|(b, _)| b.contains(&event.position)).map(|(_, fold)| *fold)
+        let hit = |marks: &[(Bounds<Pixels>, FoldRegion)]| {
+            marks.iter().find(|(b, _)| b.contains(&event.position)).map(|(_, fold)| fold.clone())
         };
         if let Some(layout) = &self.layout
             && let Some(fold) = hit(&layout.chevrons).or_else(|| hit(&layout.placeholders))
         {
-            self.set_folded(|i, _, folded| if i == fold { !folded } else { folded }, cx);
+            self.toggle_fold(fold, cx);
             return;
         }
         let offset = self.offset_for_point(event.position);
@@ -809,11 +830,14 @@ moves! {
     ToggleColumnMode => |e, cx| { e.column_mode = !e.column_mode; cx.notify() };
     CloneCaretBelow => |e, cx| { let next = clone_caret(&e.text, e.carets.as_slice(), 1); e.set_carets(next, cx) };
     MatchBrace => |e, cx| e.match_brace(cx);
-    ToggleFold => |e, cx| { if let Some(at) = e.fold_at_caret(|_| true) { e.set_folded(|i, _, f| if i == at { !f } else { f }, cx) } };
-    ExpandRegion => |e, cx| { if let Some(at) = e.fold_at_caret(|f| f) { e.set_folded(|i, _, f| f && i != at, cx) } };
-    CollapseRegion => |e, cx| { if let Some(at) = e.fold_at_caret(|f| !f) { e.set_folded(|i, _, f| f || i == at, cx) } };
-    ExpandAll => |e, cx| e.set_folded(|_, _, _| false, cx);
-    CollapseAll => |e, cx| e.set_folded(|_, _, _| true, cx);
+    ToggleFold => |e, cx| { if let Some(region) = e.fold_at_caret(None, cx) { e.toggle_fold(region, cx) } };
+    ExpandRegion => |e, cx| { if let Some(region) = e.fold_at_caret(Some(true), cx) { e.toggle_fold(region, cx) } };
+    CollapseRegion => |e, cx| { if let Some(region) = e.fold_at_caret(Some(false), cx) { e.toggle_fold(region, cx) } };
+    ExpandAll => |e, cx| e.set_folded(Vec::clear, cx);
+    CollapseAll => |e, cx| {
+        let all = e.buffer.read(cx).tree.as_ref().map(|tree| folds(tree, &e.text)).unwrap_or_default();
+        e.set_folded(|folded| *folded = all, cx)
+    };
     ToggleSoftWrap => |e, cx| { e.soft_wrap = !e.soft_wrap; e.autoscroll = true; cx.notify() };
     ToggleWhitespace => |_, cx| { let mut s = crate::settings::settings(cx).clone(); s.show_whitespace = !s.show_whitespace; crate::settings::apply(s, cx) };
     IncreaseFontSize => |e, cx| e.zoom(|size| size + 1., cx);
@@ -993,7 +1017,7 @@ struct Prepainted {
     line_height: Pixels,
     char_width: Pixels,
     /// Each shown row's fold, if a region starts on its line: the fold and whether it is folded.
-    fold_marks: Vec<Option<(usize, bool)>>,
+    fold_marks: Vec<Option<(FoldRegion, bool)>>,
     placeholder: ShapedLine,
     /// The bracket by the caret and its pair, in a tree that is current.
     braces: Vec<Range<usize>>,
@@ -1096,6 +1120,8 @@ impl Element for EditorElement {
             let mut lines = Vec::with_capacity(shown.len());
             let mut line_numbers = Vec::with_capacity(shown.len());
             let mut fold_marks = Vec::with_capacity(shown.len());
+            // The regions on screen, found in the tree; a folded one is among them, its first line being shown.
+            let regions = buffer.tree.as_ref().map(|tree| folds_in(tree, text, byte_range.clone())).unwrap_or_default();
             for row in &shown {
                 let content: String = text.byte_slice(row.start..row.end).to_string();
                 let runs = runs_for(&content, row.start, &colours, &code_font);
@@ -1116,12 +1142,12 @@ impl Element for EditorElement {
                 });
                 line_numbers.push(number);
                 // The widest region starting on the line, which comes first among those starting there.
-                let from = editor.folds.partition_point(|(f, _)| line_of(f.range.start) < row.line);
-                let mark = editor.folds[from..]
+                let from = regions.partition_point(|f| line_of(f.range.start) < row.line);
+                let mark = regions[from..]
                     .iter()
-                    .take_while(|(f, _)| line_of(f.range.start) == row.line)
-                    .position(|(f, _)| line_of(f.range.end) > row.line)
-                    .map(|i| (from + i, editor.folds[from + i].1));
+                    .take_while(|f| line_of(f.range.start) == row.line)
+                    .find(|f| line_of(f.range.end) > row.line)
+                    .map(|f| (f.clone(), editor.folded.contains(f)));
                 fold_marks.push(mark);
             }
             let placeholder = window.text_system().shape_line(
@@ -1234,6 +1260,7 @@ impl Element for EditorElement {
                     );
                 }
                 if let Some(Some((fold, folded))) = state.fold_marks.get(i).filter(|_| span.first) {
+                    let fold = fold.clone();
                     if *folded || gutter_hovered {
                         let at = Bounds::new(
                             point(bounds.origin.x + state.gutter_width - px(16.), top + (line_height - px(14.)) / 2.),
@@ -1248,7 +1275,7 @@ impl Element for EditorElement {
                             point(bounds.origin.x + state.gutter_width - px(18.), top),
                             size(px(18.), line_height),
                         ),
-                        *fold,
+                        fold,
                     ));
                 }
                 let _ = shaped.paint(point(left, top), line_height, window, cx);
@@ -1260,7 +1287,7 @@ impl Element for EditorElement {
                     );
                     window.paint_quad(fill(chip, theme::editor::folded_background()).corner_radii(px(3.)));
                     let _ = state.placeholder.paint(point(x + state.char_width / 2., top), line_height, window, cx);
-                    placeholders.push((chip, *fold));
+                    placeholders.push((chip, fold.clone()));
                 }
                 if state.show_whitespace {
                     let content = text.byte_slice(start..end).to_string();

@@ -55,11 +55,14 @@ terminal and takes focus for a moment.
   a pure function to an `EditPlan`. Offsets are UTF-8 bytes. A file's CRLF is held as `\n` and written back. Undo
   joins a run of one `EditKind` (typing a word at a time); `carets` is what changes only the carets (occurrences,
   clones, columns; the last caret is the primary, the one added last); `search` is the find bar's matching; `rows` is
-  lines as shown, folded lines left out and long ones wrapped, built only while something folds or wraps.
+  lines as shown, folded lines left out and long ones wrapped, built only while something folds or wraps, and after
+  one change only that change's lines made again.
 - `crates/rsharp-languages`: colour before any server answers: tree-sitter-c-sharp parsed incrementally (`edit`
   then `parse` with the old tree) and coloured by the grammar's own highlights query over the visible bytes
-  only, its captures mapped to Rider's kinds (`Kind`); the regions that fold and the bracket pairs come from the
-  same tree.
+  only, its captures mapped to Rider's kinds (`Kind`); the regions that fold (`folds_in`, only those near a range,
+  through a tree cursor: a node's own sibling steps find its parent from the root) and the bracket pairs come from
+  the same tree. tree-sitter's incremental parse grows with the members of one class, so a file over 4 MB is parsed
+  once typing pauses; `tests/budget.rs` holds the UI thread's work per key flat on a file ten times larger.
 - `crates/rsharp-lsp`: the LSP client (JSON-RPC over stdio, a reader thread, `ServerFailed` the one failure) and
   `start_roslyn`, which runs the person's `roslyn-language-server` dotnet tool with `--clientProcessId`, so it
   ends with the IDE even after a crash, and opens the solution (`solution/open`) or lets it find the projects.

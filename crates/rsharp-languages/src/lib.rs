@@ -75,14 +75,28 @@ pub struct FoldRegion {
 /// Every region that folds, sorted by start, as Rider's: a body in braces, a run of usings, a comment over several
 /// lines (or a run of line comments), and `#region` to `#endregion`.
 pub fn folds(tree: &Tree, text: &Rope) -> Vec<FoldRegion> {
+    folds_in(tree, text, 0..text.len_bytes())
+}
+
+/// The regions that fold among the nodes that meet `range`: what the lines on screen need, found in time that
+/// grows with them and the tree's depth, not with the file.
+pub fn folds_in(tree: &Tree, text: &Rope, range: Range<usize>) -> Vec<FoldRegion> {
     let mut out = Vec::new();
-    let mut regions = Vec::new();
-    visit(tree.root_node(), text, &mut out, &mut regions);
+    visit(tree.root_node(), text, &range, &mut out);
     out.sort_by_key(|f| (f.range.start, std::cmp::Reverse(f.range.end)));
     out
 }
 
-fn visit(node: Node, text: &Rope, out: &mut Vec<FoldRegion>, regions: &mut Vec<usize>) {
+fn fold_kind(node: &Node, text: &Rope) -> Option<FoldKind> {
+    match node.kind() {
+        "using_directive" => Some(FoldKind::Usings),
+        "comment" if text.byte_slice(node.byte_range()).chars().take(3).eq("///".chars()) => Some(FoldKind::DocComment),
+        "comment" => Some(FoldKind::Comment),
+        _ => None,
+    }
+}
+
+fn visit(node: Node, text: &Rope, range: &Range<usize>, out: &mut Vec<FoldRegion>) {
     let line = |byte: usize| text.byte_to_line(byte.min(text.len_bytes()));
     let close = |run: &mut Option<(FoldKind, Range<usize>)>, out: &mut Vec<FoldRegion>| {
         if let Some((kind, range)) = run.take()
@@ -91,61 +105,78 @@ fn visit(node: Node, text: &Rope, out: &mut Vec<FoldRegion>, regions: &mut Vec<u
             out.push(FoldRegion { range, kind });
         }
     };
+    // The first child that meets the range, stepped back over a run of usings or comments leading into it.
+    // A cursor finds it through the tree's balanced hidden nodes, and steps between siblings without finding their
+    // parent from the root each time as a node's own steps do; a class of a thousand members makes those slow.
+    let mut cursor = node.walk();
+    if cursor.goto_first_child_for_byte(range.start).is_none() {
+        return;
+    }
+    while cursor.goto_previous_sibling() {
+        if fold_kind(&cursor.node(), text).is_none() {
+            cursor.goto_next_sibling();
+            break;
+        }
+    }
     // Usings and line comments fold as runs of siblings, a line each, nothing but blanks between.
     let mut run: Option<(FoldKind, Range<usize>)> = None;
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        let range = child.byte_range();
-        let kind = match child.kind() {
-            "using_directive" => Some(FoldKind::Usings),
-            "comment" if text.byte_slice(range.clone()).to_string().starts_with("///") => Some(FoldKind::DocComment),
-            "comment" => Some(FoldKind::Comment),
-            _ => None,
-        };
-        if let Some(kind) = kind {
-            let one_line = line(range.start) == line(range.end.saturating_sub(1));
+    let mut regions: Vec<usize> = Vec::new();
+    loop {
+        let child = cursor.node();
+        let span = child.byte_range();
+        let past = span.start > range.end;
+        if past && regions.is_empty() && run.is_none() {
+            break;
+        }
+        if let Some(kind) = fold_kind(&child, text).filter(|_| !past || run.is_some()) {
+            let one_line = line(span.start) == line(span.end.saturating_sub(1));
             match &mut run {
                 Some((k, r))
                     if *k == kind
                         && one_line
-                        && line(range.start) == line(r.end) + 1
-                        && text.byte_slice(r.end..range.start).chars().all(char::is_whitespace) =>
+                        && line(span.start) == line(r.end) + 1
+                        && text.byte_slice(r.end..span.start).chars().all(char::is_whitespace) =>
                 {
-                    r.end = range.end;
+                    r.end = span.end;
                 }
                 _ => {
                     close(&mut run, out);
-                    if one_line {
-                        run = Some((kind, range));
+                    if past {
+                    } else if one_line {
+                        run = Some((kind, span));
                     } else {
-                        out.push(FoldRegion { range, kind });
+                        out.push(FoldRegion { range: span, kind });
                     }
                 }
             }
-            continue;
-        }
-        close(&mut run, out);
-        match child.kind() {
-            "block"
-            | "declaration_list"
-            | "accessor_list"
-            | "switch_body"
-            | "enum_member_declaration_list"
-            | "initializer_expression"
-                if line(range.start) < line(range.end) =>
-            {
-                out.push(FoldRegion { range: range.clone(), kind: FoldKind::Body });
-            }
-            "preproc_region" => regions.push(range.start),
-            "preproc_endregion" => {
-                if let Some(start) = regions.pop() {
-                    out.push(FoldRegion { range: start..range.end, kind: FoldKind::Region });
+        } else {
+            close(&mut run, out);
+            match child.kind() {
+                "block"
+                | "declaration_list"
+                | "accessor_list"
+                | "switch_body"
+                | "enum_member_declaration_list"
+                | "initializer_expression"
+                    if !past && line(span.start) < line(span.end) =>
+                {
+                    out.push(FoldRegion { range: span.clone(), kind: FoldKind::Body });
                 }
+                "preproc_region" if !past => regions.push(span.start),
+                // Past the range, siblings are read only for the #endregion of a #region seen in it.
+                "preproc_endregion" => {
+                    if let Some(start) = regions.pop() {
+                        out.push(FoldRegion { range: start..span.end, kind: FoldKind::Region });
+                    }
+                }
+                _ => {}
             }
-            _ => {}
+            if !past && child.child_count() > 0 && span.end >= range.start {
+                visit(child, text, range, out);
+            }
         }
-        if child.child_count() > 0 {
-            visit(child, text, out, regions);
+        if !cursor.goto_next_sibling() {
+            break;
         }
     }
     close(&mut run, out);

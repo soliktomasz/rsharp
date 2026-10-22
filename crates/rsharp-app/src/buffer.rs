@@ -6,7 +6,7 @@ use crate::editor::Diagnostic;
 use gpui::{App, AppContext, Context, Entity, EntityId, EventEmitter, Global, Task, WeakEntity};
 use rsharp_core::editorconfig::EditorConfig;
 use rsharp_core::encodings::{Charset, decode, encode};
-use rsharp_languages::{FoldRegion, edit as edit_tree, folds, parse};
+use rsharp_languages::{edit as edit_tree, parse};
 use rsharp_lsp::LanguageServer;
 use rsharp_text::{Change, Document, Edit, EditPlan, Indent, LineEnding, Rope, Selection, detect_indent, line_end};
 use serde_json::json;
@@ -19,7 +19,7 @@ use tree_sitter::Tree;
 pub enum BufferEvent {
     /// The text changed: by an edit through the editor `by`, or by Undo or Redo there.
     Edited { changes: Vec<Change>, by: EntityId },
-    /// A parse landed: a new tree and the regions that fold.
+    /// A parse landed: a new tree.
     Parsed,
 }
 
@@ -50,7 +50,6 @@ pub struct Buffer {
     pub tree: Option<Tree>,
     /// The document's version the tree was parsed from: brackets are paired only in a tree that is current.
     pub tree_version: u64,
-    pub regions: Vec<FoldRegion>,
     is_csharp: bool,
     parsing: Option<Task<()>>,
     server: Option<(Arc<LanguageServer>, String)>,
@@ -179,7 +178,6 @@ impl Buffer {
             diagnostics: Vec::new(),
             tree: None,
             tree_version: u64::MAX,
-            regions: Vec::new(),
             is_csharp,
             parsing: None,
             server: None,
@@ -277,20 +275,18 @@ impl Buffer {
         let text = self.document.text().clone();
         let old = self.tree.clone();
         let version = self.document.version();
+        // tree-sitter parses again in time that grows with the members of one class; a file as large as a
+        // generated one waits for typing to pause, the tree told of each edit meanwhile.
+        let pause = if text.len_bytes() > 4 << 20 { Duration::from_millis(150) } else { Duration::ZERO };
         self.parsing = Some(cx.spawn(async move |this, cx| {
-            let (tree, regions) = cx
-                .background_executor()
-                .spawn(async move {
-                    let tree = parse(&text, old.as_ref());
-                    let regions = folds(&tree, &text);
-                    (tree, regions)
-                })
-                .await;
+            if pause > Duration::ZERO {
+                cx.background_executor().timer(pause).await;
+            }
+            let tree = cx.background_executor().spawn(async move { parse(&text, old.as_ref()) }).await;
             let _ = this.update(cx, |buffer, cx| {
                 if buffer.document.version() == version {
                     buffer.tree = Some(tree);
                     buffer.tree_version = version;
-                    buffer.regions = regions;
                     cx.emit(BufferEvent::Parsed);
                     cx.notify();
                 }
