@@ -39,6 +39,8 @@ pub fn bind(cx: &mut App) {
         // Rider has no key for these on macOS (Option pressed twice, then held); Passenger's are taken on both.
         KeyBinding::new("alt-shift-up", CloneCaretAbove, editor),
         KeyBinding::new("alt-shift-down", CloneCaretBelow, editor),
+        KeyBinding::new("alt-shift-g", CaretPerLine, editor),
+        KeyBinding::new(if mac { "cmd-shift-8" } else { "alt-shift-insert" }, ToggleColumnMode, editor),
         KeyBinding::new("secondary-s", Save, None),
         KeyBinding::new("secondary-w", CloseTab, None),
         KeyBinding::new("secondary-o", OpenFolder, None),

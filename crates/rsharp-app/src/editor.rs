@@ -59,11 +59,16 @@ actions!(
         SelectAllOccurrences,
         CloneCaretAbove,
         CloneCaretBelow,
+        CaretPerLine,
+        ToggleColumnMode,
         Escape,
     ]
 );
 
 const TEXT_PAD: f32 = 16.;
+
+/// A line and a character column, which may lie past the line's end.
+type Place = (usize, usize);
 
 /// A problem the server found, where it is now.
 #[derive(Clone)]
@@ -89,8 +94,13 @@ pub struct CodeEditor {
     goal_columns: Option<Vec<usize>>,
     marked: Option<Range<usize>>,
     selecting: bool,
-    /// Where an Alt+drag began, as a line and a character column, while it lasts.
-    column_drag: Option<(usize, usize)>,
+    /// Where a column drag began, while it lasts.
+    column_drag: Option<Place>,
+    /// The column selection last made, from its start to its head, and the carets it made: Shift and the arrows
+    /// go on with it while those carets are untouched.
+    block: Option<(Place, Place, Vec<Selection>)>,
+    /// Column Selection Mode: a drag and Shift with the arrows select a column.
+    pub column_mode: bool,
     layout: Option<Layout>,
     /// The line height in force, from the settings, as the last frame used it.
     line_height: Pixels,
@@ -126,6 +136,8 @@ impl CodeEditor {
             marked: None,
             selecting: false,
             column_drag: None,
+            block: None,
+            column_mode: false,
             layout: None,
             line_height: px(crate::settings::settings(cx).line_height()),
         };
@@ -317,6 +329,28 @@ impl CodeEditor {
         }
     }
 
+    fn place_of(&self, offset: usize) -> Place {
+        let text = self.document.text();
+        (text.byte_to_line(offset), column_of(text, offset))
+    }
+
+    fn set_block(&mut self, start: Place, head: Place, cx: &mut Context<Self>) {
+        let carets = column_selection(self.document.text(), start, head);
+        self.set_carets(carets.clone(), cx);
+        self.block = Some((start, head, carets));
+    }
+
+    /// Shift and an arrow in Column Selection Mode: the column selection's head a line or a column further.
+    fn extend_block(&mut self, lines: isize, columns: isize, cx: &mut Context<Self>) {
+        let (start, head) = match &self.block {
+            Some((start, head, carets)) if carets.as_slice() == self.document.selections() => (*start, *head),
+            _ => (self.place_of(self.primary().anchor), self.place_of(self.primary().head)),
+        };
+        let last = self.document.text().len_lines() as isize - 1;
+        let head = ((head.0 as isize + lines).clamp(0, last) as usize, (head.1 as isize + columns).max(0) as usize);
+        self.set_block(start, head, cx);
+    }
+
     fn set_carets(&mut self, selections: Vec<Selection>, cx: &mut Context<Self>) {
         self.document.set_selections(selections);
         self.goal_columns = None;
@@ -394,13 +428,19 @@ impl CodeEditor {
             cx.notify();
             return;
         }
-        if m.alt {
-            let place = self.place_for_point(event.position);
-            self.column_drag = Some(place);
-            self.document.set_selections(column_selection(&text, place, place));
-            self.goal_columns = None;
+        let place = self.place_for_point(event.position);
+        // Shift+Alt+click, the Visual Studio keymap's, selects a column from the caret to the click.
+        if m.alt && m.shift {
+            let start = self.place_of(self.primary().anchor);
+            self.column_drag = Some(start);
+            self.set_block(start, place, cx);
             self.selecting = true;
-            cx.notify();
+            return;
+        }
+        if m.alt || (self.column_mode && event.click_count == 1 && !m.shift) {
+            self.column_drag = Some(place);
+            self.set_block(place, place, cx);
+            self.selecting = true;
             return;
         }
         let selection = match event.click_count {
@@ -423,10 +463,7 @@ impl CodeEditor {
         if let (true, Some(start)) = (self.selecting, self.column_drag)
             && event.pressed_button == Some(MouseButton::Left)
         {
-            let carets = column_selection(self.document.text(), start, self.place_for_point(event.position));
-            self.document.set_selections(carets);
-            self.autoscroll = true;
-            cx.notify();
+            self.set_block(start, self.place_for_point(event.position), cx);
         } else if self.selecting && event.pressed_button == Some(MouseButton::Left) {
             let anchor = self.primary().anchor;
             self.document.set_selections(vec![Selection { anchor, head: self.offset_for_point(event.position) }]);
@@ -474,8 +511,8 @@ macro_rules! moves {
 moves! {
     Left => |e, cx| e.horizontal(false, cx, previous_char, true);
     Right => |e, cx| e.horizontal(false, cx, next_char, false);
-    SelectLeft => |e, cx| e.horizontal(true, cx, previous_char, true);
-    SelectRight => |e, cx| e.horizontal(true, cx, next_char, false);
+    SelectLeft => |e, cx| if e.column_mode { e.extend_block(0, -1, cx) } else { e.horizontal(true, cx, previous_char, true) };
+    SelectRight => |e, cx| if e.column_mode { e.extend_block(0, 1, cx) } else { e.horizontal(true, cx, next_char, false) };
     WordLeft => |e, cx| e.horizontal(false, cx, word_left, true);
     WordRight => |e, cx| e.horizontal(false, cx, word_right, false);
     SelectWordLeft => |e, cx| e.horizontal(true, cx, word_left, true);
@@ -490,8 +527,8 @@ moves! {
     SelectDocumentEnd => |e, cx| e.horizontal(true, cx, |t, _| t.len_bytes(), false);
     Up => |e, cx| e.vertical(-1, false, cx);
     Down => |e, cx| e.vertical(1, false, cx);
-    SelectUp => |e, cx| e.vertical(-1, true, cx);
-    SelectDown => |e, cx| e.vertical(1, true, cx);
+    SelectUp => |e, cx| if e.column_mode { e.extend_block(-1, 0, cx) } else { e.vertical(-1, true, cx) };
+    SelectDown => |e, cx| if e.column_mode { e.extend_block(1, 0, cx) } else { e.vertical(1, true, cx) };
     PageUp => |e, cx| { let p = e.page(); e.vertical(-p, false, cx) };
     PageDown => |e, cx| { let p = e.page(); e.vertical(p, false, cx) };
     SelectAll => |e, cx| { let len = e.document.text().len_bytes(); e.document.set_selections(vec![Selection { anchor: 0, head: len }]); cx.notify() };
@@ -527,6 +564,8 @@ moves! {
     UnselectOccurrence => |e, cx| { let next = unselect_last(e.document.selections()); e.set_carets(next, cx) };
     SelectAllOccurrences => |e, cx| { let next = select_all_occurrences(e.document.text(), e.document.selections()); e.set_carets(next, cx) };
     CloneCaretAbove => |e, cx| { let next = clone_caret(e.document.text(), e.document.selections(), -1); e.set_carets(next, cx) };
+    CaretPerLine => |e, cx| { let next = caret_per_line(e.document.text(), e.document.selections()); e.set_carets(next, cx) };
+    ToggleColumnMode => |e, cx| { e.column_mode = !e.column_mode; cx.notify() };
     CloneCaretBelow => |e, cx| { let next = clone_caret(e.document.text(), e.document.selections(), 1); e.set_carets(next, cx) };
 }
 

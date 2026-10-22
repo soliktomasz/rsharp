@@ -1,7 +1,7 @@
 //! Commands that change only the carets: occurrences, clones and columns. The last caret is the primary, the one
 //! added last; none makes more than [`MAX_CARETS`].
 
-use crate::{Rope, Selection, column_of, offset_at};
+use crate::{Rope, Selection, column_of, line_end, offset_at};
 
 /// As Rider's: past this many carets an editor stops adding them.
 pub const MAX_CARETS: usize = 1000;
@@ -136,4 +136,23 @@ pub fn merge_overlapping(mut selections: Vec<Selection>) -> Vec<Selection> {
         *last = if forward { Selection { anchor: start, head: end } } else { Selection { anchor: end, head: start } };
     }
     merged
+}
+
+/// Caret Per Line: a caret at the end of every line each selection covers, a selection's last line left out
+/// where it ends at that line's start, on the first [`MAX_CARETS`] lines.
+pub fn caret_per_line(text: &Rope, selections: &[Selection]) -> Vec<Selection> {
+    let mut lines: Vec<usize> = selections
+        .iter()
+        .flat_map(|s| {
+            let first = text.byte_to_line(s.start());
+            let mut last = text.byte_to_line(s.end());
+            if last > first && text.line_to_byte(last) == s.end() {
+                last -= 1;
+            }
+            first..=last
+        })
+        .collect();
+    lines.sort_unstable();
+    lines.dedup();
+    lines.into_iter().take(MAX_CARETS).map(|line| Selection::caret(line_end(text, line))).collect()
 }

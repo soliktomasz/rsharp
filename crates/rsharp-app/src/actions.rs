@@ -3,8 +3,8 @@
 //! so an action is one entry here, one binding in `keymap.rs` and one handler where it acts.
 
 use crate::editor::{
-    CloneCaretAbove, CloneCaretBelow, Copy, Cut, Paste, Redo, Save, SelectAll, SelectAllOccurrences,
-    SelectNextOccurrence, Undo, UnselectOccurrence,
+    CaretPerLine, CloneCaretAbove, CloneCaretBelow, Copy, Cut, Paste, Redo, Save, SelectAll, SelectAllOccurrences,
+    SelectNextOccurrence, ToggleColumnMode, Undo, UnselectOccurrence,
 };
 use crate::keymap::{OpenSettings, Quit};
 use crate::window::{
@@ -50,6 +50,8 @@ pub static ALL: &[IdeAction] = &[
     ide!("Select All Occurrences", "Edit", ["multiple carets"], SelectAllOccurrences),
     ide!("Clone Caret Above", "Edit", ["multiple carets", "add caret"], CloneCaretAbove),
     ide!("Clone Caret Below", "Edit", ["multiple carets", "add caret"], CloneCaretBelow),
+    ide!("Add Carets to Ends of Selected Lines", "Edit", ["caret per line", "multiple carets"], CaretPerLine),
+    ide!("Column Selection Mode", "Edit", ["block selection", "rectangular selection"], ToggleColumnMode),
     ide!("Solution", "View", ["project", "explorer", "tool window"], ToggleSolution),
     ide!("Problems", "View", ["errors", "warnings", "tool window"], ToggleProblems),
     ide!("Hide Active Tool Window", "Window", ["close tool window"], HideToolWindow),

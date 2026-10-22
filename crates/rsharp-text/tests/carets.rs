@@ -99,3 +99,14 @@ fn paste_of_one_line_per_caret_deals_a_line_to_each() {
     document.apply(insert_each(&carets, &["1", "2"]));
     assert_eq!(document.text().to_string(), "1x\n2x\n", "lines were not dealt to the carets in the text's order");
 }
+
+#[test]
+fn caret_per_line_puts_a_caret_at_the_end_of_each_line_selected() {
+    let text = Rope::from_str("ab\ncd\nef\n");
+    let carets = caret_per_line(&text, &[Selection { anchor: 1, head: 6 }]);
+    assert_eq!(
+        carets,
+        vec![Selection::caret(2), Selection::caret(5)],
+        "a selection ending at a line's start still put a caret on that line, or missed one it covers"
+    );
+}
