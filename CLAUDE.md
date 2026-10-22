@@ -7,7 +7,8 @@ Guidance for Claude Code working in this repository.
 **RSharp** is a Rider-inspired IDE for C# and modern .NET, written in Rust on Zed's gpui, the sibling of
 Passenger (`../passenger`, the same product in C# on Avalonia). Passenger's behaviour is the reference: when
 RSharp needs a feature, read how Passenger does it (its CLAUDE.md maps every area), then Rider
-(`/Applications/Rider.app`). PRODUCT.md holds who it is for and why; its edge is speed and memory, so a change
+(`/Applications/Rider.app`). ROADMAP.md is the plan to reach Passenger's features, phase by phase; read the
+phase's Passenger pointers before starting its work. PRODUCT.md holds who it is for and why; its edge is speed and memory, so a change
 that makes a key cost more than what it changed needs a reason.
 
 ## Commands
