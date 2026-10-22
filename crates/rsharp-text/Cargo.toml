@@ -6,4 +6,5 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+regex.workspace = true
 ropey.workspace = true

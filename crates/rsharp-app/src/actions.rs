@@ -6,6 +6,7 @@ use crate::editor::{
     CaretPerLine, CloneCaretAbove, CloneCaretBelow, Copy, Cut, Paste, Redo, Save, SelectAll, SelectAllOccurrences,
     SelectNextOccurrence, ToggleColumnMode, Undo, UnselectOccurrence,
 };
+use crate::find_bar::{Find, FindNext, FindPrevious, Replace};
 use crate::keymap::{OpenSettings, Quit};
 use crate::window::{
     CloseSolution, CloseTab, FindAction, FloatToolWindow, HideToolWindow, OpenFolder, RestoreDefaultLayout,
@@ -40,6 +41,10 @@ pub static ALL: &[IdeAction] = &[
     ide!("Copy", "Edit", [], Copy),
     ide!("Paste", "Edit", [], Paste),
     ide!("Select All", "Edit", [], SelectAll),
+    ide!("Find…", "Edit", ["search", "find in file"], Find),
+    ide!("Replace…", "Edit", ["find and replace", "replace in file"], Replace),
+    ide!("Find Next", "Edit", ["next occurrence", "search"], FindNext),
+    ide!("Find Previous", "Edit", ["previous occurrence", "search"], FindPrevious),
     ide!(
         "Add Selection for Next Occurrence",
         "Edit",

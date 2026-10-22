@@ -82,6 +82,8 @@ pub struct CodeEditor {
     pub path: PathBuf,
     pub document: Document,
     pub diagnostics: Vec<Diagnostic>,
+    /// The find bar's matches, sorted, drawn behind the text while it is open.
+    pub search_matches: Vec<Range<usize>>,
     focus: FocusHandle,
     is_csharp: bool,
     tree: Option<Tree>,
@@ -124,6 +126,7 @@ impl CodeEditor {
             path,
             document,
             diagnostics: Vec::new(),
+            search_matches: Vec::new(),
             focus: cx.focus_handle(),
             is_csharp,
             tree: None,
@@ -157,7 +160,17 @@ impl CodeEditor {
         cx.notify();
     }
 
-    fn primary(&self) -> Selection {
+    /// Selects a range, as the find bar shows a match, and brings it into view.
+    pub fn select_range(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
+        self.set_carets(vec![Selection { anchor: range.start, head: range.end }], cx);
+    }
+
+    /// Applies an edit made from outside the editor (the find bar's replace) as one undo step.
+    pub fn apply_plan(&mut self, plan: EditPlan, cx: &mut Context<Self>) {
+        self.apply(plan, cx);
+    }
+
+    pub fn primary(&self) -> Selection {
         *self.document.selections().last().expect("a document always has a caret")
     }
 
@@ -860,6 +873,11 @@ impl Element for EditorElement {
         let text = editor.document.text().clone();
         let selections = editor.document.selections().to_vec();
         let diagnostics = editor.diagnostics.clone();
+        let shown_bytes = text.line_to_byte(state.first_line.min(text.len_lines()))
+            ..text.line_to_byte((state.first_line + state.lines.len()).min(text.len_lines()));
+        let from = editor.search_matches.partition_point(|m| m.end < shown_bytes.start);
+        let to = editor.search_matches.partition_point(|m| m.start <= shown_bytes.end);
+        let matches = editor.search_matches[from..to.max(from)].to_vec();
         let top_of = |line: usize| state.text_origin.y + line_height * line as f32;
 
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
@@ -874,6 +892,17 @@ impl Element for EditorElement {
                 let line = state.first_line + i;
                 let start = text.line_to_byte(line);
                 let end = line_end(&text, line);
+                for m in matches.iter().filter(|m| m.start <= end && m.end >= start && !m.is_empty()) {
+                    let x0 = shaped.x_for_index(m.start.max(start) - start);
+                    let x1 = shaped.x_for_index(m.end.min(end) - start);
+                    window.paint_quad(fill(
+                        Bounds::from_corners(
+                            point(state.text_origin.x + x0, top_of(line)),
+                            point(state.text_origin.x + x1, top_of(line) + line_height),
+                        ),
+                        theme::editor::search_result(),
+                    ));
+                }
                 for selection in selections.iter().filter(|s| !s.is_empty()) {
                     let (from, to) = (selection.start().max(start), selection.end().min(end + 1));
                     if from > to || (from == to && selection.end() <= end) {

@@ -2,6 +2,7 @@
 
 use crate::editor::*;
 use crate::find_action::{Choose, Dismiss, SelectNext, SelectPrevious};
+use crate::find_bar::{CloseFind, Find, FindNext, FindPrevious, Replace, ReplaceOne};
 use crate::window::*;
 use gpui::{App, KeyBinding};
 
@@ -42,6 +43,14 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("alt-shift-g", CaretPerLine, editor),
         KeyBinding::new(if mac { "cmd-shift-8" } else { "alt-shift-insert" }, ToggleColumnMode, editor),
         KeyBinding::new("secondary-s", Save, None),
+        KeyBinding::new("secondary-f", Find, None),
+        KeyBinding::new(if mac { "cmd-r" } else { "ctrl-h" }, Replace, None),
+        KeyBinding::new(if mac { "cmd-g" } else { "f3" }, FindNext, None),
+        KeyBinding::new(if mac { "cmd-shift-g" } else { "shift-f3" }, FindPrevious, None),
+        KeyBinding::new("enter", FindNext, Some("FindBar")),
+        KeyBinding::new("shift-enter", FindPrevious, Some("FindBar")),
+        KeyBinding::new("escape", CloseFind, Some("FindBar")),
+        KeyBinding::new("enter", ReplaceOne, Some("ReplaceField")),
         KeyBinding::new("secondary-w", CloseTab, None),
         KeyBinding::new("secondary-o", OpenFolder, None),
         KeyBinding::new(if mac { "cmd-1" } else { "alt-1" }, ToggleSolution, None),

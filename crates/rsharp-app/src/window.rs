@@ -6,6 +6,7 @@ use crate::assets::{file_icon, icon};
 use crate::dock::{DockLayout, Place, Rect, Tool};
 use crate::editor::{self, CodeEditor};
 use crate::find_action::{Ended, FindActionPopup};
+use crate::find_bar::{self, FindBar};
 use crate::state::{FolderState, KeptTab, RecentSolutions, store};
 use crate::theme;
 use crate::workspace::{Entry, Workspace};
@@ -85,6 +86,8 @@ pub struct MainWindow {
     projects_loaded: bool,
     said: Option<SharedString>,
     find_action: Option<Entity<FindActionPopup>>,
+    /// The find bar over the editor while open, on the active tab's file.
+    find_bar: Option<Entity<FindBar>>,
     /// The main menu's dropdown while open (Windows and Linux, which have no menu bar): each action's
     /// availability and keys where the person was, and what had the keys.
     main_menu: Option<(Vec<bool>, Vec<Option<SharedString>>, Option<FocusHandle>)>,
@@ -115,6 +118,7 @@ impl MainWindow {
             projects_loaded: false,
             said: None,
             find_action: None,
+            find_bar: None,
             main_menu: None,
             _server_task: None,
         }
@@ -126,6 +130,7 @@ impl MainWindow {
             tab.update(cx, |e, _| e.detach_server());
         }
         self.active = None;
+        self.find_bar = None;
         let path = rsharp_core::paths::canonical(path);
         let workspace = Workspace::open(&path);
         window.set_window_title(&workspace.name());
@@ -182,6 +187,7 @@ impl MainWindow {
     fn show_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.active = Some(index);
         window.focus(&self.tabs[index].focus_handle(cx));
+        self.follow_find_bar(cx);
         self.save_state(cx);
         cx.notify();
     }
@@ -433,8 +439,46 @@ impl MainWindow {
             None if self.dock.is_open(Tool::Solution) => window.focus(&self.explorer_focus),
             None => window.focus(&self.root_focus),
         }
+        self.follow_find_bar(cx);
         self.save_state(cx);
         cx.notify();
+    }
+
+    /// The find bar on the active tab's file, or gone with the last tab.
+    fn follow_find_bar(&mut self, cx: &mut Context<Self>) {
+        let Some(bar) = self.find_bar.clone() else { return };
+        match self.active_editor().cloned() {
+            Some(editor) => bar.update(cx, |b, cx| b.attach(editor, cx)),
+            None => self.find_bar = None,
+        }
+    }
+
+    /// Find (with the replace row, Replace): the bar opened, or brought back, on the active tab's file.
+    fn open_find_bar(&mut self, replacing: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.active_editor().cloned() else { return };
+        let bar = match &self.find_bar {
+            Some(bar) => bar.clone(),
+            None => {
+                let bar = cx.new(|cx| FindBar::new(editor, cx));
+                cx.subscribe_in(&bar, window, |w, _, _: &find_bar::Closed, window, cx| {
+                    w.find_bar = None;
+                    if let Some(editor) = w.active_editor() {
+                        window.focus(&editor.focus_handle(cx));
+                    }
+                    cx.notify();
+                })
+                .detach();
+                self.find_bar = Some(bar.clone());
+                bar
+            }
+        };
+        bar.update(cx, |b, cx| b.open(replacing, window, cx));
+        cx.notify();
+    }
+
+    /// What the find bar's count says while it is open.
+    pub fn find_count(&self, cx: &App) -> Option<String> {
+        self.find_bar.as_ref().map(|b| b.read(cx).count().to_string())
     }
 
     fn choose_folder(&mut self, _: &OpenFolder, window: &mut Window, cx: &mut Context<Self>) {
@@ -484,6 +528,7 @@ impl MainWindow {
             tab.update(cx, |e, _| e.detach_server());
         }
         self.active = None;
+        self.find_bar = None;
         self.workspace = None;
         self.opened_as = None;
         self.rows.clear();
@@ -730,6 +775,21 @@ impl Render for MainWindow {
                         w.save_state(cx);
                         cx.notify();
                     }))
+            })
+            .when(self.active.is_some(), |d| {
+                d.on_action(cx.listener(|w, _: &find_bar::Find, window, cx| w.open_find_bar(false, window, cx)))
+                    .on_action(cx.listener(|w, _: &find_bar::Replace, window, cx| w.open_find_bar(true, window, cx)))
+            })
+            .when_some(self.find_bar.clone(), |d, bar| {
+                let (next, previous, close) = (bar.clone(), bar.clone(), bar);
+                d.on_action(
+                    cx.listener(move |_, _: &find_bar::FindNext, _, cx| next.update(cx, |b, cx| b.find_next(true, cx))),
+                )
+                .on_action(cx.listener(move |_, _: &find_bar::FindPrevious, _, cx| {
+                    previous.update(cx, |b, cx| b.find_next(false, cx))
+                }))
+                // Escape in the editor, once it has no carets or selection to drop, closes the bar.
+                .on_action(cx.listener(move |_, _: &editor::Escape, _, cx| close.update(cx, |b, cx| b.close(cx))))
             })
             .when(self.active.is_some(), |d| {
                 d.on_action(cx.listener(|w, _: &CloseTab, window, cx| {
@@ -1282,6 +1342,7 @@ impl MainWindow {
                         }),
                 )
             })
+            .children(self.find_bar.clone())
             .child(match self.active_editor() {
                 Some(editor) => div().flex_1().min_h_0().child(editor.clone()).into_any_element(),
                 None => empty_editor().into_any_element(),

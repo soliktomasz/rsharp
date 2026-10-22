@@ -58,6 +58,13 @@ impl TextField {
         );
     }
 
+    /// Selects the whole text, as a field opened again with its last query does, so typing replaces it.
+    pub fn select_all(&mut self, cx: &mut Context<Self>) {
+        let len = self.document.text().len_bytes();
+        self.document.set_selections(vec![Selection { anchor: 0, head: len }]);
+        cx.notify();
+    }
+
     fn caret(&self) -> Selection {
         self.document.selections()[0]
     }

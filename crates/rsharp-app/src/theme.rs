@@ -56,6 +56,10 @@ pub fn popup() -> Rgba {
 pub fn popup_border() -> Rgba {
     rgb(0x33353B)
 }
+/// Editor.SearchField.background (editor-bg-inline, gray-20): the find bar's ground; its border is the frame's.
+pub fn search_field() -> Rgba {
+    rgb(0x212326)
+}
 /// MainToolbar.separatorColor and ToolWindow.Stripe.separatorColor.
 pub fn separator() -> Rgba {
     rgba(0xFFFFFF21)
@@ -104,6 +108,10 @@ pub mod editor {
     }
     pub fn caret() -> Rgba {
         rgb(0xCED0D6)
+    }
+    /// TEXT_SEARCH_RESULT_ATTRIBUTES' background (IslandSchemeDark.xml): a find bar's match.
+    pub fn search_result() -> Rgba {
+        rgb(0x114957)
     }
 }
 

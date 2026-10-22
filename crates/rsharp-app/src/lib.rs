@@ -7,6 +7,7 @@ pub mod dock;
 pub mod editor;
 pub mod field;
 pub mod find_action;
+pub mod find_bar;
 pub mod fuzzy;
 pub mod keymap;
 pub mod launch;

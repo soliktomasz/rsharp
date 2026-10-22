@@ -49,7 +49,9 @@ terminal and takes focus for a moment.
   once), `logs` (`logs/rsharp.log` under the state root, rotated; gpui's warnings land there too).
 - `crates/rsharp-text`: no UI. `Document` (Ropey's rope, whose clone is a snapshot another thread may read; undo;
   `Change`s in application order with byte, line and UTF-16 places), `Selection`s, and every editing command as
-  a pure function to an `EditPlan`. Offsets are UTF-8 bytes. A file's CRLF is held as `\n` and written back.
+  a pure function to an `EditPlan`. Offsets are UTF-8 bytes. A file's CRLF is held as `\n` and written back. Undo
+  joins a run of one `EditKind` (typing a word at a time); `carets` is what changes only the carets (occurrences,
+  clones, columns; the last caret is the primary, the one added last); `search` is the find bar's matching.
 - `crates/rsharp-languages`: colour before any server answers: tree-sitter-c-sharp parsed incrementally (`edit`
   then `parse` with the old tree) and coloured by the grammar's own highlights query over the visible bytes
   only, its captures mapped to Rider's kinds (`Kind`).
@@ -70,7 +72,8 @@ terminal and takes focus for a moment.
   `find_action.rs`; `field.rs` the single-line text field, its editing `rsharp-text`'s commands under the
   editor's own actions; `fuzzy.rs` how a query matches a name. `settings.rs` is `AppSettings` (`settings.json`),
   a gpui global that editors observe; `settings_dialog.rs` Rider's searchable Settings window (a new setting is
-  a field, an `Opt` on a page, and what follows it). `editor.rs` is the code editor (a gpui `Element` that shapes
+  a field, an `Opt` on a page, and what follows it). `find_bar.rs` is find and replace over the editor, one
+  per window, following the active tab. `editor.rs` is the code editor (a gpui `Element` that shapes
   only the lines on screen; the parse runs on the background executor; Roslyn told every change and asked for
   diagnostics once typing pauses), `theme.rs` every colour, `assets.rs` the carried fonts and icons,
   `keymap.rs` Rider's keys, `launch.rs` the command line, `workspace.rs` the folder and its solution, `bench.rs`

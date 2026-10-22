@@ -5,12 +5,14 @@ mod carets;
 mod commands;
 mod document;
 mod movement;
+mod search;
 
 pub use carets::*;
 pub use commands::*;
 pub use document::*;
 pub use movement::*;
 pub use ropey::Rope;
+pub use search::*;
 
 use std::ops::Range;
 
