@@ -2,7 +2,10 @@
 //! finds it by. The main menu and Find Action both read this list, and keys run the same gpui actions,
 //! so an action is one entry here, one binding in `keymap.rs` and one handler where it acts.
 
-use crate::editor::{Copy, Cut, Paste, Redo, Save, SelectAll, Undo};
+use crate::editor::{
+    CloneCaretAbove, CloneCaretBelow, Copy, Cut, Paste, Redo, Save, SelectAll, SelectAllOccurrences,
+    SelectNextOccurrence, Undo, UnselectOccurrence,
+};
 use crate::keymap::{OpenSettings, Quit};
 use crate::window::{
     CloseSolution, CloseTab, FindAction, FloatToolWindow, HideToolWindow, OpenFolder, RestoreDefaultLayout,
@@ -37,6 +40,16 @@ pub static ALL: &[IdeAction] = &[
     ide!("Copy", "Edit", [], Copy),
     ide!("Paste", "Edit", [], Paste),
     ide!("Select All", "Edit", [], SelectAll),
+    ide!(
+        "Add Selection for Next Occurrence",
+        "Edit",
+        ["select next occurrence", "multiple carets"],
+        SelectNextOccurrence
+    ),
+    ide!("Unselect Occurrence", "Edit", ["multiple carets"], UnselectOccurrence),
+    ide!("Select All Occurrences", "Edit", ["multiple carets"], SelectAllOccurrences),
+    ide!("Clone Caret Above", "Edit", ["multiple carets", "add caret"], CloneCaretAbove),
+    ide!("Clone Caret Below", "Edit", ["multiple carets", "add caret"], CloneCaretBelow),
     ide!("Solution", "View", ["project", "explorer", "tool window"], ToggleSolution),
     ide!("Problems", "View", ["errors", "warnings", "tool window"], ToggleProblems),
     ide!("Hide Active Tool Window", "Window", ["close tool window"], HideToolWindow),

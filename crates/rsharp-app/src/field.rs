@@ -52,6 +52,7 @@ impl TextField {
             EditPlan {
                 edits: vec![Edit { range: 0..len, text: text.to_string() }],
                 selections: vec![Selection::caret(text.len())],
+                ..Default::default()
             },
             cx,
         );
@@ -225,7 +226,11 @@ impl EntityInputHandler for TextField {
             .unwrap_or(self.caret().range());
         let caret = range.start + text.len();
         self.apply(
-            EditPlan { edits: vec![Edit { range, text: text.to_string() }], selections: vec![Selection::caret(caret)] },
+            EditPlan {
+                edits: vec![Edit { range, text: text.to_string() }],
+                selections: vec![Selection::caret(caret)],
+                ..Default::default()
+            },
             cx,
         );
     }

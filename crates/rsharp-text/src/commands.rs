@@ -1,6 +1,6 @@
 //! Every editing command, as a pure function of the text and carets to an [`EditPlan`].
 
-use crate::{Edit, EditPlan, Rope, Selection, line_indent, next_char, previous_char};
+use crate::{Edit, EditKind, EditPlan, Rope, Selection, line_indent, next_char, previous_char};
 
 const INDENT: &str = "    ";
 
@@ -11,22 +11,32 @@ pub fn insert(_text: &Rope, selections: &[Selection], typed: &str) -> EditPlan {
 
 /// Backspace: the selection, else the character before the caret.
 pub fn backspace(text: &Rope, selections: &[Selection]) -> EditPlan {
-    plan(selections, |s| {
+    let plan = plan(selections, |s| {
         if !s.is_empty() {
             return Some(Edit { range: s.range(), text: String::new() });
         }
         (s.head > 0).then(|| Edit { range: previous_char(text, s.head)..s.head, text: String::new() })
-    })
+    });
+    EditPlan { kind: EditKind::DeleteBackward, ..plan }
 }
 
 /// Delete: the selection, else the character after the caret.
 pub fn delete(text: &Rope, selections: &[Selection]) -> EditPlan {
-    plan(selections, |s| {
+    let plan = plan(selections, |s| {
         if !s.is_empty() {
             return Some(Edit { range: s.range(), text: String::new() });
         }
         (s.head < text.len_bytes()).then(|| Edit { range: s.head..next_char(text, s.head), text: String::new() })
-    })
+    });
+    EditPlan { kind: EditKind::DeleteForward, ..plan }
+}
+
+/// Paste of as many lines as there are carets: one line to each caret, in the order they stand in the text.
+pub fn insert_each(selections: &[Selection], pieces: &[&str]) -> EditPlan {
+    let mut ordered = selections.to_vec();
+    ordered.sort_by_key(|s| s.start());
+    let mut pieces = pieces.iter();
+    plan(&ordered, |s| Some(Edit { range: s.range(), text: pieces.next().map_or("", |p| p).to_string() }))
 }
 
 /// Enter: a new line at the line's indent, one deeper after an opening brace.
@@ -72,5 +82,5 @@ fn plan(selections: &[Selection], mut edit: impl FnMut(&Selection) -> Option<Edi
         }
     }
     carets.dedup();
-    EditPlan { edits, selections: carets }
+    EditPlan { edits, selections: carets, kind: EditKind::Other }
 }

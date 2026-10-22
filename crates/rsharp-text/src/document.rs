@@ -1,5 +1,9 @@
-use crate::{Edit, EditPlan, Selection};
+use crate::{Edit, EditKind, EditPlan, Selection};
 use ropey::Rope;
+use std::time::{Duration, Instant};
+
+/// How long a pause still lets typing join the step before it, as Passenger's.
+const MERGE_WINDOW: Duration = Duration::from_secs(2);
 
 /// How a file's lines end on disk; the document holds `\n` alone and writes them back as they were.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -28,10 +32,15 @@ pub struct Change {
 }
 
 struct Step {
-    /// Edits that take the text back to before the step, against the text after it.
-    inverse: Vec<Edit>,
+    /// Batches of edits that take the text back to before the step, applied in order, the first against the text
+    /// after it: a merged run of typing is one batch per key.
+    inverse: Vec<Vec<Edit>>,
     before: Vec<Selection>,
     after: Vec<Selection>,
+    kind: EditKind,
+    /// The last edit's text, and when it was made, for whether the next one joins it.
+    last_text: String,
+    at: Instant,
 }
 
 pub struct Document {
@@ -41,6 +50,8 @@ pub struct Document {
     redo: Vec<Step>,
     version: u64,
     saved_version: u64,
+    /// Set by undo and redo, after which nothing joins the step before.
+    merge_broken: bool,
     pub line_ending: LineEnding,
 }
 
@@ -54,6 +65,7 @@ impl Document {
             redo: Vec::new(),
             version: 0,
             saved_version: 0,
+            merge_broken: true,
             line_ending,
         }
     }
@@ -94,35 +106,90 @@ impl Document {
         self.saved_version = self.version;
     }
 
-    /// Applies a command's plan as one undo step and returns its changes in the order they were made.
+    /// Applies a command's plan as one undo step, or as part of the step before when it goes on with the same run
+    /// of typing or deleting, and returns its changes in the order they were made.
     pub fn apply(&mut self, plan: EditPlan) -> Vec<Change> {
         if plan.edits.is_empty() {
             self.set_selections(plan.selections);
             return Vec::new();
         }
         let before = std::mem::take(&mut self.selections);
+        let now = Instant::now();
+        let joins = self.joins(&plan, &before, now);
+        let last_text = plan.edits[0].text.clone();
         let (changes, inverse) = self.replace(plan.edits);
-        // shortcut: each command is its own undo step; Rider merges a run of typing into one.
-        self.undo.push(Step { inverse, before, after: plan.selections.clone() });
+        match self.undo.last_mut() {
+            Some(step) if joins => {
+                step.inverse.insert(0, inverse);
+                step.after = plan.selections.clone();
+                step.last_text = last_text;
+                step.at = now;
+            }
+            _ => self.undo.push(Step {
+                inverse: vec![inverse],
+                before,
+                after: plan.selections.clone(),
+                kind: plan.kind,
+                last_text,
+                at: now,
+            }),
+        }
         self.redo.clear();
+        self.merge_broken = false;
         self.set_selections(plan.selections);
         changes
     }
 
+    /// Whether a plan goes on with the last step: the same kind of edit, from where its carets were left, soon after,
+    /// and typing a word at a time (a space after other text, or a line break, starts a step of its own).
+    fn joins(&self, plan: &EditPlan, before: &[Selection], now: Instant) -> bool {
+        let Some(last) = self.undo.last() else { return false };
+        if self.merge_broken || plan.kind == EditKind::Other || last.kind != plan.kind || last.after != before {
+            return false;
+        }
+        if now.duration_since(last.at) > MERGE_WINDOW {
+            return false;
+        }
+        if plan.kind == EditKind::Typing {
+            let typed = &plan.edits[0].text;
+            let starts_gap = typed.starts_with(char::is_whitespace);
+            let ended_gap = last.last_text.ends_with(char::is_whitespace);
+            if (starts_gap && !ended_gap) || typed.contains('\n') {
+                return false;
+            }
+        }
+        true
+    }
+
     pub fn undo(&mut self) -> Option<Vec<Change>> {
         let step = self.undo.pop()?;
-        let (changes, inverse) = self.replace(step.inverse);
+        let (changes, inverse) = self.replay(step.inverse);
         self.set_selections(step.before.clone());
-        self.redo.push(Step { inverse, before: step.before, after: step.after });
+        self.redo.push(Step { inverse, ..step });
+        self.merge_broken = true;
         Some(changes)
     }
 
     pub fn redo(&mut self) -> Option<Vec<Change>> {
         let step = self.redo.pop()?;
-        let (changes, inverse) = self.replace(step.inverse);
+        let (changes, inverse) = self.replay(step.inverse);
         self.set_selections(step.after.clone());
-        self.undo.push(Step { inverse, before: step.before, after: step.after });
+        self.undo.push(Step { inverse, ..step });
+        self.merge_broken = true;
         Some(changes)
+    }
+
+    /// Applies a step's batches in order, and returns their changes and the batches that take them back.
+    fn replay(&mut self, batches: Vec<Vec<Edit>>) -> (Vec<Change>, Vec<Vec<Edit>>) {
+        let mut changes = Vec::new();
+        let mut inverse = Vec::with_capacity(batches.len());
+        for batch in batches {
+            let (applied, back) = self.replace(batch);
+            changes.extend(applied);
+            inverse.push(back);
+        }
+        inverse.reverse();
+        (changes, inverse)
     }
 
     /// Applies sorted, disjoint edits from the last, so each one's offsets still hold as it is made, and returns

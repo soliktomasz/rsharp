@@ -54,6 +54,12 @@ actions!(
         Cut,
         Paste,
         Save,
+        SelectNextOccurrence,
+        UnselectOccurrence,
+        SelectAllOccurrences,
+        CloneCaretAbove,
+        CloneCaretBelow,
+        Escape,
     ]
 );
 
@@ -79,9 +85,12 @@ pub struct CodeEditor {
     checking: Option<Task<()>>,
     scroll_y: Pixels,
     autoscroll: bool,
-    goal_column: Option<usize>,
+    /// Each caret's column for a run of Up and Down, so a short line on the way doesn't pull it in.
+    goal_columns: Option<Vec<usize>>,
     marked: Option<Range<usize>>,
     selecting: bool,
+    /// Where an Alt+drag began, as a line and a character column, while it lasts.
+    column_drag: Option<(usize, usize)>,
     layout: Option<Layout>,
     /// The line height in force, from the settings, as the last frame used it.
     line_height: Pixels,
@@ -90,6 +99,7 @@ pub struct CodeEditor {
 /// Where the last frame put things, for the mouse and the input method to find their way back.
 struct Layout {
     text_origin: Point<Pixels>,
+    char_width: Pixels,
     viewport: Bounds<Pixels>,
     first_line: usize,
     lines: Vec<ShapedLine>,
@@ -112,9 +122,10 @@ impl CodeEditor {
             checking: None,
             scroll_y: px(0.),
             autoscroll: false,
-            goal_column: None,
+            goal_columns: None,
             marked: None,
             selecting: false,
+            column_drag: None,
             layout: None,
             line_height: px(crate::settings::settings(cx).line_height()),
         };
@@ -205,7 +216,7 @@ impl CodeEditor {
 
     /// What every change goes through: the tree told, the server told, a parse and a check asked for.
     fn changed(&mut self, changes: Vec<Change>, cx: &mut Context<Self>) {
-        self.goal_column = None;
+        self.goal_columns = None;
         self.autoscroll = true;
         if !changes.is_empty() {
             if let Some(tree) = &mut self.tree {
@@ -258,9 +269,9 @@ impl CodeEditor {
         }));
     }
 
-    fn move_carets(&mut self, extend: bool, cx: &mut Context<Self>, to: impl Fn(&Rope, &Selection) -> usize) {
+    fn move_carets(&mut self, extend: bool, cx: &mut Context<Self>, mut to: impl FnMut(&Rope, &Selection) -> usize) {
         let text = self.document.text().clone();
-        let moved = self
+        let moved: Vec<Selection> = self
             .document
             .selections()
             .iter()
@@ -269,7 +280,7 @@ impl CodeEditor {
                 Selection { anchor: if extend { s.anchor } else { head }, head }
             })
             .collect();
-        self.document.set_selections(moved);
+        self.document.set_selections(merge_overlapping(moved));
         self.autoscroll = true;
         cx.notify();
     }
@@ -281,7 +292,7 @@ impl CodeEditor {
         to: fn(&Rope, usize) -> usize,
         collapse_to_start: bool,
     ) {
-        self.goal_column = None;
+        self.goal_columns = None;
         self.move_carets(extend, cx, |text, s| match (extend || s.is_empty(), collapse_to_start) {
             (true, _) => to(text, s.head),
             (false, true) => s.start(),
@@ -290,12 +301,39 @@ impl CodeEditor {
     }
 
     fn vertical(&mut self, lines: isize, extend: bool, cx: &mut Context<Self>) {
-        let goal = match self.goal_column {
-            Some(goal) => goal,
-            None => column_of(self.document.text(), self.primary().head),
+        let text = self.document.text();
+        let goals = match self.goal_columns.take() {
+            Some(goals) if goals.len() == self.document.selections().len() => goals,
+            _ => self.document.selections().iter().map(|s| column_of(text, s.head)).collect(),
         };
-        self.goal_column = Some(goal);
-        self.move_carets(extend, cx, |text, s| vertical(text, s.head, goal, lines));
+        let mut index = 0;
+        self.move_carets(extend, cx, |text, s| {
+            index += 1;
+            vertical(text, s.head, goals[index - 1], lines)
+        });
+        // Carets that met are one now, and their goals no longer line up with them.
+        if self.document.selections().len() == goals.len() {
+            self.goal_columns = Some(goals);
+        }
+    }
+
+    fn set_carets(&mut self, selections: Vec<Selection>, cx: &mut Context<Self>) {
+        self.document.set_selections(selections);
+        self.goal_columns = None;
+        self.autoscroll = true;
+        cx.notify();
+    }
+
+    /// Escape: the extra carets go, then the selection; with neither, the key is the window's.
+    fn escape(&mut self, _: &Escape, _: &mut Window, cx: &mut Context<Self>) {
+        let primary = self.primary();
+        if self.document.selections().len() > 1 {
+            self.set_carets(vec![primary], cx);
+        } else if !primary.is_empty() {
+            self.set_carets(vec![Selection::caret(primary.head)], cx);
+        } else {
+            cx.propagate();
+        }
     }
 
     fn page(&self) -> isize {
@@ -304,8 +342,9 @@ impl CodeEditor {
 
     fn selected_text(&self) -> String {
         let text = self.document.text();
-        self.document
-            .selections()
+        let mut selections = self.document.selections().to_vec();
+        selections.sort_by_key(Selection::start);
+        selections
             .iter()
             .filter(|s| !s.is_empty())
             .map(|s| text.byte_slice(s.range()).to_string())
@@ -327,10 +366,43 @@ impl CodeEditor {
         }
     }
 
+    /// The line and character column under the pointer, past the line's end as far as the pointer is.
+    fn place_for_point(&self, position: Point<Pixels>) -> (usize, usize) {
+        let Some(layout) = &self.layout else { return (0, 0) };
+        let line = ((position.y - layout.text_origin.y) / self.line_height).floor().max(0.) as usize;
+        let column = ((position.x - layout.text_origin.x) / layout.char_width).round().max(0.) as usize;
+        (line, column)
+    }
+
     fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus);
         let offset = self.offset_for_point(event.position);
         let text = self.document.text().clone();
+        let m = event.modifiers;
+        // Rider's macOS keymap adds a caret with Alt+Shift+click, its Visual Studio keymap with Ctrl+Alt+click.
+        let adds_caret = if cfg!(target_os = "macos") { m.alt && m.shift } else { m.control && m.alt };
+        if adds_caret {
+            let mut carets = self.document.selections().to_vec();
+            match carets.iter().position(|s| s.range().contains(&offset) || s.head == offset) {
+                Some(at) if carets.len() > 1 => drop(carets.remove(at)),
+                Some(_) => {}
+                None if carets.len() < MAX_CARETS => carets.push(Selection::caret(offset)),
+                None => {}
+            }
+            self.document.set_selections(carets);
+            self.goal_columns = None;
+            cx.notify();
+            return;
+        }
+        if m.alt {
+            let place = self.place_for_point(event.position);
+            self.column_drag = Some(place);
+            self.document.set_selections(column_selection(&text, place, place));
+            self.goal_columns = None;
+            self.selecting = true;
+            cx.notify();
+            return;
+        }
         let selection = match event.click_count {
             2 => Selection { anchor: word_left(&text, next_char(&text, offset)), head: word_right(&text, offset) },
             n if n >= 3 => {
@@ -342,13 +414,20 @@ impl CodeEditor {
             _ => Selection::caret(offset),
         };
         self.document.set_selections(vec![selection]);
-        self.goal_column = None;
+        self.goal_columns = None;
         self.selecting = true;
         cx.notify();
     }
 
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.selecting && event.pressed_button == Some(MouseButton::Left) {
+        if let (true, Some(start)) = (self.selecting, self.column_drag)
+            && event.pressed_button == Some(MouseButton::Left)
+        {
+            let carets = column_selection(self.document.text(), start, self.place_for_point(event.position));
+            self.document.set_selections(carets);
+            self.autoscroll = true;
+            cx.notify();
+        } else if self.selecting && event.pressed_button == Some(MouseButton::Left) {
             let anchor = self.primary().anchor;
             self.document.set_selections(vec![Selection { anchor, head: self.offset_for_point(event.position) }]);
             self.autoscroll = true;
@@ -433,10 +512,22 @@ moves! {
     };
     Paste => |e, cx| {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            let plan = insert(e.document.text(), e.document.selections(), &text.replace("\r\n", "\n"));
+            let text = text.replace("\r\n", "\n");
+            let lines: Vec<&str> = text.split('\n').collect();
+            let carets = e.document.selections();
+            let plan = if carets.len() > 1 && lines.len() == carets.len() {
+                insert_each(carets, &lines)
+            } else {
+                insert(e.document.text(), carets, &text)
+            };
             e.apply(plan, cx);
         }
     };
+    SelectNextOccurrence => |e, cx| { let next = select_next_occurrence(e.document.text(), e.document.selections()); e.set_carets(next, cx) };
+    UnselectOccurrence => |e, cx| { let next = unselect_last(e.document.selections()); e.set_carets(next, cx) };
+    SelectAllOccurrences => |e, cx| { let next = select_all_occurrences(e.document.text(), e.document.selections()); e.set_carets(next, cx) };
+    CloneCaretAbove => |e, cx| { let next = clone_caret(e.document.text(), e.document.selections(), -1); e.set_carets(next, cx) };
+    CloneCaretBelow => |e, cx| { let next = clone_caret(e.document.text(), e.document.selections(), 1); e.set_carets(next, cx) };
 }
 
 impl Focusable for CodeEditor {
@@ -455,10 +546,16 @@ impl Render for CodeEditor {
             .cursor(CursorStyle::IBeam)
             .bg(theme::island())
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
-            .on_mouse_up(MouseButton::Left, cx.listener(|e, _, _, _| e.selecting = false))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|e, _, _, _| {
+                    e.selecting = false;
+                    e.column_drag = None;
+                }),
+            )
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_scroll_wheel(cx.listener(Self::on_scroll));
-        bind_moves(element, cx).child(EditorElement { editor: cx.entity() })
+        bind_moves(element, cx).on_action(cx.listener(Self::escape)).child(EditorElement { editor: cx.entity() })
     }
 }
 
@@ -505,9 +602,13 @@ impl EntityInputHandler for CodeEditor {
                 EditPlan {
                     edits: vec![Edit { range, text: text.to_string() }],
                     selections: vec![Selection::caret(caret)],
+                    ..Default::default()
                 }
             }
-            None => insert(self.document.text(), self.document.selections(), text),
+            None => {
+                let plan = insert(self.document.text(), self.document.selections(), text);
+                EditPlan { kind: EditKind::Typing, ..plan }
+            }
         };
         self.apply(plan, cx);
     }
@@ -528,7 +629,11 @@ impl EntityInputHandler for CodeEditor {
             None => start + text.len(),
         };
         self.apply(
-            EditPlan { edits: vec![Edit { range, text: text.to_string() }], selections: vec![Selection::caret(caret)] },
+            EditPlan {
+                edits: vec![Edit { range, text: text.to_string() }],
+                selections: vec![Selection::caret(caret)],
+                ..Default::default()
+            },
             cx,
         );
         self.marked = (!text.is_empty()).then_some(start..start + text.len());
@@ -570,9 +675,10 @@ struct Prepainted {
     first_line: usize,
     text_origin: Point<Pixels>,
     gutter_width: Pixels,
-    caret_line: usize,
+    caret_lines: Vec<usize>,
     line_numbers: Vec<ShapedLine>,
     line_height: Pixels,
+    char_width: Pixels,
 }
 
 impl IntoElement for EditorElement {
@@ -630,8 +736,16 @@ impl Element for EditorElement {
                 .shape_line("0".into(), font_size, &[run(1, theme::editor::text().into(), &code_font)], None)
                 .width;
             let gutter_width = if settings.show_line_numbers { char_width * digits as f32 + px(32.) } else { px(16.) };
-            let caret = editor.primary().head;
-            let caret_line = text.byte_to_line(caret);
+            let caret_line = text.byte_to_line(editor.primary().head);
+            let mut caret_lines: Vec<usize> = editor
+                .document
+                .selections()
+                .iter()
+                .filter(|s| s.is_empty())
+                .map(|s| text.byte_to_line(s.head))
+                .collect();
+            caret_lines.sort_unstable();
+            caret_lines.dedup();
 
             if editor.autoscroll {
                 editor.autoscroll = false;
@@ -659,7 +773,7 @@ impl Element for EditorElement {
                 let runs = runs_for(&content, start, &colours, &code_font);
                 lines.push(window.text_system().shape_line(content.into(), font_size, &runs, None));
                 let number = (line + 1).to_string();
-                let colour = if line == caret_line {
+                let colour = if caret_lines.binary_search(&line).is_ok() {
                     theme::editor::line_number_current()
                 } else {
                     theme::editor::line_number()
@@ -676,7 +790,16 @@ impl Element for EditorElement {
             if !settings.show_line_numbers {
                 line_numbers.clear();
             }
-            Prepainted { lines, first_line, text_origin, gutter_width, caret_line, line_numbers, line_height }
+            Prepainted {
+                lines,
+                first_line,
+                text_origin,
+                gutter_width,
+                caret_lines,
+                line_numbers,
+                line_height,
+                char_width,
+            }
         })
     }
 
@@ -701,9 +824,10 @@ impl Element for EditorElement {
         let top_of = |line: usize| state.text_origin.y + line_height * line as f32;
 
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
-            if selections.iter().all(Selection::is_empty) {
+            let shown = state.first_line..state.first_line + state.lines.len();
+            for &line in state.caret_lines.iter().filter(|l| shown.contains(l)) {
                 window.paint_quad(fill(
-                    Bounds::new(point(bounds.origin.x, top_of(state.caret_line)), size(bounds.size.width, line_height)),
+                    Bounds::new(point(bounds.origin.x, top_of(line)), size(bounds.size.width, line_height)),
                     theme::editor::current_line(),
                 ));
             }
@@ -762,9 +886,10 @@ impl Element for EditorElement {
         });
 
         let lines = std::mem::take(&mut state.lines);
-        let (first_line, text_origin) = (state.first_line, state.text_origin);
-        self.editor
-            .update(cx, |editor, _| editor.layout = Some(Layout { text_origin, viewport: bounds, first_line, lines }));
+        let (first_line, text_origin, char_width) = (state.first_line, state.text_origin, state.char_width);
+        self.editor.update(cx, |editor, _| {
+            editor.layout = Some(Layout { text_origin, char_width, viewport: bounds, first_line, lines })
+        });
     }
 }
 

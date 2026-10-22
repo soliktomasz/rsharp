@@ -38,10 +38,30 @@ fn every_key_of_a_long_session_leaves_the_text_a_plain_string_would_hold() {
         let mut history: Vec<String> = Vec::new();
         let mut future: Vec<String> = Vec::new();
 
+        let mut typing: Option<&str> = None;
         for key in 0..2_000 {
-            let op = random.below(10);
+            let op = random.below(11);
             let before = model.clone();
+            let carets_before = document.selections().to_vec();
             match op {
+                10 => {
+                    let mut at: Vec<usize> = document.selections().iter().map(|s| s.head).collect();
+                    at.sort();
+                    at.dedup();
+                    let piece = ["a", "z", "é", " "][random.below(4)];
+                    let joins = typing.is_some_and(|last| !(piece == " " && last != " "));
+                    document.set_selections(at.iter().map(|o| Selection::caret(*o)).collect());
+                    let plan = insert(document.text(), document.selections(), piece);
+                    document.apply(EditPlan { kind: EditKind::Typing, ..plan });
+                    for o in at.iter().rev() {
+                        model.insert_str(*o, piece);
+                    }
+                    if !joins {
+                        history.push(before.clone());
+                    }
+                    future.clear();
+                    typing = Some(piece);
+                }
                 0..=3 => {
                     let mut at: Vec<usize> = (0..1 + random.below(3)).map(|_| boundary(&model, &mut random)).collect();
                     at.sort();
@@ -56,7 +76,9 @@ fn every_key_of_a_long_session_leaves_the_text_a_plain_string_would_hold() {
                 4 => {
                     let (a, b) = (boundary(&model, &mut random), boundary(&model, &mut random));
                     document.set_selections(vec![Selection { anchor: a, head: b }]);
-                    document.apply(backspace(document.text(), document.selections()));
+                    // Runs of deleting join in their own test; here each one is a step the model can count.
+                    let plan = backspace(document.text(), document.selections());
+                    document.apply(EditPlan { kind: EditKind::Other, ..plan });
                     if a != b {
                         model.replace_range(a.min(b)..a.max(b), "");
                     } else if let Some(c) = model[..a].chars().next_back() {
@@ -66,7 +88,8 @@ fn every_key_of_a_long_session_leaves_the_text_a_plain_string_would_hold() {
                 5 => {
                     let a = boundary(&model, &mut random);
                     document.set_selections(vec![Selection::caret(a)]);
-                    document.apply(delete(document.text(), document.selections()));
+                    let plan = delete(document.text(), document.selections());
+                    document.apply(EditPlan { kind: EditKind::Other, ..plan });
                     if let Some(c) = model[a..].chars().next() {
                         model.replace_range(a..a + c.len_utf8(), "");
                     }
@@ -84,9 +107,14 @@ fn every_key_of_a_long_session_leaves_the_text_a_plain_string_would_hold() {
                     }
                 }
             }
-            if op <= 5 && model != before {
+            let changed = model != before;
+            if op <= 5 && changed {
                 history.push(before);
                 future.clear();
+            }
+            // A key that changed nothing, as Redo with nothing to redo, leaves a run of typing going.
+            if op != 10 && (changed || document.selections() != carets_before) {
+                typing = None;
             }
             assert_eq!(
                 document.text().to_string(),
