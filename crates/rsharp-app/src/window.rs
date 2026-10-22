@@ -3,7 +3,7 @@
 
 use crate::actions::ALL;
 use crate::assets::{file_icon, icon};
-use crate::dock::{DockLayout, Place, Tool};
+use crate::dock::{DockLayout, Place, Rect, Tool};
 use crate::editor::{self, CodeEditor};
 use crate::find_action::{Ended, FindActionPopup};
 use crate::state::{FolderState, KeptTab, RecentSolutions, store};
@@ -11,8 +11,8 @@ use crate::theme;
 use crate::workspace::{Entry, Workspace};
 use futures::StreamExt;
 use gpui::{
-    App, ClickEvent, Context, Entity, FocusHandle, Focusable, FontWeight, MouseButton, PathPromptOptions, SharedString,
-    Task, Window, actions, div, prelude::*, px, uniform_list,
+    App, ClickEvent, Context, Entity, FocusHandle, Focusable, FontWeight, MouseButton, PathPromptOptions, Pixels, Point,
+    SharedString, Task, Window, actions, div, prelude::*, px, uniform_list,
 };
 use rsharp_lsp::{LanguageServer, ServerEvent, start_roslyn};
 use std::collections::HashSet;
@@ -29,6 +29,7 @@ actions!(
         ToggleSolution,
         ToggleProblems,
         HideToolWindow,
+        FloatToolWindow,
         RestoreDefaultLayout,
         ExplorerUp,
         ExplorerDown,
@@ -66,6 +67,8 @@ pub struct MainWindow {
     rows: Vec<Row>,
     selected: Option<usize>,
     dock: DockLayout,
+    /// Where a floating window's header was taken, from its top left, while it is dragged.
+    float_grab: Point<Pixels>,
     opened_as: Option<PathBuf>,
     explorer_focus: FocusHandle,
     problems_focus: FocusHandle,
@@ -99,6 +102,7 @@ impl MainWindow {
             rows: Vec::new(),
             selected: None,
             dock: store(cx).read::<DockLayout>().complete().clamped(),
+            float_grab: Point::default(),
             opened_as: None,
             explorer_focus: cx.focus_handle(),
             problems_focus: cx.focus_handle(),
@@ -672,6 +676,7 @@ fn current_branch(folder: &Path) -> Option<String> {
 
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let floating = if self.workspace.is_some() { self.floating_islands(window, cx) } else { Vec::new() };
         div()
             .id("main-window")
             .key_context("MainWindow")
@@ -701,10 +706,28 @@ impl Render for MainWindow {
                         cx.notify()
                     }))
                     .on_action(cx.listener(|w, _: &HideToolWindow, window, cx| {
-                        let focused = Tool::ALL.into_iter().find(|t| w.tool_focus(*t).contains_focused(window, cx));
-                        if let Some(tool) = focused {
+                        if let Some(tool) = w.focused_tool(window, cx) {
                             w.toggle_tool(tool, window, cx)
                         }
+                    }))
+                    .on_action(cx.listener(|w, _: &FloatToolWindow, window, cx| {
+                        if let Some(tool) = w.focused_tool(window, cx) {
+                            w.toggle_floating(tool, window, cx)
+                        }
+                    }))
+                    .on_drag_move(cx.listener(|w, event: &gpui::DragMoveEvent<FloatDrag>, _, cx| {
+                        let (at, grab) = (event.event.position, w.float_grab);
+                        let FloatDrag { tool, resize } = *event.drag(cx);
+                        if let Some((_, r)) = w.dock.floating.iter_mut().find(|(t, _)| *t == tool) {
+                            if resize {
+                                (r.w, r.h) = (f32::from(at.x) - r.x, f32::from(at.y) - r.y);
+                            } else {
+                                (r.x, r.y) = (f32::from(at.x - grab.x), f32::from(at.y - grab.y));
+                            }
+                        }
+                        w.dock = w.dock.clone().clamped();
+                        w.save_state(cx);
+                        cx.notify();
                     }))
             })
             .when(self.active.is_some(), |d| {
@@ -727,6 +750,7 @@ impl Render for MainWindow {
                 None => div().flex().flex_1().min_h_0().px(px(GAP)).child(self.welcome(cx)).into_any_element(),
             })
             .child(self.status_bar(cx))
+            .children(floating)
             .children(self.main_menu.as_ref().map(|(available, keys, _)| self.main_menu_dropdown(available, keys, cx)))
             .children(self.find_action.clone().map(|popup| {
                 div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(
@@ -838,7 +862,17 @@ impl MainWindow {
                     .flex_col()
                     .flex_1()
                     .min_w_0()
-                    .child(self.editor_island(cx).flex_1().min_h_0().when(bottom.is_none(), |d| d.mb(px(GAP))))
+                    .child(
+                        self.editor_island(cx)
+                            .flex_1()
+                            .min_h_0()
+                            .when(bottom.is_none(), |d| d.mb(px(GAP)))
+                            .debug_selector(|| "editor island".into())
+                            // A window's button dropped outside the stripes floats it there, as IntelliJ's does.
+                            .on_drop(cx.listener(|w, dragged: &DraggedTool, window, cx| {
+                                w.float_tool(dragged.0, window, cx)
+                            })),
+                    )
                     .children(bottom.map(|b| div().flex().flex_col().child(splitter(Resize::Bottom)).child(b))),
             )
             .child(if self.has_right() { splitter(Resize::Right).into_any_element() } else { div().into_any_element() })
@@ -918,7 +952,18 @@ impl MainWindow {
 
     /// A tool window's island: its header (the title and Hide) over its content.
     fn tool_island(&self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
+        let this = cx.entity().downgrade();
         let header = div()
+            .id(("tool-header", tool as usize))
+            .when(self.dock.is_floating(tool), |d| {
+                d.debug_selector(move || format!("floating: {}", tool.title())).on_drag(
+                    FloatDrag { tool, resize: false },
+                    move |dragged, grab, _, cx| {
+                        let _ = this.update(cx, |w, _| w.float_grab = grab);
+                        cx.new(|_| *dragged)
+                    },
+                )
+            })
             .h(px(40.))
             .flex_none()
             .flex()
@@ -958,6 +1003,70 @@ impl MainWindow {
                 .active_editor()
                 .map(|e| e.read(cx).path.file_name().unwrap_or_default().to_string_lossy().into_owned()),
         }
+    }
+
+    /// The floating windows open, over the frame where they were left.
+    // shortcut: drawn inside the main window, not as windows of their own; a window shrunk past one leaves it
+    // out of reach until Restore Default Layout. Upgrade when gpui's child windows serve (IntelliJ's Window mode).
+    fn floating_islands(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
+        let open: Vec<(Tool, Rect)> = self.dock.open_floating().collect();
+        open.into_iter()
+            .map(|(tool, r)| {
+                self.tool_island(tool, window, cx)
+                    .occlude()
+                    .absolute()
+                    .left(px(r.x))
+                    .top(px(r.y))
+                    .w(px(r.w))
+                    .h(px(r.h))
+                    .border_1()
+                    .border_color(theme::popup_border())
+                    .shadow_lg()
+                    .child(
+                        div()
+                            .id(("float-resize", tool as usize))
+                            .debug_selector(move || format!("floating corner: {}", tool.title()))
+                            .absolute()
+                            .right_0()
+                            .bottom_0()
+                            .size(px(12.))
+                            .cursor(gpui::CursorStyle::ResizeUpLeftDownRight)
+                            .on_drag(FloatDrag { tool, resize: true }, |dragged, _, _, cx| cx.new(|_| *dragged)),
+                    )
+                    .into_any_element()
+            })
+            .collect()
+    }
+
+    fn focused_tool(&self, window: &Window, cx: &App) -> Option<Tool> {
+        Tool::ALL.into_iter().find(|t| self.tool_focus(*t).contains_focused(window, cx))
+    }
+
+    /// Floats a docked window in the middle of the window, or docks a floating one back in its place.
+    pub fn toggle_floating(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dock.is_floating(tool) {
+            self.dock.dock(tool);
+        } else {
+            let size = window.viewport_size();
+            let (w, h) = (420., 360.);
+            let (x, y) = ((f32::from(size.width) - w) / 2., (f32::from(size.height) - h) / 2.);
+            self.dock.float(tool, Rect { x, y, w, h });
+            self.dock = self.dock.clone().clamped();
+        }
+        window.focus(self.tool_focus(tool));
+        self.save_state(cx);
+        cx.notify();
+    }
+
+    /// Floats a window where its button was dropped, its header under the pointer.
+    fn float_tool(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
+        let at = window.mouse_position();
+        let (x, y) = (f32::from(at.x) - 40., f32::from(at.y) - 20.);
+        self.dock.float(tool, Rect { x, y, w: 420., h: 360. });
+        self.dock = self.dock.clone().clamped();
+        window.focus(self.tool_focus(tool));
+        self.save_state(cx);
+        cx.notify();
     }
 
     fn tool_focus(&self, tool: Tool) -> &FocusHandle {
@@ -1450,6 +1559,19 @@ fn splitter(edge: Resize) -> impl IntoElement {
         .when(horizontal, |d| d.h(px(GAP)).w_full().cursor_row_resize())
         .when(!horizontal, |d| d.w(px(GAP)).h_full().cursor_col_resize())
         .on_drag(edge, |edge, _, _, cx| cx.new(|_| *edge))
+}
+
+/// A floating window's header (moving it) or corner (resizing it), carried in a drag; the window itself follows.
+#[derive(Clone, Copy)]
+struct FloatDrag {
+    tool: Tool,
+    resize: bool,
+}
+
+impl Render for FloatDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        gpui::Empty
+    }
 }
 
 /// A tool window's stripe button, carried in a drag, drawn as a chip of its title.

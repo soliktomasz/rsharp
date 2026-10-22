@@ -1,7 +1,8 @@
 //! The tool windows' frame, in IntelliJ's six places: a stripe down each side holds a window's button in the
 //! place it sits (left or right, top or split below, or the bottom panel's left or right half), and an open
 //! window is an island beside the editor. Where each window sits, which are open and the islands' sizes are a
-//! `DockLayout`, kept with the folder and as the default for a folder with none.
+//! `DockLayout`, kept with the folder and as the default for a folder with none. A floating window keeps its
+//! stripe button and place, as IntelliJ's do, and is drawn over the frame where it was left.
 
 use rsharp_core::state::StateDocument;
 use serde::{Deserialize, Serialize};
@@ -65,6 +66,15 @@ impl Tool {
     }
 }
 
+/// A floating window's bounds in the window, in pixels from its top left.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+pub struct Rect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default, rename_all = "camelCase")]
 pub struct DockLayout {
@@ -74,6 +84,7 @@ pub struct DockLayout {
     pub left_width: f32,
     pub right_width: f32,
     pub bottom_height: f32,
+    pub floating: Vec<(Tool, Rect)>,
 }
 
 impl Default for DockLayout {
@@ -84,6 +95,7 @@ impl Default for DockLayout {
             left_width: 280.,
             right_width: 280.,
             bottom_height: 220.,
+            floating: Vec::new(),
         }
     }
 }
@@ -107,6 +119,7 @@ impl DockLayout {
             }
         }
         self.open.dedup();
+        self.floating.dedup_by_key(|(t, _)| *t);
         self
     }
 
@@ -118,9 +131,37 @@ impl DockLayout {
         self.placed.iter().filter(move |(_, p)| *p == place).map(|(t, _)| *t)
     }
 
-    /// The window open in a place: one at a time, as IntelliJ shows them.
+    /// The docked window open in a place: one at a time, as IntelliJ shows them.
     pub fn open_in(&self, place: Place) -> Option<Tool> {
-        self.in_place(place).find(|t| self.open.contains(t))
+        self.in_place(place).find(|t| self.open.contains(t) && !self.is_floating(*t))
+    }
+
+    pub fn floating_at(&self, tool: Tool) -> Option<Rect> {
+        self.floating.iter().find(|(t, _)| *t == tool).map(|(_, r)| *r)
+    }
+
+    pub fn is_floating(&self, tool: Tool) -> bool {
+        self.floating_at(tool).is_some()
+    }
+
+    /// The floating windows open, in the order they are drawn.
+    pub fn open_floating(&self) -> impl Iterator<Item = (Tool, Rect)> + '_ {
+        self.floating.iter().filter(|(t, _)| self.is_open(*t)).copied()
+    }
+
+    /// Floats a window at a place in the window, open; one floating already moves there.
+    pub fn float(&mut self, tool: Tool, at: Rect) {
+        self.floating.retain(|(t, _)| *t != tool);
+        self.floating.push((tool, at));
+        self.show(tool);
+    }
+
+    /// Docks a floating window back in its place, open there if it was open.
+    pub fn dock(&mut self, tool: Tool) {
+        self.floating.retain(|(t, _)| *t != tool);
+        if self.is_open(tool) {
+            self.show(tool);
+        }
     }
 
     pub fn is_open(&self, tool: Tool) -> bool {
@@ -136,18 +177,24 @@ impl DockLayout {
         }
     }
 
+    /// Opens a window; a docked one closes the docked window that shared its place.
     pub fn show(&mut self, tool: Tool) {
         let place = self.place_of(tool);
-        let others: Vec<Tool> = self.in_place(place).filter(|t| *t != tool).collect();
+        let others: Vec<Tool> = if self.is_floating(tool) {
+            Vec::new()
+        } else {
+            self.in_place(place).filter(|t| *t != tool && !self.is_floating(*t)).collect()
+        };
         self.open.retain(|t| !others.contains(t));
         if !self.open.contains(&tool) {
             self.open.push(tool);
         }
     }
 
-    /// Moves a window to a place, last in its group, open there if it was open.
+    /// Moves a window to a place, last in its group, docked and open there if it was open.
     pub fn move_to(&mut self, tool: Tool, place: Place) {
         self.placed.retain(|(t, _)| *t != tool);
+        self.floating.retain(|(t, _)| *t != tool);
         self.placed.push((tool, place));
         if self.is_open(tool) {
             self.show(tool);
@@ -158,6 +205,12 @@ impl DockLayout {
         self.left_width = self.left_width.max(Self::MIN_SIDE);
         self.right_width = self.right_width.max(Self::MIN_SIDE);
         self.bottom_height = self.bottom_height.max(Self::MIN_BOTTOM);
+        for (_, r) in &mut self.floating {
+            r.x = r.x.max(0.);
+            r.y = r.y.max(0.);
+            r.w = r.w.max(Self::MIN_SIDE);
+            r.h = r.h.max(Self::MIN_BOTTOM);
+        }
         self
     }
 }

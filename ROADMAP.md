@@ -43,8 +43,9 @@ macOS menu bar and Find Action; Settings with its first three settings; the dock
 move, gaps that resize, Solution and Problems); several windows and the session kept at quit; `--key`/`--type`
 for screenshots; the Lifeline; `tools/bench.sh`. Since: Windows' job-object Lifeline, Windows paths and URIs, the toolbar as Windows'
 title bar, the main-menu button on Windows and Linux, and CI on all three systems (decisions 3 and 4: from
-now, on GitHub). Not yet: floating windows, and the comparison with Passenger on the same machine (Passenger
-has no `--bench`).
+now, on GitHub); floating tool windows (a stripe button dropped on the editor, or Float Active Tool Window),
+moved by the header, sized by the corner, docked by dropping the button on a stripe, drawn inside the main
+window. Not taken: the comparison with Passenger on the same machine (Passenger has no `--bench`).
 
 What every later phase builds on. Most of it is invisible, but without it each feature reinvents state, keys
 and tests.

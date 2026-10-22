@@ -5,8 +5,8 @@
 use crate::editor::{Copy, Cut, Paste, Redo, Save, SelectAll, Undo};
 use crate::keymap::{OpenSettings, Quit};
 use crate::window::{
-    CloseSolution, CloseTab, FindAction, HideToolWindow, OpenFolder, RestoreDefaultLayout, ToggleProblems,
-    ToggleSolution,
+    CloseSolution, CloseTab, FindAction, FloatToolWindow, HideToolWindow, OpenFolder, RestoreDefaultLayout,
+    ToggleProblems, ToggleSolution,
 };
 use gpui::{Action, Menu, MenuItem};
 
@@ -40,6 +40,7 @@ pub static ALL: &[IdeAction] = &[
     ide!("Solution", "View", ["project", "explorer", "tool window"], ToggleSolution),
     ide!("Problems", "View", ["errors", "warnings", "tool window"], ToggleProblems),
     ide!("Hide Active Tool Window", "Window", ["close tool window"], HideToolWindow),
+    ide!("Float Active Tool Window", "Window", ["floating mode", "view mode", "dock", "undock"], FloatToolWindow),
     ide!("Restore Default Layout", "Window", ["reset layout", "tool windows"], RestoreDefaultLayout),
     ide!("Find Action…", "Help", ["search actions", "commands"], FindAction),
     ide!("Quit RSharp", "File", ["exit"], Quit),

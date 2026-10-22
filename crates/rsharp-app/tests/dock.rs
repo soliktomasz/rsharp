@@ -1,5 +1,6 @@
 //! The tool windows' frame, driven by the mouse: stripe buttons open and close windows, a button dragged to
-//! another stripe moves its window, a gap dragged resizes, and the folder keeps it all.
+//! another stripe moves its window, one dropped on the editor floats it, a gap dragged resizes, and the folder
+//! keeps it all.
 
 mod support;
 
@@ -95,4 +96,57 @@ fn dragging_the_gap_beside_solution_resizes_it(cx: &mut TestAppContext) {
         "dragging the gap 100 px right made Solution {} wide, from {before}",
         after
     );
+}
+
+#[gpui::test]
+fn a_button_dropped_on_the_editor_floats_its_window_which_moves_resizes_and_docks_back(cx: &mut TestAppContext) {
+    let run = Run::new("dock-float", &[("a.cs", "class A {}\n")]);
+    let (main, cx) = run.window(cx);
+    main.update_in(cx, |main, window, cx| main.open_workspace(&run.folder, window, cx));
+    cx.run_until_parked();
+
+    let from = centre(cx, "stripe: Problems");
+    let to = centre(cx, "editor island");
+    drag(cx, from, to);
+    main.read_with(cx, |main, _| {
+        let dock = main.dock();
+        assert!(dock.is_floating(Tool::Problems), "Problems dropped on the editor did not float");
+        assert!(dock.is_open(Tool::Problems), "Problems floated closed");
+        assert!(dock.is_open(Tool::Solution), "floating Problems closed Solution");
+    });
+
+    let floating =
+        |cx: &mut VisualTestContext| main.read_with(cx, |m, _| m.dock().floating_at(Tool::Problems).unwrap());
+    let before = floating(cx);
+    let header = centre(cx, "floating: Problems");
+    drag(cx, header, header + gpui::point(gpui::px(-60.), gpui::px(30.)));
+    let moved = floating(cx);
+    assert!(
+        (moved.x - before.x + 60.).abs() < 4. && (moved.y - before.y - 30.).abs() < 4.,
+        "dragging the header 60 px left and 30 px down put Problems at {moved:?}, from {before:?}"
+    );
+
+    let corner = centre(cx, "floating corner: Problems");
+    drag(cx, corner, corner + gpui::point(gpui::px(50.), gpui::px(40.)));
+    let resized = floating(cx);
+    assert!(
+        (resized.w - moved.w - 50.).abs() < 4. && (resized.h - moved.h - 40.).abs() < 4.,
+        "dragging the corner 50 px right and 40 px down made Problems {resized:?}, from {moved:?}"
+    );
+
+    let again = cx.update(|window, cx| cx.new(|cx| MainWindow::new(window, cx)));
+    again.update_in(cx, |main, window, cx| main.open_workspace(&run.folder, window, cx));
+    assert_eq!(
+        again.read_with(cx, |main, _| main.dock().floating_at(Tool::Problems)),
+        Some(resized),
+        "the folder forgot where Problems floated"
+    );
+
+    let from = centre(cx, "stripe: Problems");
+    let to = centre(cx, "stripe group: Bottom Left");
+    drag(cx, from, to);
+    main.read_with(cx, |main, _| {
+        assert!(!main.dock().is_floating(Tool::Problems), "Problems dropped on a stripe stayed floating");
+        assert_eq!(main.dock().open_in(Place::BottomLeft), Some(Tool::Problems), "Problems docked back closed");
+    });
 }
