@@ -75,6 +75,10 @@ pub fn close_hover() -> Rgba {
 pub fn tab_selected() -> Rgba {
     rgb(0x233558)
 }
+/// tab-selected-bg-inactive (gray-30): the tab a split shows while another split has the keys.
+pub fn tab_selected_inactive() -> Rgba {
+    rgb(0x26282C)
+}
 pub fn tab_selected_border() -> Rgba {
     rgb(0x2E4D89)
 }

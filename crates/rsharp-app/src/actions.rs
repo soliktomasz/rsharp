@@ -13,6 +13,10 @@ use crate::editor::{
 use crate::find_bar::{Find, FindNext, FindPrevious, Replace};
 use crate::keymap::{OpenSettings, Quit};
 use crate::window::{
+    CloseAllButPinned, CloseAllTabs, CloseOtherTabs, CloseTabsToLeft, CloseTabsToRight, PinTab, ReopenClosedTab,
+    SplitDown, SplitRight, Unsplit, UnsplitAll,
+};
+use crate::window::{
     CloseSolution, CloseTab, FindAction, FloatToolWindow, HideToolWindow, OpenFolder, RestoreDefaultLayout,
     ToggleProblems, ToggleSolution,
 };
@@ -38,6 +42,17 @@ pub static ALL: &[IdeAction] = &[
     ide!("Close Solution", "File", ["close project"], CloseSolution),
     ide!("Save", "File", ["save all"], Save),
     ide!("Close Tab", "Window", ["close editor"], CloseTab),
+    ide!("Close Other Tabs", "Window", ["close others", "editor tabs"], CloseOtherTabs),
+    ide!("Close All Tabs", "Window", ["close all", "editor tabs"], CloseAllTabs),
+    ide!("Close All but Pinned", "Window", ["close unpinned", "editor tabs"], CloseAllButPinned),
+    ide!("Close Tabs to the Left", "Window", ["close left", "editor tabs"], CloseTabsToLeft),
+    ide!("Close Tabs to the Right", "Window", ["close right", "editor tabs"], CloseTabsToRight),
+    ide!("Reopen Closed Tab", "Window", ["undo close", "editor tabs"], ReopenClosedTab),
+    ide!("Pin Tab", "Window", ["unpin tab", "pin active tab", "editor tabs"], PinTab),
+    ide!("Split Right", "Window", ["split vertically", "editor tabs"], SplitRight),
+    ide!("Split Down", "Window", ["split horizontally", "editor tabs"], SplitDown),
+    ide!("Unsplit", "Window", ["editor tabs"], Unsplit),
+    ide!("Unsplit All", "Window", ["editor tabs"], UnsplitAll),
     ide!("Settings…", "File", ["preferences", "options"], OpenSettings),
     ide!("Undo", "Edit", [], Undo),
     ide!("Redo", "Edit", [], Redo),

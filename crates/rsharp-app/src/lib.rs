@@ -3,8 +3,10 @@
 pub mod actions;
 pub mod assets;
 pub mod bench;
+pub mod buffer;
 pub mod dock;
 pub mod editor;
+pub mod editor_area;
 pub mod field;
 pub mod find_action;
 pub mod find_bar;

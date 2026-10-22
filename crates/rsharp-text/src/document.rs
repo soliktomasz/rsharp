@@ -224,11 +224,7 @@ impl Document {
     }
 
     pub fn position(&self, offset: usize) -> Position {
-        let line = self.text.byte_to_line(offset);
-        let line_start = self.text.line_to_byte(line);
-        let utf16_column = self.text.char_to_utf16_cu(self.text.byte_to_char(offset))
-            - self.text.char_to_utf16_cu(self.text.byte_to_char(line_start));
-        Position { offset, line, column: offset - line_start, utf16_column }
+        position(&self.text, offset)
     }
 
     /// The offset of a line and UTF-16 column, as the language server names a place.
@@ -241,4 +237,13 @@ impl Document {
         let char = self.text.utf16_cu_to_char(target);
         self.text.char_to_byte(char)
     }
+}
+
+/// A place in `text`, as each consumer counts it.
+pub fn position(text: &Rope, offset: usize) -> Position {
+    let line = text.byte_to_line(offset);
+    let line_start = text.line_to_byte(line);
+    let utf16_column =
+        text.char_to_utf16_cu(text.byte_to_char(offset)) - text.char_to_utf16_cu(text.byte_to_char(line_start));
+    Position { offset, line, column: offset - line_start, utf16_column }
 }

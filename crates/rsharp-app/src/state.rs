@@ -68,6 +68,7 @@ pub struct KeptTab {
     pub path: PathBuf,
     pub line: usize,
     pub column: usize,
+    pub pinned: bool,
 }
 
 impl StateDocument for FolderState {

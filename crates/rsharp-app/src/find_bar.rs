@@ -61,7 +61,7 @@ impl FindBar {
 
     fn watch(editor: &Entity<CodeEditor>, cx: &mut Context<Self>) -> Subscription {
         cx.observe(editor, |bar, editor, cx| {
-            if editor.read(cx).document.version() != bar.version {
+            if editor.read(cx).version() != bar.version {
                 bar.search(false, cx);
             }
         })
@@ -83,7 +83,7 @@ impl FindBar {
     pub fn open(&mut self, replacing: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.replacing = replacing;
         let editor = self.editor.read(cx);
-        let text = editor.document.text();
+        let text = editor.text();
         let primary = editor.primary();
         let word = word_at(text, primary.head);
         let seed = if primary.is_empty() {
@@ -131,8 +131,8 @@ impl FindBar {
     fn search(&mut self, jump: bool, cx: &mut Context<Self>) {
         let query = self.query(cx);
         let editor = self.editor.read(cx);
-        self.version = editor.document.version();
-        self.result = find_all(editor.document.text(), &query, MAX_MATCHES);
+        self.version = editor.version();
+        self.result = find_all(editor.text(), &query, MAX_MATCHES);
         self.current = self.result.next_from(editor.primary().start());
         let matches = self.result.matches.clone();
         let select = self.current.filter(|_| jump).map(|i| matches[i].clone());
@@ -184,7 +184,7 @@ impl FindBar {
         }
         let with = self.with.read(cx).text();
         let query = self.query(cx);
-        let text = replacement(self.editor.read(cx).document.text(), &query, &range, &with);
+        let text = replacement(self.editor.read(cx).text(), &query, &range, &with);
         let after = range.start + text.len();
         let plan = EditPlan {
             edits: vec![rsharp_text::Edit { range, text }],
@@ -199,7 +199,7 @@ impl FindBar {
     fn replace_all(&mut self, cx: &mut Context<Self>) {
         let with = self.with.read(cx).text();
         let query = self.query(cx);
-        let edits = replace_all(self.editor.read(cx).document.text(), &query, &with);
+        let edits = replace_all(self.editor.read(cx).text(), &query, &with);
         let Some(first) = edits.first().map(|e| e.range.start) else { return };
         let count = edits.len();
         let plan = EditPlan { edits, selections: vec![Selection::caret(first)], ..Default::default() };
