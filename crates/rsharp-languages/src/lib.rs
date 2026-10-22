@@ -55,6 +55,124 @@ pub fn parse(text: &Rope, old: Option<&Tree>) -> Tree {
     parser.parse_with_options(&mut read, old, None).expect("a parse with no timeout or cancellation finishes")
 }
 
+/// What a region that folds holds, so Rider's Collapse to Definitions can pick bodies and doc comments.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FoldKind {
+    Body,
+    Usings,
+    Comment,
+    DocComment,
+    Region,
+}
+
+/// A stretch of code that folds: from its start, which stays shown, to its end, over more than one line.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct FoldRegion {
+    pub range: Range<usize>,
+    pub kind: FoldKind,
+}
+
+/// Every region that folds, sorted by start, as Rider's: a body in braces, a run of usings, a comment over several
+/// lines (or a run of line comments), and `#region` to `#endregion`.
+pub fn folds(tree: &Tree, text: &Rope) -> Vec<FoldRegion> {
+    let mut out = Vec::new();
+    let mut regions = Vec::new();
+    visit(tree.root_node(), text, &mut out, &mut regions);
+    out.sort_by_key(|f| (f.range.start, std::cmp::Reverse(f.range.end)));
+    out
+}
+
+fn visit(node: Node, text: &Rope, out: &mut Vec<FoldRegion>, regions: &mut Vec<usize>) {
+    let line = |byte: usize| text.byte_to_line(byte.min(text.len_bytes()));
+    let close = |run: &mut Option<(FoldKind, Range<usize>)>, out: &mut Vec<FoldRegion>| {
+        if let Some((kind, range)) = run.take()
+            && line(range.start) < line(range.end)
+        {
+            out.push(FoldRegion { range, kind });
+        }
+    };
+    // Usings and line comments fold as runs of siblings, a line each, nothing but blanks between.
+    let mut run: Option<(FoldKind, Range<usize>)> = None;
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let range = child.byte_range();
+        let kind = match child.kind() {
+            "using_directive" => Some(FoldKind::Usings),
+            "comment" if text.byte_slice(range.clone()).to_string().starts_with("///") => Some(FoldKind::DocComment),
+            "comment" => Some(FoldKind::Comment),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            let one_line = line(range.start) == line(range.end.saturating_sub(1));
+            match &mut run {
+                Some((k, r))
+                    if *k == kind
+                        && one_line
+                        && line(range.start) == line(r.end) + 1
+                        && text.byte_slice(r.end..range.start).chars().all(char::is_whitespace) =>
+                {
+                    r.end = range.end;
+                }
+                _ => {
+                    close(&mut run, out);
+                    if one_line {
+                        run = Some((kind, range));
+                    } else {
+                        out.push(FoldRegion { range, kind });
+                    }
+                }
+            }
+            continue;
+        }
+        close(&mut run, out);
+        match child.kind() {
+            "block"
+            | "declaration_list"
+            | "accessor_list"
+            | "switch_body"
+            | "enum_member_declaration_list"
+            | "initializer_expression"
+                if line(range.start) < line(range.end) =>
+            {
+                out.push(FoldRegion { range: range.clone(), kind: FoldKind::Body });
+            }
+            "preproc_region" => regions.push(range.start),
+            "preproc_endregion" => {
+                if let Some(start) = regions.pop() {
+                    out.push(FoldRegion { range: start..range.end, kind: FoldKind::Region });
+                }
+            }
+            _ => {}
+        }
+        if child.child_count() > 0 {
+            visit(child, text, out, regions);
+        }
+    }
+    close(&mut run, out);
+}
+
+const BRACKETS: &[(&str, &str)] = &[("{", "}"), ("(", ")"), ("[", "]")];
+
+/// The bracket at or just before `offset`, and the one it pairs with in the syntax.
+pub fn matching_bracket(tree: &Tree, offset: usize) -> Option<(Range<usize>, Range<usize>)> {
+    let at = |o: usize| {
+        let node = tree.root_node().descendant_for_byte_range(o, o + 1)?;
+        (node.start_byte() == o && BRACKETS.iter().any(|(a, b)| node.kind() == *a || node.kind() == *b)).then_some(node)
+    };
+    let node = at(offset).or_else(|| offset.checked_sub(1).and_then(at))?;
+    let parent = node.parent()?;
+    let mut cursor = parent.walk();
+    let siblings: Vec<Node> = parent.children(&mut cursor).collect();
+    let index = siblings.iter().position(|n| n.id() == node.id())?;
+    let pair = if let Some((_, close)) = BRACKETS.iter().find(|(open, _)| node.kind() == *open) {
+        siblings[index + 1..].iter().rev().find(|n| n.kind() == *close)
+    } else {
+        let (open, _) = BRACKETS.iter().find(|(_, close)| node.kind() == *close)?;
+        siblings[..index].iter().find(|n| n.kind() == *open)
+    }?;
+    Some((node.byte_range(), pair.byte_range()))
+}
+
 /// Tells a tree of an edit made since it was parsed, so the next parse reuses what the edit left alone.
 pub fn edit(tree: &mut Tree, change: &Change) {
     let point = |p: &rsharp_text::Position| Point { row: p.line, column: p.column };
@@ -199,5 +317,35 @@ mod tests {
                 "after typing {key:?}, the reused parse coloured the file differently"
             );
         }
+    }
+
+    #[test]
+    fn bodies_usings_comments_and_regions_fold() {
+        let source = "using A;\nusing B;\n\n/// <summary>\n/// Doc\n/// </summary>\nclass C\n{\n    #region Fields\n    int x;\n    #endregion\n    void M()\n    {\n    }\n}\n";
+        let text = Rope::from_str(source);
+        let found: Vec<(FoldKind, &str)> =
+            folds(&parse(&text, None), &text).iter().map(|f| (f.kind, &source[f.range.clone()])).collect();
+        let kinds: Vec<FoldKind> = found.iter().map(|f| f.0).collect();
+        assert_eq!(
+            kinds,
+            [FoldKind::Usings, FoldKind::DocComment, FoldKind::Body, FoldKind::Region, FoldKind::Body],
+            "not every region folds, or one folds that should not: {found:?}"
+        );
+        assert_eq!(found[0].1, "using A;\nusing B;", "the usings did not fold as one run");
+    }
+
+    #[test]
+    fn a_bracket_finds_its_pair_from_either_side() {
+        let source = "class C { void M(int a) { var x = new[] { 1 }; } }";
+        let tree = parse(&Rope::from_str(source), None);
+        let open = source.find("(int").unwrap();
+        let close = source.find(") {").unwrap();
+        assert_eq!(matching_bracket(&tree, open), Some((open..open + 1, close..close + 1)));
+        assert_eq!(
+            matching_bracket(&tree, close + 1),
+            Some((close..close + 1, open..open + 1)),
+            "a caret just after a closing bracket did not find its pair"
+        );
+        assert_eq!(matching_bracket(&tree, source.find("void").unwrap()), None);
     }
 }

@@ -109,6 +109,21 @@ pub mod editor {
     pub fn caret() -> Rgba {
         rgb(0xCED0D6)
     }
+    /// MATCHED_BRACE_ATTRIBUTES' background (IslandSchemeDark.xml).
+    pub fn matched_brace() -> Rgba {
+        rgb(0x43454A)
+    }
+    /// FOLDED_TEXT_ATTRIBUTES: a folded region's placeholder.
+    pub fn folded_text() -> Rgba {
+        rgb(0x868991)
+    }
+    pub fn folded_background() -> Rgba {
+        rgb(0x393B40)
+    }
+    /// WHITESPACES: the dots and arrows Show Whitespaces draws.
+    pub fn whitespace() -> Rgba {
+        rgb(0x6F737A)
+    }
     /// TEXT_SEARCH_RESULT_ATTRIBUTES' background (IslandSchemeDark.xml): a find bar's match.
     pub fn search_result() -> Rgba {
         rgb(0x114957)

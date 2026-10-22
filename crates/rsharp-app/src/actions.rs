@@ -6,6 +6,10 @@ use crate::editor::{
     CaretPerLine, CloneCaretAbove, CloneCaretBelow, Copy, Cut, Paste, Redo, Save, SelectAll, SelectAllOccurrences,
     SelectNextOccurrence, ToggleColumnMode, Undo, UnselectOccurrence,
 };
+use crate::editor::{
+    CollapseAll, CollapseRegion, DecreaseFontSize, ExpandAll, ExpandRegion, IncreaseFontSize, MatchBrace,
+    ResetFontSize, ToggleFold, ToggleSoftWrap, ToggleWhitespace,
+};
 use crate::find_bar::{Find, FindNext, FindPrevious, Replace};
 use crate::keymap::{OpenSettings, Quit};
 use crate::window::{
@@ -57,6 +61,17 @@ pub static ALL: &[IdeAction] = &[
     ide!("Clone Caret Below", "Edit", ["multiple carets", "add caret"], CloneCaretBelow),
     ide!("Add Carets to Ends of Selected Lines", "Edit", ["caret per line", "multiple carets"], CaretPerLine),
     ide!("Column Selection Mode", "Edit", ["block selection", "rectangular selection"], ToggleColumnMode),
+    ide!("Move Caret to Matching Brace", "Navigate", ["brace", "bracket"], MatchBrace),
+    ide!("Expand", "Code", ["unfold", "folding"], ExpandRegion),
+    ide!("Collapse", "Code", ["fold", "folding"], CollapseRegion),
+    ide!("Expand All", "Code", ["unfold all", "folding"], ExpandAll),
+    ide!("Collapse All", "Code", ["fold all", "folding"], CollapseAll),
+    ide!("Toggle Folding", "Code", ["expand collapse", "fold", "unfold"], ToggleFold),
+    ide!("Soft-Wrap", "View", ["soft wrap", "word wrap", "active editor"], ToggleSoftWrap),
+    ide!("Show Whitespaces", "View", ["whitespace", "spaces", "active editor"], ToggleWhitespace),
+    ide!("Increase Font Size in All Editors", "View", ["zoom in", "bigger"], IncreaseFontSize),
+    ide!("Decrease Font Size in All Editors", "View", ["zoom out", "smaller"], DecreaseFontSize),
+    ide!("Reset Font Size", "View", ["zoom", "default size"], ResetFontSize),
     ide!("Solution", "View", ["project", "explorer", "tool window"], ToggleSolution),
     ide!("Problems", "View", ["errors", "warnings", "tool window"], ToggleProblems),
     ide!("Hide Active Tool Window", "Window", ["close tool window"], HideToolWindow),
