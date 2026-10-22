@@ -57,8 +57,6 @@ actions!(
     ]
 );
 
-pub const FONT_SIZE: f32 = 13.;
-pub const LINE_HEIGHT: f32 = 20.;
 const TEXT_PAD: f32 = 16.;
 
 /// A problem the server found, where it is now.
@@ -66,6 +64,7 @@ const TEXT_PAD: f32 = 16.;
 pub struct Diagnostic {
     pub range: Range<usize>,
     pub error: bool,
+    pub message: String,
 }
 
 pub struct CodeEditor {
@@ -84,6 +83,8 @@ pub struct CodeEditor {
     marked: Option<Range<usize>>,
     selecting: bool,
     layout: Option<Layout>,
+    /// The line height in force, from the settings, as the last frame used it.
+    line_height: Pixels,
 }
 
 /// Where the last frame put things, for the mouse and the input method to find their way back.
@@ -115,7 +116,9 @@ impl CodeEditor {
             marked: None,
             selecting: false,
             layout: None,
+            line_height: px(crate::settings::settings(cx).line_height()),
         };
+        cx.observe_global::<crate::settings::Settings>(|_, cx| cx.notify()).detach();
         editor.reparse(cx);
         editor
     }
@@ -177,6 +180,7 @@ impl CodeEditor {
                     .map(|d| Diagnostic {
                         range: at(&d["range"]["start"])..at(&d["range"]["end"]),
                         error: d["severity"] == 1,
+                        message: d["message"].as_str().unwrap_or_default().to_string(),
                     })
                     .collect();
                 cx.notify();
@@ -295,7 +299,7 @@ impl CodeEditor {
     }
 
     fn page(&self) -> isize {
-        self.layout.as_ref().map_or(20, |l| (l.viewport.size.height / px(LINE_HEIGHT)) as isize - 1).max(1)
+        self.layout.as_ref().map_or(20, |l| (l.viewport.size.height / self.line_height) as isize - 1).max(1)
     }
 
     fn selected_text(&self) -> String {
@@ -312,7 +316,7 @@ impl CodeEditor {
     fn offset_for_point(&self, position: Point<Pixels>) -> usize {
         let Some(layout) = &self.layout else { return 0 };
         let text = self.document.text();
-        let line = ((position.y - layout.text_origin.y) / px(LINE_HEIGHT)).floor().max(0.) as usize;
+        let line = ((position.y - layout.text_origin.y) / self.line_height).floor().max(0.) as usize;
         if line >= text.len_lines() {
             return text.len_bytes();
         }
@@ -353,15 +357,15 @@ impl CodeEditor {
     }
 
     fn on_scroll(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let delta = event.delta.pixel_delta(px(LINE_HEIGHT));
+        let delta = event.delta.pixel_delta(self.line_height);
         self.scroll_y = (self.scroll_y - delta.y).clamp(px(0.), self.max_scroll());
         cx.notify();
     }
 
     fn max_scroll(&self) -> Pixels {
-        let content = px(LINE_HEIGHT) * self.document.text().len_lines() as f32;
+        let content = self.line_height * self.document.text().len_lines() as f32;
         let viewport = self.layout.as_ref().map_or(px(0.), |l| l.viewport.size.height);
-        (content - viewport + px(LINE_HEIGHT) * 4.).max(px(0.))
+        (content - viewport + self.line_height * 4.).max(px(0.))
     }
 
     fn utf16_to_offset(&self, utf16: usize) -> usize {
@@ -543,8 +547,8 @@ impl EntityInputHandler for CodeEditor {
         let line = text.byte_to_line(offset);
         let shaped = layout.lines.get(line.checked_sub(layout.first_line)?)?;
         let x = shaped.x_for_index(offset - text.line_to_byte(line));
-        let top = layout.text_origin.y + px(LINE_HEIGHT) * line as f32;
-        Some(Bounds::new(point(layout.text_origin.x + x, top), size(px(2.), px(LINE_HEIGHT))))
+        let top = layout.text_origin.y + self.line_height * line as f32;
+        Some(Bounds::new(point(layout.text_origin.x + x, top), size(px(2.), self.line_height)))
     }
 
     fn character_index_for_point(
@@ -568,6 +572,7 @@ struct Prepainted {
     gutter_width: Pixels,
     caret_line: usize,
     line_numbers: Vec<ShapedLine>,
+    line_height: Pixels,
 }
 
 impl IntoElement for EditorElement {
@@ -611,18 +616,20 @@ impl Element for EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Prepainted {
-        let line_height = px(LINE_HEIGHT);
-        let font_size = px(FONT_SIZE);
+        let settings = crate::settings::settings(cx).clone();
+        let line_height = px(settings.line_height());
+        let font_size = px(settings.editor_font_size);
         // Rider draws code without ligatures until a person turns them on.
         let code_font = gpui::Font { features: gpui::FontFeatures::disable_ligatures(), ..font(theme::CODE_FONT) };
         self.editor.update(cx, |editor, _| {
+            editor.line_height = line_height;
             let text = editor.document.text();
             let digits = text.len_lines().to_string().len().max(3);
             let char_width = window
                 .text_system()
                 .shape_line("0".into(), font_size, &[run(1, theme::editor::text().into(), &code_font)], None)
                 .width;
-            let gutter_width = char_width * digits as f32 + px(32.);
+            let gutter_width = if settings.show_line_numbers { char_width * digits as f32 + px(32.) } else { px(16.) };
             let caret = editor.primary().head;
             let caret_line = text.byte_to_line(caret);
 
@@ -666,7 +673,10 @@ impl Element for EditorElement {
             }
             let text_origin =
                 point(bounds.origin.x + gutter_width + px(TEXT_PAD) - px(16.), bounds.origin.y - editor.scroll_y);
-            Prepainted { lines, first_line, text_origin, gutter_width, caret_line, line_numbers }
+            if !settings.show_line_numbers {
+                line_numbers.clear();
+            }
+            Prepainted { lines, first_line, text_origin, gutter_width, caret_line, line_numbers, line_height }
         })
     }
 
@@ -680,7 +690,7 @@ impl Element for EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let line_height = px(LINE_HEIGHT);
+        let line_height = state.line_height;
         let focus = self.editor.read(cx).focus.clone();
         window.handle_input(&focus, ElementInputHandler::new(bounds, self.editor.clone()), cx);
         let focused = focus.is_focused(window);
@@ -717,13 +727,14 @@ impl Element for EditorElement {
                         theme::editor::selection(),
                     ));
                 }
-                let number = &state.line_numbers[i];
-                let _ = number.paint(
-                    point(bounds.origin.x + state.gutter_width - number.width - px(20.), top_of(line)),
-                    line_height,
-                    window,
-                    cx,
-                );
+                if let Some(number) = state.line_numbers.get(i) {
+                    let _ = number.paint(
+                        point(bounds.origin.x + state.gutter_width - number.width - px(20.), top_of(line)),
+                        line_height,
+                        window,
+                        cx,
+                    );
+                }
                 let _ = shaped.paint(point(state.text_origin.x, top_of(line)), line_height, window, cx);
                 for diagnostic in diagnostics.iter().filter(|d| d.range.start <= end && d.range.end >= start) {
                     let x0 = shaped.x_for_index(diagnostic.range.start.max(start) - start);

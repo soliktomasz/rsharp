@@ -36,7 +36,14 @@ Each phase ends in something a person can use, held by tests that say what a per
 "Passenger" line names the issues and folders to read before starting it. Effort is relative: S is about one
 focused week, M two to three, L a month or more.
 
-### Phase 1: Platform (L)
+### Phase 1: Platform (L) — in place (commit after 633ad72)
+Built: window tests on gpui's test platform (crates.io gpui's `test-support` serves, so decision 2 is crates.io);
+the state store, recent solutions, each folder's tabs, carets and layout; the log; the action registry, the
+macOS menu bar and Find Action; Settings with its first three settings; the dock (six places, stripes, drag to
+move, gaps that resize, Solution and Problems); several windows and the session kept at quit; `--key`/`--type`
+for screenshots; the Lifeline; `tools/bench.sh`. Not yet: floating windows, Windows and Linux menus (Rider's
+toolbar menu button), and the comparison with Passenger on the same machine (Passenger has no `--bench`).
+
 What every later phase builds on. Most of it is invisible, but without it each feature reinvents state, keys
 and tests.
 - **Tests that drive the window:** gpui's `TestAppContext` (the `test-support` feature), an `EditorRig` that

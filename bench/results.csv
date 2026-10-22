@@ -1,0 +1,4 @@
+date,commit,projects,firstFrameMs,solutionLoadedMs,ideRssMb,totalRssMb,keyToFrameMedianMs,keyToFrameP95Ms,stalls
+2026-10-22,633ad72+dirty,1,868.7,2505.8,104.4,951.1,7.0,8.0,0
+2026-10-22,633ad72+dirty,3,339.0,2204.9,113.3,1034.5,3.1,7.1,0
+2026-10-22,633ad72+dirty,10,342.9,2935.3,117.3,1002.1,0.1,6.9,0

@@ -45,6 +45,25 @@ pub fn button_hover() -> Rgba {
 pub fn button_pressed() -> Rgba {
     rgba(0xFFFFFF29)
 }
+/// Component.borderColor: a field's, a checkbox's, a plain button's edge.
+pub fn control_border() -> Rgba {
+    rgb(0x40434A)
+}
+/// Popup.background and Popup.borderColor.
+pub fn popup() -> Rgba {
+    rgb(0x26282C)
+}
+pub fn popup_border() -> Rgba {
+    rgb(0x33353B)
+}
+/// MainToolbar.separatorColor and ToolWindow.Stripe.separatorColor.
+pub fn separator() -> Rgba {
+    rgba(0xFFFFFF21)
+}
+/// ToolWindow.Button.DragAndDrop.buttonDropBackground: where a dragged window would land.
+pub fn drop_zone() -> Rgba {
+    rgba(0x3671E580)
+}
 pub fn tab_selected() -> Rgba {
     rgb(0x233558)
 }

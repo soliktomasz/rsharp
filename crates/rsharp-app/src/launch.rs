@@ -8,6 +8,18 @@ pub struct LaunchOptions {
     pub file: Option<PathBuf>,
     /// Line and column, counted from 1 as the person writes them.
     pub caret: Option<(usize, usize)>,
+    /// What is pressed and typed through the window's real input once it has opened, in order.
+    pub steps: Vec<Step>,
+    /// Measure the start, the solution's load, memory and typing, print them as JSON and quit (`bench.rs`).
+    pub bench: bool,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum Step {
+    /// Keys as gpui writes them, a chord's keys apart: `cmd-shift-a`, `ctrl-k ctrl-s`.
+    Key(String),
+    /// Text, a key at a time.
+    Type(String),
 }
 
 impl LaunchOptions {
@@ -25,6 +37,9 @@ impl LaunchOptions {
                         _ => return Err(format!("--caret takes LINE:COLUMN, each from 1, not {value:?}")),
                     }
                 }
+                "--key" => options.steps.push(Step::Key(args.next().ok_or("--key needs keys, such as cmd-shift-a")?)),
+                "--bench" => options.bench = true,
+                "--type" => options.steps.push(Step::Type(args.next().ok_or("--type needs text")?)),
                 flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
                 path if options.path.is_none() => options.path = Some(path.into()),
                 extra => return Err(format!("one folder or solution at a time, not also {extra:?}")),
@@ -49,12 +64,23 @@ mod tests {
     fn a_folder_file_and_caret_are_read_and_anything_malformed_refused() {
         assert_eq!(
             parse(&[".", "--file", "Program.cs", "--caret", "12:5"]),
-            Ok(LaunchOptions { path: Some(".".into()), file: Some("Program.cs".into()), caret: Some((12, 5)) })
+            Ok(LaunchOptions {
+                path: Some(".".into()),
+                file: Some("Program.cs".into()),
+                caret: Some((12, 5)),
+                steps: vec![],
+                bench: false
+            })
         );
         assert!(parse(&["--caret", "12:5"]).is_err(), "a caret with no file");
         assert!(parse(&["--file", "a", "--caret", "0:1"]).is_err(), "a line counted from 0");
         assert!(parse(&["--file", "a", "--caret", "x"]).is_err());
         assert!(parse(&["--theme", "dark"]).is_err(), "an option RSharp does not know");
         assert!(parse(&["a", "b"]).is_err(), "two folders");
+        assert_eq!(
+            parse(&["--key", "cmd-,", "--type", "font"]).unwrap().steps,
+            [Step::Key("cmd-,".into()), Step::Type("font".into())],
+            "steps were not kept in the order given"
+        );
     }
 }

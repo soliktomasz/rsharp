@@ -11,9 +11,11 @@ macro_rules! carried {
 
 static FILES: &[(&str, &[u8])] = carried![
     "icons/branch.svg",
+    "icons/check.svg",
     "icons/chevron-down.svg",
     "icons/chevron-right.svg",
     "icons/close.svg",
+    "icons/error.svg",
     "icons/file-any.svg",
     "icons/file-config.svg",
     "icons/file-csharp.svg",
@@ -21,8 +23,12 @@ static FILES: &[(&str, &[u8])] = carried![
     "icons/file-text.svg",
     "icons/file-xml.svg",
     "icons/folder.svg",
+    "icons/hide.svg",
     "icons/project.svg",
+    "icons/search.svg",
+    "icons/tw-problems.svg",
     "icons/tw-project.svg",
+    "icons/warning.svg",
 ];
 
 static FONTS: &[&[u8]] = &[

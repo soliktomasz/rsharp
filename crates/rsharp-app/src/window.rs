@@ -1,8 +1,12 @@
 //! The main window, laid out as Rider's Islands: the toolbar, a stripe and the status bar on the frame, and the
 //! Solution view and the editor as islands over it. One folder or solution per window.
 
+use crate::actions::ALL;
 use crate::assets::{file_icon, icon};
+use crate::dock::{DockLayout, Place, Tool};
 use crate::editor::{self, CodeEditor};
+use crate::find_action::{Ended, FindActionPopup};
+use crate::state::{FolderState, KeptTab, RecentSolutions, store};
 use crate::theme;
 use crate::workspace::{Entry, Workspace};
 use futures::StreamExt;
@@ -17,7 +21,21 @@ use std::sync::Arc;
 
 actions!(
     window,
-    [CloseTab, OpenFolder, ToggleSolution, ExplorerUp, ExplorerDown, ExplorerExpand, ExplorerCollapse, ExplorerOpen]
+    [
+        CloseTab,
+        CloseSolution,
+        FindAction,
+        OpenFolder,
+        ToggleSolution,
+        ToggleProblems,
+        HideToolWindow,
+        RestoreDefaultLayout,
+        ExplorerUp,
+        ExplorerDown,
+        ExplorerExpand,
+        ExplorerCollapse,
+        ExplorerOpen
+    ]
 );
 
 const TOOLBAR_HEIGHT: f32 = 40.;
@@ -47,55 +65,125 @@ pub struct MainWindow {
     expanded: HashSet<PathBuf>,
     rows: Vec<Row>,
     selected: Option<usize>,
-    solution_shown: bool,
+    dock: DockLayout,
+    opened_as: Option<PathBuf>,
     explorer_focus: FocusHandle,
+    problems_focus: FocusHandle,
+    /// The window's own focus, where keys go when no view has them (the Welcome screen), so window-wide keys
+    /// always reach the window.
+    root_focus: FocusHandle,
     tabs: Vec<Entity<CodeEditor>>,
     active: Option<usize>,
     server: Option<Arc<LanguageServer>>,
     server_state: ServerState,
+    /// Roslyn's work under way, by its progress token, with its title.
+    progress: Vec<(String, String)>,
+    projects_loaded: bool,
     said: Option<SharedString>,
+    find_action: Option<Entity<FindActionPopup>>,
     _server_task: Option<Task<()>>,
 }
 
 impl MainWindow {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let root_focus = cx.focus_handle();
+        window.focus(&root_focus);
         Self {
+            root_focus,
             workspace: None,
             branch: None,
             expanded: HashSet::new(),
             rows: Vec::new(),
             selected: None,
-            solution_shown: true,
+            dock: store(cx).read::<DockLayout>().complete().clamped(),
+            opened_as: None,
             explorer_focus: cx.focus_handle(),
+            problems_focus: cx.focus_handle(),
             tabs: Vec::new(),
             active: None,
             server: None,
             server_state: ServerState::None,
+            progress: Vec::new(),
+            projects_loaded: false,
             said: None,
+            find_action: None,
             _server_task: None,
         }
     }
 
     pub fn open_workspace(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_state(cx);
         for tab in self.tabs.drain(..) {
             tab.update(cx, |e, _| e.detach_server());
         }
         self.active = None;
-        let workspace = Workspace::open(path);
+        let path = rsharp_core::paths::canonical(path);
+        let workspace = Workspace::open(&path);
         window.set_window_title(&workspace.name());
-        self.branch = current_branch(&workspace.folder);
-        self.expanded = HashSet::from([workspace.folder.clone()]);
+        let store = store(cx);
+        let mut recent: RecentSolutions = store.read();
+        recent.opened(path.clone(), workspace.name());
+        self.opened_as = Some(path);
+        store.write(&recent);
+
+        let kept: FolderState = store.read_for(&workspace.folder);
+        let folder = workspace.folder.clone();
+        self.branch = current_branch(&folder);
+        self.expanded = std::iter::once(folder.clone()).chain(kept.expanded.iter().map(|p| folder.join(p))).collect();
+        self.dock = kept.dock.clone().unwrap_or_else(|| store.read::<DockLayout>()).complete().clamped();
         self.workspace = Some(workspace);
         self.selected = Some(0);
         self.rebuild_rows();
         self.start_server(cx);
         window.focus(&self.explorer_focus);
+        for tab in &kept.tabs {
+            let file = folder.join(&tab.path);
+            if file.is_file() {
+                self.open_file(&file, Some((tab.line, tab.column)), window, cx);
+            }
+        }
+        if let Some(active) = kept.active.filter(|a| *a < self.tabs.len()) {
+            self.show_tab(active, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Keeps the folder's tabs, carets and Solution view for the next time it opens.
+    fn save_state(&self, cx: &App) {
+        let Some(workspace) = &self.workspace else { return };
+        let folder = &workspace.folder;
+        let relative = |p: &Path| p.strip_prefix(folder).ok().map(Path::to_path_buf);
+        let tabs = self
+            .tabs
+            .iter()
+            .filter_map(|tab| {
+                let editor = tab.read(cx);
+                let caret = editor.caret();
+                Some(KeptTab { path: relative(&editor.path)?, line: caret.line, column: caret.utf16_column })
+            })
+            .collect();
+        let mut expanded: Vec<PathBuf> =
+            self.expanded.iter().filter_map(|p| relative(p)).filter(|p| !p.as_os_str().is_empty()).collect();
+        expanded.sort();
+        let store = store(cx);
+        store.write_for(folder, &FolderState { tabs, active: self.active, expanded, dock: Some(self.dock.clone()) });
+        store.write(&self.dock);
+    }
+
+    fn show_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.active = Some(index);
+        window.focus(&self.tabs[index].focus_handle(cx));
+        self.save_state(cx);
         cx.notify();
     }
 
     fn start_server(&mut self, cx: &mut Context<Self>) {
         self.server = None;
         let Some(workspace) = &self.workspace else { return };
+        if !cx.global::<crate::state::Ide>().servers {
+            self.server_state = ServerState::None;
+            return;
+        }
         let has_projects = workspace.solution.is_some()
             || std::fs::read_dir(&workspace.folder)
                 .into_iter()
@@ -107,8 +195,10 @@ impl MainWindow {
             return;
         }
         self.server_state = ServerState::Starting;
+        self.progress.clear();
+        self.projects_loaded = false;
         let (folder, solution) = (workspace.folder.clone(), workspace.solution.clone());
-        let logs = std::env::temp_dir().join("rsharp-logs");
+        let logs = store(cx).root().join("logs").join("roslyn");
         let (sender, mut events) = futures::channel::mpsc::unbounded();
         self._server_task = Some(cx.spawn(async move |this, cx| {
             let started = cx
@@ -122,6 +212,7 @@ impl MainWindow {
             let server = match started {
                 Ok(server) => Arc::new(server),
                 Err(failed) => {
+                    log::error!("Roslyn did not start: {failed}");
                     let _ = this.update(cx, |w, cx| {
                         w.server_state = ServerState::Failed(failed.0);
                         cx.notify()
@@ -154,20 +245,51 @@ impl MainWindow {
     fn on_server_event(&mut self, event: ServerEvent, cx: &mut Context<Self>) {
         match event {
             ServerEvent::Notification { method, params } => match method.as_str() {
-                "$/progress" => match params["value"]["kind"].as_str() {
-                    Some("begin") => {
-                        if let Some(title) = params["value"]["title"].as_str() {
-                            self.server_state = ServerState::Loading(title.to_string());
+                // Followed by token: Roslyn's restore can begin after it said the projects loaded.
+                "$/progress" => {
+                    let token = params["token"].to_string();
+                    let value = &params["value"];
+                    let message = value["message"].as_str().unwrap_or_default();
+                    match value["kind"].as_str() {
+                        // A restore is held until it names a project: Roslyn also restores its own stand-in for
+                        // files no project holds (temp's roslyn-canonical-misc/…/Canonical.csproj), which is
+                        // never shown or waited for, as Passenger's ProjectLoad holds it.
+                        Some("begin") if value["title"] == "Restore" => {}
+                        Some("begin") => {
+                            let title = value["title"].as_str().unwrap_or("Working").to_string();
+                            self.progress.retain(|(t, _)| *t != token);
+                            self.progress.push((token, title));
                         }
+                        Some("report") if message.starts_with("Restoring ") => {
+                            self.progress.retain(|(t, _)| *t != token);
+                            if !message.contains("Canonical.csproj") {
+                                self.progress.push((token, message.to_string()));
+                            }
+                        }
+                        Some("end") => {
+                            log::info!(target: "roslyn", "{} done", self.progress.iter().find(|(t, _)| *t == token).map_or("work", |(_, title)| title.as_str()));
+                            self.progress.retain(|(t, _)| *t != token);
+                        }
+                        _ => {}
                     }
-                    Some("end") if !matches!(self.server_state, ServerState::Ready) => {}
-                    _ => {}
-                },
+                    self.server_state = match (self.progress.last(), self.projects_loaded) {
+                        (Some((_, title)), _) => ServerState::Loading(title.clone()),
+                        (None, true) => ServerState::Ready,
+                        (None, false) => ServerState::Loading("Loading solution".into()),
+                    };
+                }
                 "workspace/projectInitializationComplete" => {
-                    self.server_state = ServerState::Ready;
+                    log::info!(target: "roslyn", "projects loaded");
+                    self.projects_loaded = true;
+                    if self.progress.is_empty() {
+                        self.server_state = ServerState::Ready;
+                    }
                     for tab in &self.tabs {
                         tab.update(cx, |e, cx| e.check(std::time::Duration::ZERO, cx));
                     }
+                }
+                "window/logMessage" if params["type"].as_u64().is_some_and(|t| t <= 2) => {
+                    log::warn!(target: "roslyn", "{}", params["message"].as_str().unwrap_or_default());
                 }
                 "window/showMessage" if params["type"].as_u64() == Some(1) => {
                     self.said = params["message"].as_str().map(|m| m.to_string().into());
@@ -175,6 +297,7 @@ impl MainWindow {
                 _ => {}
             },
             ServerEvent::Ended => {
+                log::warn!("Roslyn stopped");
                 self.server = None;
                 self.server_state = ServerState::Failed("Roslyn stopped".into());
             }
@@ -230,6 +353,7 @@ impl MainWindow {
             self.expanded.remove(&path);
         }
         self.rebuild_rows();
+        self.save_state(cx);
         cx.notify();
     }
 
@@ -258,13 +382,18 @@ impl MainWindow {
                 let bytes = match std::fs::read(&path) {
                     Ok(bytes) => bytes,
                     Err(error) => {
+                        log::warn!("Could not open {}: {error}", path.display());
                         self.said = Some(format!("Could not open {}: {error}", path.display()).into());
                         cx.notify();
                         return;
                     }
                 };
                 let editor = cx.new(|cx| CodeEditor::new(path.clone(), &bytes, cx));
-                cx.observe(&editor, |_, _, cx| cx.notify()).detach();
+                cx.observe(&editor, |w, _, cx| {
+                    w.save_state(cx);
+                    cx.notify()
+                })
+                .detach();
                 if let Some(server) = self.server.clone().filter(|_| is_csharp(&path)) {
                     editor.update(cx, |e, cx| e.attach_server(server, cx));
                 }
@@ -272,13 +401,10 @@ impl MainWindow {
                 self.tabs.len() - 1
             }
         };
-        self.active = Some(index);
-        let editor = self.tabs[index].clone();
         if let Some((line, column)) = caret {
-            editor.update(cx, |e, cx| e.place_caret(line, column, cx));
+            self.tabs[index].update(cx, |e, cx| e.place_caret(line, column, cx));
         }
-        window.focus(&editor.focus_handle(cx));
-        cx.notify();
+        self.show_tab(index, window, cx);
     }
 
     fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -294,8 +420,10 @@ impl MainWindow {
         };
         match self.active {
             Some(active) => window.focus(&self.tabs[active].focus_handle(cx)),
-            None => window.focus(&self.explorer_focus),
+            None if self.dock.is_open(Tool::Solution) => window.focus(&self.explorer_focus),
+            None => window.focus(&self.root_focus),
         }
+        self.save_state(cx);
         cx.notify();
     }
 
@@ -310,10 +438,121 @@ impl MainWindow {
             if let Ok(Ok(Some(paths))) = chosen.await
                 && let Some(path) = paths.into_iter().next()
             {
-                let _ = this.update_in(cx, |w, window, cx| w.open_workspace(&path, window, cx));
+                let _ = this.update(cx, |_, cx| {
+                    cx.defer(move |cx| {
+                        crate::projects::open_project(&path, cx);
+                    })
+                });
             }
         })
         .detach();
+    }
+
+    /// Each tab's file name and caret (line and column from 0), as the tab strip and status bar show them.
+    pub fn tab_carets(&self, cx: &App) -> Vec<(String, (usize, usize))> {
+        self.tabs
+            .iter()
+            .map(|t| {
+                let editor = t.read(cx);
+                let caret = editor.caret();
+                (
+                    editor.path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+                    (caret.line, caret.utf16_column),
+                )
+            })
+            .collect()
+    }
+
+    pub fn active_tab_name(&self, cx: &App) -> Option<String> {
+        self.active_editor().map(|e| e.read(cx).path.file_name().unwrap_or_default().to_string_lossy().into_owned())
+    }
+
+    /// Back to the Welcome screen, the folder's state kept, as Rider's File | Close Solution.
+    pub fn close_solution(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_state(cx);
+        for tab in self.tabs.drain(..) {
+            tab.update(cx, |e, _| e.detach_server());
+        }
+        self.active = None;
+        self.workspace = None;
+        self.opened_as = None;
+        self.rows.clear();
+        self.server = None;
+        self.server_state = ServerState::None;
+        self._server_task = None;
+        self.branch = None;
+        window.set_window_title("RSharp");
+        window.focus(&self.root_focus);
+        cx.notify();
+    }
+
+    /// Opens Find Action over the window, each action's availability judged where the person was.
+    pub fn find_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let before = window.focused(cx);
+        let mut available = Vec::with_capacity(ALL.len());
+        let mut keys = Vec::with_capacity(ALL.len());
+        for entry in ALL {
+            let action = (entry.action)();
+            available.push(window.is_action_available(&*action, cx));
+            keys.push(window.highest_precedence_binding_for_action(&*action).map(|binding| {
+                binding.keystrokes().iter().map(ToString::to_string).collect::<Vec<_>>().join(" ").into()
+            }));
+        }
+        let popup = cx.new(|cx| FindActionPopup::new(available.clone(), keys, cx));
+        cx.subscribe_in(&popup, window, move |w, _, ended: &Ended, window, cx| {
+            w.find_action = None;
+            if let Some(before) = &before {
+                window.focus(before);
+            }
+            if let Ended::Chosen(index) = ended {
+                if available[*index] {
+                    window.dispatch_action((ALL[*index].action)(), cx);
+                } else {
+                    w.said = Some(format!("{} is not available here", ALL[*index].title.trim_end_matches('…')).into());
+                }
+            }
+            cx.notify();
+        })
+        .detach();
+        window.focus(&popup.focus_handle(cx));
+        self.find_action = Some(popup);
+        cx.notify();
+    }
+
+    /// What Find Action lists now, or `None` while it is closed.
+    pub fn find_action_listed(&self, cx: &App) -> Option<Vec<&'static str>> {
+        self.find_action.as_ref().map(|p| p.read(cx).listed())
+    }
+
+    pub fn said(&self) -> Option<&str> {
+        self.said.as_ref().map(|s| s.as_ref())
+    }
+
+    pub fn has_workspace(&self) -> bool {
+        self.workspace.is_some()
+    }
+
+    /// Whether Roslyn has said the solution's projects are loaded.
+    pub fn server_ready(&self) -> bool {
+        matches!(self.server_state, ServerState::Ready)
+    }
+
+    /// Whether Roslyn could not start or stopped, with why.
+    pub fn server_failed(&self) -> Option<&str> {
+        match &self.server_state {
+            ServerState::Failed(why) => Some(why),
+            _ => None,
+        }
+    }
+
+    /// The open folder, canonical.
+    pub fn folder(&self) -> Option<&Path> {
+        self.workspace.as_ref().map(|w| w.folder.as_path())
+    }
+
+    /// What was opened: the solution or project file, else the folder.
+    pub fn opened_as(&self) -> Option<&Path> {
+        self.opened_as.as_deref()
     }
 
     fn active_editor(&self) -> Option<&Entity<CodeEditor>> {
@@ -345,46 +584,64 @@ impl Render for MainWindow {
             .text_color(theme::text())
             .font_family(theme::UI_FONT)
             .text_size(px(13.))
+            .relative()
+            .track_focus(&self.root_focus)
             .on_action(cx.listener(Self::choose_folder))
-            .on_action(cx.listener(|w, _: &CloseTab, window, cx| {
-                if let Some(active) = w.active {
-                    w.close_tab(active, window, cx)
-                }
-            }))
-            .on_action(cx.listener(|w, _: &editor::Save, _, cx| {
-                if let Some(editor) = w.active_editor().cloned() {
-                    w.said = editor.update(cx, |e, cx| e.save(cx)).err().map(|e| format!("Could not save: {e}").into());
-                    cx.notify();
-                }
-            }))
-            .on_action(cx.listener(|w, _: &ToggleSolution, _, cx| {
-                w.solution_shown = !w.solution_shown;
-                cx.notify()
-            }))
+            .on_action(cx.listener(|w, _: &FindAction, window, cx| w.find_action(window, cx)))
+            // Each acts only while it has something to act on, so menus and Find Action grey it otherwise.
+            .when(self.workspace.is_some(), |d| {
+                d.on_action(cx.listener(|w, _: &CloseSolution, window, cx| w.close_solution(window, cx)))
+                    .on_action(
+                        cx.listener(|w, _: &ToggleSolution, window, cx| w.toggle_tool(Tool::Solution, window, cx)),
+                    )
+                    .on_action(
+                        cx.listener(|w, _: &ToggleProblems, window, cx| w.toggle_tool(Tool::Problems, window, cx)),
+                    )
+                    .on_action(cx.listener(|w, _: &RestoreDefaultLayout, _, cx| {
+                        w.dock = DockLayout::default();
+                        w.save_state(cx);
+                        cx.notify()
+                    }))
+                    .on_action(cx.listener(|w, _: &HideToolWindow, window, cx| {
+                        let focused = Tool::ALL.into_iter().find(|t| w.tool_focus(*t).contains_focused(window, cx));
+                        if let Some(tool) = focused {
+                            w.toggle_tool(tool, window, cx)
+                        }
+                    }))
+            })
+            .when(self.active.is_some(), |d| {
+                d.on_action(cx.listener(|w, _: &CloseTab, window, cx| {
+                    if let Some(active) = w.active {
+                        w.close_tab(active, window, cx)
+                    }
+                }))
+                .on_action(cx.listener(|w, _: &editor::Save, _, cx| {
+                    if let Some(editor) = w.active_editor().cloned() {
+                        w.said =
+                            editor.update(cx, |e, cx| e.save(cx)).err().map(|e| format!("Could not save: {e}").into());
+                        cx.notify();
+                    }
+                }))
+            })
             .child(self.toolbar(window, cx))
-            .child(
-                div().flex().flex_1().min_h_0().when(self.workspace.is_some(), |d| d.child(self.stripe(cx))).child(
-                    div()
-                        .flex()
-                        .flex_1()
-                        .min_w_0()
-                        .gap(px(GAP))
-                        .pr(px(GAP))
-                        .when(self.workspace.is_none(), |d| d.pl(px(GAP)))
-                        .children(
-                            match self.workspace {
-                                Some(_) => vec![
-                                    self.solution_shown.then(|| self.solution_island(window, cx).into_any_element()),
-                                    Some(self.editor_island(cx).into_any_element()),
-                                ],
-                                None => vec![Some(self.welcome(cx).into_any_element())],
-                            }
-                            .into_iter()
-                            .flatten(),
-                        ),
-                ),
-            )
+            .child(match self.workspace {
+                Some(_) => self.body(window, cx).into_any_element(),
+                None => div().flex().flex_1().min_h_0().px(px(GAP)).child(self.welcome(cx)).into_any_element(),
+            })
             .child(self.status_bar(cx))
+            .children(self.find_action.clone().map(|popup| {
+                div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(
+                    div()
+                        .on_mouse_down_out(cx.listener(|w, _, window, cx| {
+                            if let Some(popup) = w.find_action.take() {
+                                drop(popup);
+                                window.focus(&w.root_focus);
+                                cx.notify();
+                            }
+                        }))
+                        .child(popup),
+                )
+            }))
     }
 }
 
@@ -408,22 +665,8 @@ impl MainWindow {
                 }
             })
             .children(name.map(|name| {
-                let initials: String =
-                    name.chars().filter(|c| c.is_alphanumeric()).take(2).collect::<String>().to_uppercase();
                 widget("project-widget")
-                    .child(
-                        div()
-                            .size(px(20.))
-                            .rounded(px(4.))
-                            .bg(theme::accent())
-                            .text_color(theme::on_accent())
-                            .text_size(px(10.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(initials),
-                    )
+                    .child(project_badge(&name, 20.))
                     .child(div().font_weight(FontWeight::SEMIBOLD).child(name))
             }))
             .children(
@@ -431,37 +674,221 @@ impl MainWindow {
             )
     }
 
-    fn stripe(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let shown = self.solution_shown && self.workspace.is_some();
-        div().w(px(STRIPE_WIDTH)).flex_none().flex().flex_col().items_center().pt(px(2.)).children(
-            self.workspace.as_ref().map(|_| {
+    /// The work area: a stripe down each side, the open tool windows as islands round the editor, and the gaps
+    /// between them, which resize what they divide.
+    fn body(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let dock = &self.dock;
+        let column = |places: [Place; 2], this: &Self, window: &mut Window, cx: &mut Context<Self>| {
+            let open: Vec<Tool> = places.iter().filter_map(|p| dock.open_in(*p)).collect();
+            (!open.is_empty()).then(|| {
+                div().h_full().flex().flex_col().gap(px(GAP)).children(
+                    open.into_iter()
+                        .map(|t| this.tool_island(t, window, cx).flex_1().min_h_0().into_any_element())
+                        .collect::<Vec<_>>(),
+                )
+            })
+        };
+        let left = column([Place::LeftTop, Place::LeftBottom], self, window, cx);
+        let right = column([Place::RightTop, Place::RightBottom], self, window, cx);
+        let bottom: Vec<Tool> =
+            [Place::BottomLeft, Place::BottomRight].iter().filter_map(|p| dock.open_in(*p)).collect();
+        let bottom = (!bottom.is_empty()).then(|| {
+            div().h(px(dock.bottom_height)).flex_none().flex().gap(px(GAP)).children(
+                bottom
+                    .into_iter()
+                    .map(|t| self.tool_island(t, window, cx).flex_1().min_w_0().mb(px(GAP)).into_any_element())
+                    .collect::<Vec<_>>(),
+            )
+        });
+        div()
+            .id("body")
+            .flex()
+            .flex_1()
+            .min_h_0()
+            .on_drag_move(cx.listener(|w, event: &gpui::DragMoveEvent<Resize>, _, cx| {
+                let (bounds, at) = (event.bounds, event.event.position);
+                match event.drag(cx) {
+                    Resize::Left => w.dock.left_width = f32::from(at.x - bounds.left()) - STRIPE_WIDTH - GAP / 2.,
+                    Resize::Right => w.dock.right_width = f32::from(bounds.right() - at.x) - STRIPE_WIDTH - GAP / 2.,
+                    Resize::Bottom => w.dock.bottom_height = f32::from(bounds.bottom() - at.y) - GAP / 2.,
+                }
+                w.dock = w.dock.clone().clamped();
+                w.save_state(cx);
+                cx.notify();
+            }))
+            .child(self.stripe(Place::LEFT_STRIPE, cx))
+            .children(left.map(|l| l.w(px(dock.left_width)).flex_none().pb(px(GAP))))
+            .child(if self.has_left() { splitter(Resize::Left).into_any_element() } else { div().into_any_element() })
+            .child(
                 div()
-                    .id("stripe-solution")
-                    .size(px(32.))
-                    .rounded(px(6.))
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .child(self.editor_island(cx).flex_1().min_h_0().when(bottom.is_none(), |d| d.mb(px(GAP))))
+                    .children(bottom.map(|b| div().flex().flex_col().child(splitter(Resize::Bottom)).child(b))),
+            )
+            .child(if self.has_right() { splitter(Resize::Right).into_any_element() } else { div().into_any_element() })
+            .children(right.map(|r| r.w(px(dock.right_width)).flex_none().pb(px(GAP))))
+            .child(self.stripe(Place::RIGHT_STRIPE, cx))
+    }
+
+    fn has_left(&self) -> bool {
+        self.dock.open_in(Place::LeftTop).is_some() || self.dock.open_in(Place::LeftBottom).is_some()
+    }
+
+    fn has_right(&self) -> bool {
+        self.dock.open_in(Place::RightTop).is_some() || self.dock.open_in(Place::RightBottom).is_some()
+    }
+
+    /// A stripe: its side's top group, its split group under a rule, and the bottom panel's half at its foot.
+    /// Each group takes a window's button dropped on it.
+    fn stripe(&self, places: [Place; 3], cx: &mut Context<Self>) -> impl IntoElement {
+        let group = |place: Place, this: &Self, cx: &mut Context<Self>| {
+            div()
+                .id(place.name())
+                .debug_selector(move || format!("stripe group: {}", place.name()))
+                .min_h(px(36.))
+                .w_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(4.))
+                .rounded(px(6.))
+                .drag_over::<DraggedTool>(|style, _, _, _| style.bg(theme::drop_zone()))
+                .on_drop(
+                    cx.listener(move |w, dragged: &DraggedTool, window, cx| w.move_tool(dragged.0, place, window, cx)),
+                )
+                .children({
+                    let mut buttons = Vec::new();
+                    for tool in this.dock.in_place(place).collect::<Vec<_>>() {
+                        buttons.push(this.stripe_button(tool, cx));
+                    }
+                    buttons
+                })
+        };
+        let split_used = self.dock.in_place(places[1]).next().is_some();
+        div()
+            .w(px(STRIPE_WIDTH))
+            .flex_none()
+            .flex()
+            .flex_col()
+            .items_center()
+            .px(px(4.))
+            .pt(px(2.))
+            .pb(px(GAP))
+            .child(group(places[0], self, cx))
+            .when(split_used, |d| d.child(div().w(px(20.)).h(px(1.)).my(px(4.)).bg(theme::separator())))
+            .child(group(places[1], self, cx))
+            .child(div().flex_1())
+            .child(group(places[2], self, cx))
+    }
+
+    fn stripe_button(&self, tool: Tool, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let open = self.dock.is_open(tool);
+        div()
+            .id(tool.title())
+            .debug_selector(move || format!("stripe: {}", tool.title()))
+            .size(px(32.))
+            .flex_none()
+            .rounded(px(6.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .when(open, |d| d.bg(theme::accent()))
+            .when(!open, |d| d.hover(|d| d.bg(theme::button_hover())).active(|d| d.bg(theme::button_pressed())))
+            .child(icon(tool.icon(), 20.))
+            .on_click(cx.listener(move |w, _: &ClickEvent, window, cx| w.toggle_tool(tool, window, cx)))
+            .on_drag(DraggedTool(tool), |dragged, _, _, cx| cx.new(|_| dragged.clone()))
+            .into_any_element()
+    }
+
+    /// A tool window's island: its header (the title and Hide) over its content.
+    fn tool_island(&self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
+        let header = div()
+            .h(px(40.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .pl(px(14.))
+            .pr(px(6.))
+            .child(div().font_weight(FontWeight::SEMIBOLD).child(tool.title()))
+            .children(
+                self.tool_subtitle(tool, cx).map(|s| div().truncate().text_color(theme::text_secondary()).child(s)),
+            )
+            .child(div().flex_1())
+            .child(
+                div()
+                    .id(("hide", tool as usize))
+                    .size(px(24.))
+                    .rounded(px(4.))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .when(shown, |d| d.bg(theme::accent()))
-                    .when(!shown, |d| {
-                        d.hover(|d| d.bg(theme::button_hover())).active(|d| d.bg(theme::button_pressed()))
-                    })
-                    .child(icon("tw-project", 20.))
-                    .on_click(cx.listener(|w, _: &ClickEvent, _, cx| {
-                        w.solution_shown = !w.solution_shown;
-                        cx.notify()
-                    }))
-            }),
-        )
+                    .hover(|d| d.bg(theme::button_hover()))
+                    .active(|d| d.bg(theme::button_pressed()))
+                    .child(icon("hide", 16.))
+                    .on_click(cx.listener(move |w, _: &ClickEvent, window, cx| w.toggle_tool(tool, window, cx))),
+            );
+        let content = match tool {
+            Tool::Solution => self.solution_content(window, cx).into_any_element(),
+            Tool::Problems => self.problems_content(cx).into_any_element(),
+        };
+        island().child(header).child(content)
     }
 
-    fn solution_island(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn tool_subtitle(&self, tool: Tool, cx: &App) -> Option<String> {
+        match tool {
+            Tool::Solution => None,
+            Tool::Problems => self
+                .active_editor()
+                .map(|e| e.read(cx).path.file_name().unwrap_or_default().to_string_lossy().into_owned()),
+        }
+    }
+
+    fn tool_focus(&self, tool: Tool) -> &FocusHandle {
+        match tool {
+            Tool::Solution => &self.explorer_focus,
+            Tool::Problems => &self.problems_focus,
+        }
+    }
+
+    /// Opens or closes a tool window; one opened takes the keys, one closed with them gives them to the editor.
+    pub fn toggle_tool(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
+        let had_focus = self.tool_focus(tool).contains_focused(window, cx);
+        self.dock.toggle(tool);
+        if self.dock.is_open(tool) {
+            window.focus(self.tool_focus(tool));
+        } else if had_focus {
+            match self.active_editor() {
+                Some(editor) => window.focus(&editor.focus_handle(cx)),
+                None => window.focus(&self.root_focus),
+            }
+        }
+        self.save_state(cx);
+        cx.notify();
+    }
+
+    fn move_tool(&mut self, tool: Tool, place: Place, _: &mut Window, cx: &mut Context<Self>) {
+        self.dock.move_to(tool, place);
+        self.save_state(cx);
+        cx.notify();
+    }
+
+    pub fn dock(&self) -> &DockLayout {
+        &self.dock
+    }
+
+    fn solution_content(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.explorer_focus.contains_focused(window, cx);
         let row_count = self.rows.len();
-        island()
+        div()
             .id("solution")
-            .w(px(280.))
-            .flex_none()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
             .key_context("Explorer")
             .track_focus(&self.explorer_focus)
             .on_action(cx.listener(|w, _: &ExplorerUp, _, cx| {
@@ -487,7 +914,6 @@ impl MainWindow {
                     w.activate_row(s, window, cx)
                 }
             }))
-            .child(header("Solution"))
             .child(
                 uniform_list(
                     "solution-rows",
@@ -500,6 +926,54 @@ impl MainWindow {
                 .px(px(6.))
                 .pb(px(6.)),
             )
+    }
+
+    /// The shown file's problems, as Problems' File tab: each a row that goes to its place.
+    fn problems_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(editor) = self.active_editor().cloned() else {
+            return empty_text("Open a file to see its problems.").track_focus(&self.problems_focus).into_any_element();
+        };
+        let read = editor.read(cx);
+        let rows: Vec<(bool, String, usize, usize, usize)> = read
+            .diagnostics
+            .iter()
+            .map(|d| {
+                let at = read.document.position(d.range.start);
+                (d.error, d.message.clone(), at.line, at.utf16_column, d.range.start)
+            })
+            .collect();
+        if rows.is_empty() {
+            return empty_text("No problems in this file.").track_focus(&self.problems_focus).into_any_element();
+        }
+        div()
+            .id("problems")
+            .key_context("Problems")
+            .track_focus(&self.problems_focus)
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .px(px(6.))
+            .children(rows.into_iter().enumerate().map(|(i, (error, message, line, column, _))| {
+                let editor = editor.clone();
+                div()
+                    .id(("problem", i))
+                    .debug_selector(move || format!("problem: {i}"))
+                    .h(px(ROW_HEIGHT))
+                    .px(px(8.))
+                    .rounded(px(4.))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .hover(|d| d.bg(theme::row_hover()))
+                    .child(icon(if error { "error" } else { "warning" }, 16.))
+                    .child(div().truncate().child(message))
+                    .child(div().flex_none().text_color(theme::text_secondary()).child(format!(":{}", line + 1)))
+                    .on_click(cx.listener(move |_, _: &ClickEvent, window, cx| {
+                        editor.update(cx, |e, cx| e.place_caret(line, column, cx));
+                        window.focus(&editor.focus_handle(cx));
+                    }))
+            }))
+            .into_any_element()
     }
 
     fn solution_row(&self, index: usize, focused: bool, cx: &mut Context<Self>) -> impl IntoElement {
@@ -549,9 +1023,8 @@ impl MainWindow {
             }))
     }
 
-    fn editor_island(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn editor_island(&self, cx: &mut Context<Self>) -> gpui::Div {
         island()
-            .flex_1()
             .min_w_0()
             .when(!self.tabs.is_empty(), |d| {
                 d.child(
@@ -632,15 +1105,12 @@ impl MainWindow {
                         w.close_tab(index, window, cx)
                     })),
             )
-            .on_click(cx.listener(move |w, _: &ClickEvent, window, cx| {
-                w.active = Some(index);
-                window.focus(&w.tabs[index].focus_handle(cx));
-                cx.notify();
-            }))
+            .on_click(cx.listener(move |w, _: &ClickEvent, window, cx| w.show_tab(index, window, cx)))
             .into_any_element()
     }
 
     fn welcome(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let recent: Vec<_> = store(cx).read::<RecentSolutions>().existing().take(10).cloned().collect();
         island()
             .flex_1()
             .items_center()
@@ -662,6 +1132,41 @@ impl MainWindow {
                     .child(format!("Open…  {}", if cfg!(target_os = "macos") { "⌘O" } else { "Ctrl+O" }))
                     .on_click(cx.listener(|w, _: &ClickEvent, window, cx| w.choose_folder(&OpenFolder, window, cx))),
             )
+            .when(!recent.is_empty(), |d| {
+                d.child(
+                    div()
+                        .mt(px(28.))
+                        .w(px(420.))
+                        .flex()
+                        .flex_col()
+                        .child(div().px(px(10.)).pb(px(6.)).text_color(theme::text_secondary()).child("Recent"))
+                        .children(recent.into_iter().enumerate().map(|(i, entry)| {
+                            let path = entry.path.clone();
+                            div()
+                                .id(("recent", i))
+                                .h(px(44.))
+                                .px(px(10.))
+                                .rounded(px(6.))
+                                .flex()
+                                .items_center()
+                                .gap(px(10.))
+                                .hover(|d| d.bg(theme::row_hover()))
+                                .active(|d| d.bg(theme::button_pressed()))
+                                .child(project_badge(&entry.name, 28.))
+                                .child(
+                                    div().min_w_0().flex().flex_col().child(div().truncate().child(entry.name)).child(
+                                        div().truncate().text_color(theme::text_secondary()).child(tilde(&entry.path)),
+                                    ),
+                                )
+                                .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                                    let path = path.clone();
+                                    cx.defer(move |cx| {
+                                        crate::projects::open_project(&path, cx);
+                                    });
+                                }))
+                        })),
+                )
+            })
     }
 
     fn status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -705,11 +1210,8 @@ impl MainWindow {
             .child(div().flex_1())
             .children(self.said.clone().map(|said| status_widget(said.to_string()).text_color(theme::error())))
             .children(problems.filter(|(e, w)| e + w > 0).map(|(errors, warnings)| {
-                status_widget(format!("{errors} errors, {warnings} warnings")).text_color(if errors > 0 {
-                    theme::error()
-                } else {
-                    theme::warning()
-                })
+                status_widget(format!("{}, {}", count(errors, "error"), count(warnings, "warning")))
+                    .text_color(if errors > 0 { theme::error() } else { theme::warning() })
             }))
             .children(server.map(|(text, colour)| status_widget(text).text_color(colour)))
             .children(
@@ -731,19 +1233,109 @@ impl MainWindow {
     }
 }
 
-fn island() -> gpui::Div {
-    div().flex().flex_col().overflow_hidden().rounded(px(ISLAND_RADIUS)).bg(theme::island()).mb(px(GAP))
-}
-
-fn header(title: &str) -> impl IntoElement {
+/// A project's two letters on the accent, as Rider marks a project in its toolbar and recent list.
+fn project_badge(name: &str, size: f32) -> impl IntoElement {
+    let initials: String = name.chars().filter(|c| c.is_alphanumeric()).take(2).collect::<String>().to_uppercase();
     div()
-        .h(px(40.))
+        .size(px(size))
         .flex_none()
+        .rounded(px(size / 5.))
+        .bg(theme::accent())
+        .text_color(theme::on_accent())
+        .text_size(px(size / 2.))
+        .font_weight(FontWeight::SEMIBOLD)
         .flex()
         .items_center()
-        .px(px(14.))
-        .font_weight(FontWeight::SEMIBOLD)
-        .child(title.to_string())
+        .justify_center()
+        .child(initials)
+}
+
+/// A path as a person reads it, the home folder as `~`.
+fn tilde(path: &Path) -> String {
+    let home = rsharp_core::programs::home();
+    match path.strip_prefix(&home) {
+        Ok(rest) if !home.as_os_str().is_empty() => format!("~/{}", rest.display()),
+        _ => path.display().to_string(),
+    }
+}
+
+/// `1 error`, `2 errors`.
+fn count(n: usize, what: &str) -> String {
+    if n == 1 { format!("1 {what}") } else { format!("{n} {what}s") }
+}
+
+fn island() -> gpui::Div {
+    div().flex().flex_col().overflow_hidden().rounded(px(ISLAND_RADIUS)).bg(theme::island())
+}
+
+/// A tool window's empty state: what it would show, and how to get it.
+fn empty_text(text: &'static str) -> gpui::Div {
+    div().flex_1().flex().items_center().justify_center().px(px(16.)).text_color(theme::text_secondary()).child(text)
+}
+
+/// What a gap between islands resizes when dragged.
+#[derive(Clone, Copy)]
+enum Resize {
+    Left,
+    Right,
+    Bottom,
+}
+
+impl Render for Resize {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        gpui::Empty
+    }
+}
+
+/// The gap between islands, which resizes them as it is dragged.
+fn splitter(edge: Resize) -> impl IntoElement {
+    let horizontal = matches!(edge, Resize::Bottom);
+    div()
+        .id(match edge {
+            Resize::Left => "split-left",
+            Resize::Right => "split-right",
+            Resize::Bottom => "split-bottom",
+        })
+        .debug_selector(move || {
+            format!(
+                "splitter: {}",
+                if horizontal {
+                    "bottom"
+                } else if matches!(edge, Resize::Left) {
+                    "left"
+                } else {
+                    "right"
+                }
+            )
+        })
+        .flex_none()
+        .when(horizontal, |d| d.h(px(GAP)).w_full().cursor_row_resize())
+        .when(!horizontal, |d| d.w(px(GAP)).h_full().cursor_col_resize())
+        .on_drag(edge, |edge, _, _, cx| cx.new(|_| *edge))
+}
+
+/// A tool window's stripe button, carried in a drag, drawn as a chip of its title.
+#[derive(Clone)]
+struct DraggedTool(Tool);
+
+impl Render for DraggedTool {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(10.))
+            .h(px(28.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .rounded(px(6.))
+            .bg(theme::popup())
+            .border_1()
+            .border_color(theme::popup_border())
+            .text_color(theme::text())
+            .font_family(theme::UI_FONT)
+            .text_size(px(13.))
+            .child(icon(self.0.icon(), 16.))
+            .child(self.0.title())
+    }
 }
 
 /// A toolbar button that holds a value (the project, the branch), as Rider's toolbar widgets.
@@ -792,6 +1384,6 @@ fn empty_editor() -> impl IntoElement {
 
 impl Focusable for MainWindow {
     fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.explorer_focus.clone()
+        self.root_focus.clone()
     }
 }

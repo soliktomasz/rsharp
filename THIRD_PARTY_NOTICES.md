@@ -10,7 +10,9 @@ change that brings it in.
 | `gpui` | Apache-2.0 | Zed Industries, Inc. |
 | `futures` | MIT OR Apache-2.0 | The futures-rs authors |
 | `libc` | MIT OR Apache-2.0 | The Rust Project Developers |
+| `log` | MIT OR Apache-2.0 | The Rust Project Developers |
 | `ropey` | MIT | Nathan Vegdahl |
+| `serde` | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
 | `serde_json` | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
 | `tree-sitter` | MIT | Max Brunsfeld |
 | `tree-sitter-c-sharp` | MIT | Max Brunsfeld, Damien Guard and contributors |

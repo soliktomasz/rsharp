@@ -99,6 +99,7 @@ fn read(mut output: impl BufRead, input: &Mutex<ChildStdin>, pending: &Pending, 
         let id = message.get("id").and_then(Value::as_i64);
         match (message.get("method").and_then(Value::as_str), id) {
             (Some(method), Some(id)) => {
+                log::info!(target: "lsp", "server asks {method}: {}", message["params"]);
                 let _ = write(
                     input,
                     &json!({ "jsonrpc": "2.0", "id": id, "result": answer_for(method, &message["params"]) }),

@@ -15,10 +15,17 @@ that makes a key cost more than what it changed needs a reason.
 
 ```sh
 just build                 # cargo build; warnings are errors (.cargo/config.toml)
-just run [PATH] [--file F] [--caret L:C]   # the IDE on a folder, solution or project
+just run [PATH] [--file F] [--caret L:C] [--key KEYS] [--type TEXT]   # the IDE on a folder, solution or project
 just test [filter]         # every test
-just screenshot OUT.png [args]   # the real window captured on macOS (tools/screenshot.sh; WAIT=seconds)
+just screenshot OUT.png [args]   # the real window captured on macOS (tools/screenshot.sh; WAIT=seconds,
+                           # SHOT_WINDOW=Settings for another window by title; a state folder of its own)
+tools/bench.sh             # the release build on 1, 3 and 10 projects: start, load, memory, key to frame;
+                           # appends bench/results.csv by commit (keep its window in front)
 ```
+
+`--key` and `--type` are steps through the window's real input once it has opened, in order, each waiting for
+what the one before opened: `--key cmd-shift-a --type clo` shows Find Action with "clo" typed. A malformed key is
+fatal, as every malformed flag is.
 
 `just` isn't required: each recipe is one cargo command. A Debug build optimises dependencies (gpui and
 tree-sitter are slow unoptimised). gpui compiles its Metal shaders at start (`runtime_shaders`), so no Metal
@@ -30,9 +37,14 @@ terminal and takes focus for a moment.
 
 ## Layout
 
-- `crates/rsharp-core`: no UI. `process` starts every program (`spawn`): each leads a process group that ends
-  with it, and `end_all` runs as the IDE quits or panics. `paths` (canonical paths, `file://` URIs), `programs`
-  (finds `dotnet` and tools as a login shell would), `files::write` (every save: temporary file and rename).
+- `crates/rsharp-core`: no UI. `process` starts every program (`spawn`): each leads a process group, and a
+  watchdog shell (Passenger's Lifeline) kills that group once the IDE's pipe to it closes, however the IDE
+  ended, SIGKILL included (Roslyn's BuildHost ignores SIGTERM and outlived Roslyn before it). `paths` (canonical
+  paths, `file://` URIs), `programs` (finds `dotnet` as a login shell would), `files::write` (every save:
+  temporary file and rename), `state` (the one `StateStore`: `RSHARP_STATE` or the local app data; app documents
+  at its root, each folder's under `workspaces/<name>-<hash>/`; writes debounced on its own thread, merged over
+  the file key by key, read back from memory until written; an unreadable file set aside as `.bad` and said
+  once), `logs` (`logs/rsharp.log` under the state root, rotated; gpui's warnings land there too).
 - `crates/rsharp-text`: no UI. `Document` (Ropey's rope, whose clone is a snapshot another thread may read; undo;
   `Change`s in application order with byte, line and UTF-16 places), `Selection`s, and every editing command as
   a pure function to an `EditPlan`. Offsets are UTF-8 bytes. A file's CRLF is held as `\n` and written back.
@@ -42,11 +54,27 @@ terminal and takes focus for a moment.
 - `crates/rsharp-lsp`: the LSP client (JSON-RPC over stdio, a reader thread, `ServerFailed` the one failure) and
   `start_roslyn`, which runs the person's `roslyn-language-server` dotnet tool with `--clientProcessId`, so it
   ends with the IDE even after a crash, and opens the solution (`solution/open`) or lets it find the projects.
-- `crates/rsharp-app`: the shell. `window.rs` is the main window as Rider's Islands (toolbar, stripe and status
-  bar on the frame; Solution and editor as islands), `editor.rs` the code editor (a gpui `Element` that shapes
+- `crates/rsharp-app`: the shell, a library (`lib.rs`, whose `init` the executable and the tests both call) and
+  `main.rs`. `window.rs` is a project window as Rider's Islands: the toolbar and status bar on the frame, a stripe
+  down each side, the editor and the open tool windows as islands, the gaps between them resizing what they
+  divide; each action registers only while it has something to act on, so menus and Find Action grey it
+  otherwise; the root has a focus of its own, so window-wide keys work on the Welcome screen.
+  `dock.rs` is the frame's layout: IntelliJ's six places, which window is where and open, the islands' sizes,
+  kept with the folder (`state.rs`'s `FolderState`) and as `layout.json`, the default for a folder with none.
+  A new tool window is a `Tool` with its title, icon and home place, and its content in `window.rs`.
+  `projects.rs` is the process's windows: every open (command line, Open, the recent list) goes through
+  `open_project`, which brings forward the window that has the folder, else fills a Welcome window, else opens
+  one; quit keeps them all (`session.json`). `actions.rs` is every action by name for the main menu and
+  `find_action.rs`; `field.rs` the single-line text field, its editing `rsharp-text`'s commands under the
+  editor's own actions; `fuzzy.rs` how a query matches a name. `settings.rs` is `AppSettings` (`settings.json`),
+  a gpui global that editors observe; `settings_dialog.rs` Rider's searchable Settings window (a new setting is
+  a field, an `Opt` on a page, and what follows it). `editor.rs` is the code editor (a gpui `Element` that shapes
   only the lines on screen; the parse runs on the background executor; Roslyn told every change and asked for
   diagnostics once typing pauses), `theme.rs` every colour, `assets.rs` the carried fonts and icons,
-  `keymap.rs` Rider's keys, `launch.rs` the command line, `workspace.rs` the folder and its solution.
+  `keymap.rs` Rider's keys, `launch.rs` the command line, `workspace.rs` the folder and its solution, `bench.rs`
+  what `--bench` measures. Roslyn's progress is followed by token, and a Restore counts only once it names a
+  project: Roslyn also restores its stand-in for files no project holds (`Canonical.csproj`), which never ends
+  while such a file is open and is never shown or waited for.
 
 ## Rules
 
@@ -66,6 +94,13 @@ terminal and takes focus for a moment.
 - Commit messages go through a file (`git commit -F msg.txt`).
 
 ## Tests
+
+Window tests (`crates/rsharp-app/tests`) drive a real `MainWindow` on gpui's test platform: `support::Run` gives
+each a folder and a state store of its own (never the person's) and turns language servers off unless a test
+asks for one; keys go through `simulate_keystrokes`/`simulate_input`, clicks and drags to the element a view
+tags with `debug_selector` (`debug_bounds`). `run_until_parked` is the quiet wait: the test platform runs every
+background task deterministically. A test that reads a window's view does it through the handle, not inside an
+update of that window, which gpui has leased out then.
 
 Tests say what a person would see or get, and their failure message names the consequence. The long random
 editing session (`rsharp-text/tests/editing_session.rs`) checks 40,000 keys, undo and redo against a plain
