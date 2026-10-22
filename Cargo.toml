@@ -17,6 +17,7 @@ rsharp-languages = { path = "crates/rsharp-languages" }
 gpui = { version = "0.2.2", features = ["runtime_shaders"] }
 encoding_rs = "0.8"
 futures = "0.3"
+imara-diff = "0.1"
 # Held below 0.2.190, which dropped ENOATTR on Linux: gpui 0.2.2's xattr 0.2.3 (through its tar crate) needs it.
 libc = ">=0.2.186, <0.2.190"
 log = { version = "0.4", features = ["std"] }

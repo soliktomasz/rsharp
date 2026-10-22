@@ -6,5 +6,6 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+imara-diff.workspace = true
 regex.workspace = true
 ropey.workspace = true

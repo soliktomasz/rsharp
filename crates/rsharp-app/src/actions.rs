@@ -14,7 +14,7 @@ use crate::find_bar::{Find, FindNext, FindPrevious, Replace};
 use crate::keymap::{OpenSettings, Quit};
 use crate::window::{
     CloseAllButPinned, CloseAllTabs, CloseOtherTabs, CloseTabsToLeft, CloseTabsToRight, FileEncoding, LineSeparators,
-    OpenTabInNewWindow, PinTab, ReopenClosedTab, SplitDown, SplitRight, Unsplit, UnsplitAll,
+    OpenTabInNewWindow, PinTab, ReopenClosedTab, ShowHistory, SplitDown, SplitRight, Unsplit, UnsplitAll,
 };
 use crate::window::{
     CloseSolution, CloseTab, FindAction, FloatToolWindow, HideToolWindow, OpenFolder, RestoreDefaultLayout,
@@ -41,6 +41,7 @@ pub static ALL: &[IdeAction] = &[
     ide!("Open…", "File", ["open folder", "open solution", "open project"], OpenFolder),
     ide!("Close Solution", "File", ["close project"], CloseSolution),
     ide!("Save", "File", ["save all"], Save),
+    ide!("Show Local History", "File", ["local history", "show history", "revisions"], ShowHistory),
     ide!("File Encoding", "File", ["encoding", "charset", "file properties"], FileEncoding),
     ide!("Line Separators", "File", ["line endings", "crlf", "lf", "file properties"], LineSeparators),
     ide!("Close Tab", "Window", ["close editor"], CloseTab),

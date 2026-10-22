@@ -49,6 +49,7 @@ actions!(
         OpenTabInNewWindow,
         FileEncoding,
         LineSeparators,
+        ShowHistory,
         ExplorerUp,
         ExplorerDown,
         ExplorerExpand,
@@ -430,7 +431,10 @@ impl MainWindow {
             Some(index) => index,
             None => {
                 let buffer = match crate::buffer::find(&path, cx) {
-                    Some(buffer) => buffer,
+                    Some(buffer) => {
+                        buffer.update(cx, |b, cx| b.refresh_from_disk(cx));
+                        buffer
+                    }
                     None => match crate::buffer::open(path.clone(), cx) {
                         Ok(buffer) => buffer,
                         Err(error) => {
@@ -1656,7 +1660,15 @@ impl MainWindow {
         let split = self.area.is_split();
         let closed = !self.area.closed.is_empty();
         d.when(active.is_some(), |d| {
-            d.on_action(cx.listener(|w, _: &FileEncoding, _, cx| {
+            d.on_action(cx.listener(|w, _: &ShowHistory, _, cx| {
+                if let Some(editor) = w.active_editor() {
+                    let buffer = editor.read(cx).buffer.clone();
+                    cx.defer(move |cx| {
+                        crate::history_window::open(buffer, cx);
+                    });
+                }
+            }))
+            .on_action(cx.listener(|w, _: &FileEncoding, _, cx| {
                 w.status_menu = Some(StatusMenu::Encodings);
                 cx.notify()
             }))

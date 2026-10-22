@@ -44,6 +44,8 @@ pub struct Buffer {
     pub read_only: bool,
     /// The line separator chosen in the status bar, which wins over the .editorconfig's while the file is open.
     line_ending_chosen: bool,
+    /// When the file on disk was last read or written, and its length, to tell another program's change.
+    on_disk: Option<(std::time::SystemTime, u64)>,
     pub diagnostics: Vec<Diagnostic>,
     pub tree: Option<Tree>,
     /// The document's version the tree was parsed from: brackets are paired only in a tree that is current.
@@ -110,6 +112,11 @@ fn choose_indent(config: &EditorConfig, text: &Rope) -> (Indent, IndentSource) {
     }
 }
 
+fn stamp(path: &std::path::Path) -> Option<(std::time::SystemTime, u64)> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((metadata.modified().ok()?, metadata.len()))
+}
+
 fn line_ending_named(value: &str) -> Option<LineEnding> {
     match value {
         "lf" => Some(LineEnding::Lf),
@@ -134,6 +141,8 @@ pub fn find(path: &PathBuf, cx: &App) -> Option<Entity<Buffer>> {
 /// Reads a file into a new buffer, known from now to every window.
 pub fn open(path: PathBuf, cx: &mut App) -> std::io::Result<Entity<Buffer>> {
     let bytes = std::fs::read(&path)?;
+    // What the file is as it opens: a version of its own when another program changed it since the last kept.
+    crate::history_window::record(path.clone(), bytes.clone(), Some("External change"), cx);
     let buffer = cx.new(|cx| Buffer::new(path.clone(), &bytes, cx));
     let buffers = &mut cx.default_global::<Buffers>().0;
     buffers.retain(|_, b| b.upgrade().is_some());
@@ -166,6 +175,7 @@ impl Buffer {
             config,
             read_only,
             line_ending_chosen: false,
+            on_disk: None,
             diagnostics: Vec::new(),
             tree: None,
             tree_version: u64::MAX,
@@ -175,8 +185,29 @@ impl Buffer {
             server: None,
             checking: None,
         };
+        buffer.on_disk = stamp(&buffer.path);
         buffer.reparse(cx);
         buffer
+    }
+
+    /// The file read again if another program changed it since, while nothing here is unsaved, as Rider reloads a
+    /// file it sees changed; its new content kept in Local History as an External change.
+    // shortcut: looked at only when the file is opened again; the folder watcher (phase 4) tells it as it happens.
+    pub fn refresh_from_disk(&mut self, cx: &mut Context<Self>) {
+        let now = stamp(&self.path);
+        if now.is_none() || now == self.on_disk || self.is_modified() {
+            return;
+        }
+        let Ok(bytes) = std::fs::read(&self.path) else { return };
+        crate::history_window::record(self.path.clone(), bytes.clone(), Some("External change"), cx);
+        let (text, charset) = decode(&bytes, self.config.get("charset").and_then(Charset::from_editorconfig));
+        let read = Document::new(&text);
+        self.charset = charset;
+        self.saved_charset = charset;
+        self.document.line_ending = read.line_ending;
+        self.replace_all(read.text().to_string(), cx);
+        self.document.mark_saved();
+        self.on_disk = now;
     }
 
     /// Applies an edit made with `carets`, and gives back the carets after it and what changed.
@@ -340,6 +371,19 @@ impl Buffer {
         cx.notify();
     }
 
+    /// The whole text replaced, as one step Undo takes back (Local History's Revert); every editor's carets follow.
+    pub fn replace_all(&mut self, text: String, cx: &mut Context<Self>) {
+        let len = self.document.text().len_bytes();
+        let plan = EditPlan {
+            edits: vec![Edit { range: 0..len, text }],
+            selections: vec![Selection::caret(0)],
+            ..Default::default()
+        };
+        let changes = self.document.apply(plan);
+        let me = cx.entity_id();
+        self.changed(changes, me, cx);
+    }
+
     /// Clear Read-Only Status: the file made writable.
     pub fn clear_read_only(&mut self, cx: &mut Context<Self>) -> std::io::Result<()> {
         let mut permissions = std::fs::metadata(&self.path)?.permissions();
@@ -366,6 +410,8 @@ impl Buffer {
         let bytes = encode(&self.document.contents(), self.charset)
             .map_err(|c| std::io::Error::other(format!("'{c}' cannot be written in {}", self.charset.name())))?;
         rsharp_core::files::write(&self.path, &bytes)?;
+        crate::history_window::record(self.path.clone(), bytes, None, cx);
+        self.on_disk = stamp(&self.path);
         self.saved_charset = self.charset;
         self.document.mark_saved();
         if let Some((server, uri)) = &self.server {

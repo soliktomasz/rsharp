@@ -128,6 +128,13 @@ pub mod editor {
     pub fn whitespace() -> Rgba {
         rgb(0x6F737A)
     }
+    /// DIFF_INSERTED's and DIFF_DELETED's backgrounds (Darcula's, which Islands Dark inherits).
+    pub fn diff_inserted() -> Rgba {
+        rgb(0x294436)
+    }
+    pub fn diff_deleted() -> Rgba {
+        rgb(0x484A4A)
+    }
     /// TEXT_SEARCH_RESULT_ATTRIBUTES' background (IslandSchemeDark.xml): a find bar's match.
     pub fn search_result() -> Rgba {
         rgb(0x114957)

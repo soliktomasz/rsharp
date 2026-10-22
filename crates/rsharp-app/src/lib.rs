@@ -12,6 +12,7 @@ pub mod field;
 pub mod find_action;
 pub mod find_bar;
 pub mod fuzzy;
+pub mod history_window;
 pub mod keymap;
 pub mod launch;
 pub mod projects;
@@ -30,4 +31,12 @@ pub fn init(state_root: std::path::PathBuf, cx: &mut gpui::App) {
     cx.set_global(settings::Settings(store.read::<settings::AppSettings>().clamped()));
     cx.set_global(state::Ide { store, servers: true });
     cx.on_action(|_: &keymap::OpenSettings, cx| settings_dialog::open(cx));
+    let history = history_window::local_history(cx);
+    cx.background_executor()
+        .spawn(async move {
+            if let Err(error) = history.prune() {
+                log::warn!("Local History could not prune: {error}");
+            }
+        })
+        .detach();
 }

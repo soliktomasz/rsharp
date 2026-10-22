@@ -3,6 +3,7 @@
 
 mod carets;
 mod commands;
+mod diff;
 mod document;
 mod movement;
 mod rows;
@@ -10,6 +11,7 @@ mod search;
 
 pub use carets::*;
 pub use commands::*;
+pub use diff::*;
 pub use document::*;
 pub use movement::*;
 pub use ropey::Rope;

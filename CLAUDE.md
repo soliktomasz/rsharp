@@ -45,7 +45,8 @@ terminal and takes focus for a moment.
   paths, `file://` URIs), `programs` (finds `dotnet` as a login shell would), `files::write` (every save:
   temporary file and rename, a read-only file refused), `encodings` (a file's bytes as its text: BOM, else UTF-8,
   else its .editorconfig's 8-bit charset, else windows-1252; a character the encoding cannot hold refused at save),
-  `editorconfig` (the .editorconfig files over a file, its own parser and globs), `state` (the one `StateStore`: `RSHARP_STATE` or the local app data; app documents
+  `editorconfig` (the .editorconfig files over a file, its own parser and globs), `history` (Local History: each version
+  of a file under `localHistory/`, content once by hash in `blobs/`, a JSON line per version in `changes.log`), `state` (the one `StateStore`: `RSHARP_STATE` or the local app data; app documents
   at its root, each folder's under `workspaces/<name>-<hash>/`; writes debounced on its own thread, merged over
   the file key by key, read back from memory until written; an unreadable file set aside as `.bad` and said
   once), `logs` (`logs/rsharp.log` under the state root, rotated; gpui's warnings land there too).
@@ -80,7 +81,8 @@ terminal and takes focus for a moment.
   per window, following the active tab. `buffer.rs` is an open file's text, undo, tree, problems and server, shared by
   every editor of it, and how it is stored (encoding, line separator, indent from .editorconfig, the file's own lines
   or C#'s, read-only, the .editorconfig's save-time rules); `editor_area.rs` the groups of tabs, split right and down, pinned tabs and the tabs closed;
-  `editor_window.rs` a tab dragged out into a window of its own. Every buffer in the process is found by its file
+  `editor_window.rs` a tab dragged out into a window of its own; `history_window.rs` Local History's window and what
+  it records (a file as opened, an External change seen then, each save). Every buffer in the process is found by its file
   (`buffer::find`), so a file in two windows is one text; the last editor of a file gone, the server is told. `editor.rs` is the code editor (a gpui `Element` that shapes
   only the lines on screen; the parse runs on the background executor; Roslyn told every change and asked for
   diagnostics once typing pauses), `theme.rs` every colour, `assets.rs` the carried fonts and icons,
