@@ -11,8 +11,8 @@ use crate::theme;
 use crate::workspace::{Entry, Workspace};
 use futures::StreamExt;
 use gpui::{
-    App, ClickEvent, Context, Entity, FocusHandle, Focusable, FontWeight, MouseButton, PathPromptOptions, Pixels, Point,
-    SharedString, Task, Window, actions, div, prelude::*, px, uniform_list,
+    App, ClickEvent, Context, Entity, FocusHandle, Focusable, FontWeight, MouseButton, PathPromptOptions, Pixels,
+    Point, SharedString, Task, Window, actions, div, prelude::*, px, uniform_list,
 };
 use rsharp_lsp::{LanguageServer, ServerEvent, start_roslyn};
 use std::collections::HashSet;
@@ -869,9 +869,9 @@ impl MainWindow {
                             .when(bottom.is_none(), |d| d.mb(px(GAP)))
                             .debug_selector(|| "editor island".into())
                             // A window's button dropped outside the stripes floats it there, as IntelliJ's does.
-                            .on_drop(cx.listener(|w, dragged: &DraggedTool, window, cx| {
-                                w.float_tool(dragged.0, window, cx)
-                            })),
+                            .on_drop(
+                                cx.listener(|w, dragged: &DraggedTool, window, cx| w.float_tool(dragged.0, window, cx)),
+                            ),
                     )
                     .children(bottom.map(|b| div().flex().flex_col().child(splitter(Resize::Bottom)).child(b))),
             )
