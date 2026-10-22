@@ -143,10 +143,11 @@ fn a_button_dropped_on_the_editor_floats_its_window_which_moves_resizes_and_dock
     );
 
     let from = centre(cx, "stripe: Problems");
-    let to = centre(cx, "stripe group: Bottom Left");
+    // Another group than its own: there the button is the whole group, and a drag that never moves is a click.
+    let to = centre(cx, "stripe group: Right Top");
     drag(cx, from, to);
     main.read_with(cx, |main, _| {
         assert!(!main.dock().is_floating(Tool::Problems), "Problems dropped on a stripe stayed floating");
-        assert_eq!(main.dock().open_in(Place::BottomLeft), Some(Tool::Problems), "Problems docked back closed");
+        assert_eq!(main.dock().open_in(Place::RightTop), Some(Tool::Problems), "Problems docked there closed");
     });
 }
