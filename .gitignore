@@ -1,0 +1,3 @@
+target/
+# Screenshots of a build, retaken by tools/screenshot.sh.
+.impeccable/review/

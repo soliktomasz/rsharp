@@ -1,0 +1,584 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-22T11:51:45+00:00",
+  "title": "Design System: RSharp",
+  "extensions": {
+    "colorMeta": {
+      "frame": {
+        "role": "neutral",
+        "displayName": "Frame",
+        "canonical": "#26282C",
+        "tonalRamp": [
+          "#232529",
+          "#3B3E44",
+          "#535760",
+          "#6A707B",
+          "#848995",
+          "#A7ABB3",
+          "#CED0D4",
+          "#F1F2F3"
+        ]
+      },
+      "island": {
+        "role": "neutral",
+        "displayName": "Island",
+        "canonical": "#191A1C",
+        "tonalRamp": [
+          "#242628",
+          "#3C3F43",
+          "#54585E",
+          "#6C7179",
+          "#868A93",
+          "#A9ACB2",
+          "#CFD0D4",
+          "#F2F2F3"
+        ]
+      },
+      "text": {
+        "role": "neutral",
+        "displayName": "Text",
+        "canonical": "#D1D3D9",
+        "tonalRamp": [
+          "#23242A",
+          "#3A3D46",
+          "#515562",
+          "#686D7E",
+          "#818797",
+          "#A6AAB5",
+          "#CDCFD5",
+          "#F1F2F3"
+        ]
+      },
+      "text-muted": {
+        "role": "neutral",
+        "displayName": "Text Muted",
+        "canonical": "#9FA2A8",
+        "tonalRamp": [
+          "#242628",
+          "#3D3F43",
+          "#55585E",
+          "#6D7178",
+          "#878A92",
+          "#A9ACB1",
+          "#CFD0D3",
+          "#F2F2F3"
+        ]
+      },
+      "text-secondary": {
+        "role": "neutral",
+        "displayName": "Text Secondary",
+        "canonical": "#73767C",
+        "tonalRamp": [
+          "#252628",
+          "#3D3F42",
+          "#56585D",
+          "#6E7177",
+          "#888B91",
+          "#AAACB0",
+          "#CFD1D3",
+          "#F2F2F3"
+        ]
+      },
+      "accent": {
+        "role": "primary",
+        "displayName": "Accent",
+        "canonical": "#3871E1",
+        "tonalRamp": [
+          "#0A1D42",
+          "#11306F",
+          "#17449B",
+          "#1E57C7",
+          "#3871E1",
+          "#719AEA",
+          "#AFC6F3",
+          "#E9EFFC"
+        ]
+      },
+      "on-accent": {
+        "role": "neutral",
+        "displayName": "On Accent",
+        "canonical": "#FFFFFF",
+        "tonalRamp": [
+          "#262626",
+          "#404040",
+          "#595959",
+          "#737373",
+          "#8C8C8C",
+          "#ADADAD",
+          "#D1D1D1",
+          "#F2F2F2"
+        ]
+      },
+      "selection": {
+        "role": "neutral",
+        "displayName": "Selection",
+        "canonical": "#2A4371",
+        "tonalRamp": [
+          "#152138",
+          "#23375D",
+          "#304D82",
+          "#3E63A7",
+          "#587DC1",
+          "#88A2D3",
+          "#BCCBE6",
+          "#ECF1F8"
+        ]
+      },
+      "selection-inactive": {
+        "role": "neutral",
+        "displayName": "Selection Inactive",
+        "canonical": "#33353B",
+        "tonalRamp": [
+          "#232529",
+          "#3B3D44",
+          "#535660",
+          "#6A6F7B",
+          "#848895",
+          "#A7AAB3",
+          "#CECFD4",
+          "#F1F2F3"
+        ]
+      },
+      "row-hover": {
+        "role": "neutral",
+        "displayName": "Row Hover",
+        "canonical": "#FFFFFF10"
+      },
+      "button-hover": {
+        "role": "neutral",
+        "displayName": "Button Hover",
+        "canonical": "#FFFFFF17"
+      },
+      "button-pressed": {
+        "role": "neutral",
+        "displayName": "Button Pressed",
+        "canonical": "#FFFFFF29"
+      },
+      "tab-selected": {
+        "role": "neutral",
+        "displayName": "Tab Selected",
+        "canonical": "#233558",
+        "tonalRamp": [
+          "#162137",
+          "#24375B",
+          "#334D80",
+          "#4163A4",
+          "#5B7CBE",
+          "#8AA2D1",
+          "#BDCBE5",
+          "#EDF0F8"
+        ]
+      },
+      "tab-selected-border": {
+        "role": "neutral",
+        "displayName": "Tab Selected Border",
+        "canonical": "#2E4D89",
+        "tonalRamp": [
+          "#132039",
+          "#20365F",
+          "#2D4B86",
+          "#3A61AC",
+          "#537AC5",
+          "#85A0D6",
+          "#BACAE8",
+          "#ECF0F9"
+        ]
+      },
+      "modified": {
+        "role": "primary",
+        "displayName": "Modified",
+        "canonical": "#548AF7",
+        "tonalRamp": [
+          "#031A49",
+          "#062C7A",
+          "#083EAB",
+          "#0A4FDB",
+          "#2469F5",
+          "#6394F8",
+          "#A7C3FB",
+          "#E7EEFE"
+        ]
+      },
+      "error": {
+        "role": "signal",
+        "displayName": "Error",
+        "canonical": "#F75464",
+        "tonalRamp": [
+          "#49030A",
+          "#7A0611",
+          "#AB0818",
+          "#DB0A1F",
+          "#F52438",
+          "#F86372",
+          "#FBA7B0",
+          "#FEE7E9"
+        ]
+      },
+      "warning": {
+        "role": "signal",
+        "displayName": "Warning",
+        "canonical": "#E5A336",
+        "tonalRamp": [
+          "#442D09",
+          "#714C0F",
+          "#9E6A14",
+          "#CB881A",
+          "#E5A234",
+          "#ECBD6E",
+          "#F4DAAE",
+          "#FCF5E8"
+        ]
+      },
+      "editor-text": {
+        "role": "editor",
+        "displayName": "Editor Text",
+        "canonical": "#BCBEC4",
+        "tonalRamp": [
+          "#242529",
+          "#3C3E44",
+          "#54565F",
+          "#6B6F7A",
+          "#858994",
+          "#A8ABB3",
+          "#CED0D4",
+          "#F1F2F3"
+        ]
+      },
+      "editor-line-number": {
+        "role": "editor",
+        "displayName": "Editor Line Number",
+        "canonical": "#4B5059",
+        "tonalRamp": [
+          "#23252A",
+          "#3A3E45",
+          "#525761",
+          "#69707D",
+          "#828996",
+          "#A6ABB4",
+          "#CDD0D5",
+          "#F1F2F3"
+        ]
+      },
+      "editor-line-number-current": {
+        "role": "editor",
+        "displayName": "Editor Line Number Current",
+        "canonical": "#A1A3AB",
+        "tonalRamp": [
+          "#242528",
+          "#3C3E43",
+          "#54565E",
+          "#6C6F79",
+          "#868893",
+          "#A9ABB2",
+          "#CFD0D4",
+          "#F2F2F3"
+        ]
+      },
+      "editor-current-line": {
+        "role": "editor",
+        "displayName": "Editor Current Line",
+        "canonical": "#1F2024",
+        "tonalRamp": [
+          "#232529",
+          "#3B3D45",
+          "#535560",
+          "#6A6E7B",
+          "#848795",
+          "#A7AAB3",
+          "#CECFD5",
+          "#F1F2F3"
+        ]
+      },
+      "editor-selection": {
+        "role": "editor",
+        "displayName": "Editor Selection",
+        "canonical": "#214283",
+        "tonalRamp": [
+          "#0F1F3D",
+          "#1A3366",
+          "#24488F",
+          "#2E5CB7",
+          "#4876D1",
+          "#7D9DDE",
+          "#B6C8ED",
+          "#EBF0FA"
+        ]
+      },
+      "editor-caret": {
+        "role": "editor",
+        "displayName": "Editor Caret",
+        "canonical": "#CED0D6",
+        "tonalRamp": [
+          "#23252A",
+          "#3A3D45",
+          "#515561",
+          "#696E7D",
+          "#828796",
+          "#A6AAB5",
+          "#CDCFD5",
+          "#F1F2F3"
+        ]
+      },
+      "syntax-keyword": {
+        "role": "syntax",
+        "displayName": "Syntax Keyword",
+        "canonical": "#6C95EB",
+        "tonalRamp": [
+          "#091C43",
+          "#0F2F70",
+          "#15419D",
+          "#1B54CA",
+          "#356DE4",
+          "#6F97EB",
+          "#AEC5F4",
+          "#E9EFFC"
+        ]
+      },
+      "syntax-string": {
+        "role": "syntax",
+        "displayName": "Syntax String",
+        "canonical": "#C9A26D",
+        "tonalRamp": [
+          "#382915",
+          "#5D4422",
+          "#825F30",
+          "#A87B3E",
+          "#C19457",
+          "#D3B388",
+          "#E6D4BC",
+          "#F8F3EC"
+        ]
+      },
+      "syntax-string-escape": {
+        "role": "syntax",
+        "displayName": "Syntax String Escape",
+        "canonical": "#D688D4",
+        "tonalRamp": [
+          "#391438",
+          "#5F215D",
+          "#852E83",
+          "#AB3BA8",
+          "#C454C1",
+          "#D586D3",
+          "#E7BBE6",
+          "#F8ECF8"
+        ]
+      },
+      "syntax-number": {
+        "role": "syntax",
+        "displayName": "Syntax Number",
+        "canonical": "#ED94C0",
+        "tonalRamp": [
+          "#410B26",
+          "#6D123F",
+          "#991A59",
+          "#C42172",
+          "#DE3B8B",
+          "#E773AD",
+          "#F2B0D1",
+          "#FBE9F2"
+        ]
+      },
+      "syntax-comment": {
+        "role": "syntax",
+        "displayName": "Syntax Comment",
+        "canonical": "#85C46C",
+        "tonalRamp": [
+          "#1F3716",
+          "#345B25",
+          "#497F33",
+          "#5EA442",
+          "#77BD5B",
+          "#9ED08B",
+          "#C9E5BD",
+          "#F0F8ED"
+        ]
+      },
+      "syntax-type": {
+        "role": "syntax",
+        "displayName": "Syntax Type",
+        "canonical": "#C191FF",
+        "tonalRamp": [
+          "#21004C",
+          "#380080",
+          "#4E00B2",
+          "#6400E6",
+          "#7E1AFF",
+          "#A35CFF",
+          "#CBA3FF",
+          "#F1E5FF"
+        ]
+      },
+      "syntax-method": {
+        "role": "syntax",
+        "displayName": "Syntax Method",
+        "canonical": "#39CC9B",
+        "tonalRamp": [
+          "#103D2E",
+          "#1A654C",
+          "#258E6B",
+          "#2FB689",
+          "#49D0A3",
+          "#7DDEBD",
+          "#B6ECDA",
+          "#EBFAF5"
+        ]
+      },
+      "syntax-property": {
+        "role": "syntax",
+        "displayName": "Syntax Property",
+        "canonical": "#66C3CC",
+        "tonalRamp": [
+          "#133639",
+          "#205A60",
+          "#2D7E86",
+          "#39A2AC",
+          "#53BBC6",
+          "#85CFD6",
+          "#BAE4E8",
+          "#ECF8F9"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "title": {
+        "displayName": "Title",
+        "purpose": "The product name on the welcome screen only."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "All chrome text."
+      },
+      "body-strong": {
+        "displayName": "Body Strong",
+        "purpose": "Island headers, project name, tree root."
+      },
+      "badge": {
+        "displayName": "Badge",
+        "purpose": "Project initials in the 20px badge."
+      },
+      "code": {
+        "displayName": "Code",
+        "purpose": "Editor text, ligatures off."
+      }
+    },
+    "shadows": [],
+    "motion": [],
+    "breakpoints": []
+  },
+  "components": [
+    {
+      "name": "Island",
+      "kind": "card",
+      "refersTo": "island",
+      "description": "A work area floating on the frame: header then content.",
+      "html": "<div class=\"ds-frame\"><div class=\"ds-island\"><div class=\"ds-island-header\">Solution</div><div class=\"ds-island-body\"></div></div></div>",
+      "css": ".ds-frame { background: #26282C; padding: 6px; font-family: Inter, sans-serif; font-size: 13px; } .ds-island { background: #191A1C; border-radius: 10px; color: #D1D3D9; overflow: hidden; } .ds-island-header { height: 40px; display: flex; align-items: center; padding: 0 14px; font-weight: 600; } .ds-island-body { height: 80px; }"
+    },
+    {
+      "name": "Toolbar Widget",
+      "kind": "button",
+      "refersTo": "toolbar-widget",
+      "description": "The project widget on the frame, with its initials badge.",
+      "html": "<div class=\"ds-bar\"><button class=\"ds-widget\"><span class=\"ds-badge\">RS</span><b>RSharp</b></button></div>",
+      "css": ".ds-bar { background: #26282C; height: 40px; display: flex; align-items: center; padding: 0 8px; } .ds-widget { font-family: Inter, sans-serif; font-size: 13px; height: 30px; display: flex; align-items: center; gap: 6px; padding: 0 8px; border: none; border-radius: 6px; background: transparent; color: #D1D3D9; } .ds-widget b { font-weight: 600; } .ds-widget:hover { background: #FFFFFF17; } .ds-widget:active { background: #FFFFFF29; } .ds-widget:focus-visible { outline: 2px solid #3871E1; } .ds-badge { width: 20px; height: 20px; border-radius: 4px; background: #3871E1; color: #FFF; font-size: 10px; font-weight: 600; display: flex; align-items: center; justify-content: center; }"
+    },
+    {
+      "name": "Tree Row",
+      "kind": "nav",
+      "refersTo": "tree-row",
+      "description": "Solution view rows: hover veil, focused and unfocused selection.",
+      "html": "<div class=\"ds-tree\"><div class=\"ds-row ds-sel\">Passenger</div><div class=\"ds-row\" style=\"padding-left:24px\">src</div><div class=\"ds-row ds-sel-off\" style=\"padding-left:24px\">tests</div></div>",
+      "css": ".ds-tree { background: #191A1C; padding: 6px; font-family: Inter, sans-serif; font-size: 13px; color: #D1D3D9; } .ds-row { height: 24px; display: flex; align-items: center; padding-left: 6px; border-radius: 4px; } .ds-row:hover { background: #FFFFFF10; } .ds-sel, .ds-sel:hover { background: #2A4371; font-weight: 600; } .ds-sel-off, .ds-sel-off:hover { background: #33353B; }"
+    },
+    {
+      "name": "Editor Tab",
+      "kind": "nav",
+      "refersTo": "tab-selected",
+      "description": "Tabs in the 40px strip; selected navy with edge, modified dot.",
+      "html": "<div class=\"ds-tabs\"><div class=\"ds-tab ds-on\">StatusBar.cs <span class=\"ds-x\">×</span></div><div class=\"ds-tab\">App.cs <span class=\"ds-dot\"></span></div></div>",
+      "css": ".ds-tabs { background: #191A1C; height: 40px; display: flex; align-items: center; gap: 2px; padding: 0 6px; border-bottom: 1px solid #26282C; font-family: Inter, sans-serif; font-size: 13px; } .ds-tab { height: 28px; display: flex; align-items: center; gap: 6px; padding: 0 4px 0 8px; border-radius: 6px; border: 1px solid transparent; color: #9FA2A8; } .ds-tab:hover { background: #FFFFFF17; } .ds-on, .ds-on:hover { background: #233558; border-color: #2E4D89; color: #D1D3D9; } .ds-x { width: 16px; height: 16px; border-radius: 3px; display: flex; align-items: center; justify-content: center; } .ds-x:hover { background: #FFFFFF17; } .ds-dot { width: 7px; height: 7px; margin: 0 4px; border-radius: 50%; background: #548AF7; }"
+    },
+    {
+      "name": "Status Bar",
+      "kind": "custom",
+      "refersTo": "status-widget",
+      "description": "Breadcrumbs left, widgets right, on the frame.",
+      "html": "<div class=\"ds-status\"><span>Passenger › src › StatusBar.cs</span><span><span class=\"ds-sw\">Roslyn</span><span class=\"ds-sw\">20:9</span><span class=\"ds-sw\">LF</span><span class=\"ds-sw\">UTF-8</span></span></div>",
+      "css": ".ds-status { background: #26282C; height: 30px; display: flex; align-items: center; justify-content: space-between; padding: 0 10px; color: #9FA2A8; font-family: Inter, sans-serif; font-size: 13px; } .ds-sw { height: 22px; display: inline-flex; align-items: center; padding: 0 6px; border-radius: 4px; } .ds-sw:hover { background: #FFFFFF17; }"
+    },
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The welcome screen's accent button.",
+      "html": "<button class=\"ds-primary\">Open…</button>",
+      "css": ".ds-primary { font-family: Inter, sans-serif; font-size: 13px; height: 28px; padding: 0 14px; border: none; border-radius: 4px; background: #3871E1; color: #FFFFFF; } .ds-primary:focus-visible { outline: 2px solid #548AF7; outline-offset: 2px; }"
+    },
+    {
+      "name": "Code",
+      "kind": "custom",
+      "refersTo": "code",
+      "description": "Editor text in Rider Dark's C# colours.",
+      "html": "<pre class=\"ds-code\"><span class=\"k\">public</span> <span class=\"k\">sealed</span> <span class=\"k\">record</span> <span class=\"t\">StatusPlace</span>(<span class=\"k\">string</span> Name) <span class=\"c\">// a place</span>\n<span class=\"m\">Show</span>(<span class=\"s\">\"problems\"</span>, <span class=\"n\">42</span>);</pre>",
+      "css": ".ds-code { margin: 0; padding: 8px 16px; background: #191A1C; color: #BCBEC4; font: 13px/20px 'JetBrains Mono', monospace; font-variant-ligatures: none; } .ds-code .k { color: #6C95EB; } .ds-code .t { color: #C191FF; } .ds-code .c { color: #85C46C; } .ds-code .m { color: #39CC9B; } .ds-code .s { color: #C9A26D; } .ds-code .n { color: #ED94C0; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Rider's Own Dark",
+    "overview": "RSharp wears JetBrains Rider 2026.2's Islands Dark, read value for value from Rider's theme files (ManyIslandsDark over expUI_dark) and Rider Dark's C# colour scheme. Nothing here is invented: when a design question comes up, Rider's answer is the answer. The world is dense, quiet and keyboard-first; chrome recedes so code carries the colour.\n\nThe signature is the island ground: each work area (the Solution tool window, the editor) is a darker rounded island floating on a lighter frame, separated by 6px gaps of frame rather than by drawn lines. The toolbar, the tool window stripe and the status bar sit directly on the frame, not inside islands.\n\nThe platform is native (Rust, gpui). Tokens are functions in `crates/rsharp-app/src/theme.rs`, each commented with the Rider key it comes from; layout sizes are constants in `window.rs` and `editor.rs`.",
+    "keyCharacteristics": [
+      "Islands (#191A1C, 10px radius) on a frame (#26282C), 6px gaps, no rules between them.",
+      "One accent, Rider's blue, used for selection-adjacent states, the shown stripe button, the project badge, the primary button and key hints.",
+      "Inter 13px for all chrome; JetBrains Mono 13px on a 20px line for code, ligatures off.",
+      "Rider's New UI sizes: 40px toolbar, stripe and tab strip; 30px status bar; 24px rows; 28px tabs.",
+      "IntelliJ Platform expui icons, drawn in their own colours, never recoloured."
+    ],
+    "rules": [
+      {
+        "name": "The Theme File Rule",
+        "body": "Every colour is a token in theme.rs, named with the Rider key it was read from; a view never writes a literal colour, and a new colour is read from Rider's theme files, not chosen.",
+        "section": "colors"
+      },
+      {
+        "name": "The Code Carries Colour Rule",
+        "body": "Chrome stays neutral; saturated hues belong to syntax, signals and the single accent.",
+        "section": "colors"
+      },
+      {
+        "name": "The One Size Rule",
+        "body": "Chrome is 13px throughout; hierarchy comes from weight (600) and colour, not size.",
+        "section": "typography"
+      },
+      {
+        "name": "The Plain Code Rule",
+        "body": "Code draws without ligatures, as Rider does until a person turns them on.",
+        "section": "typography"
+      },
+      {
+        "name": "The Rider Sizes Rule",
+        "body": "Shell measures are Rider New UI's: 40 / 40 / 30 / 24 / 28 / 6 / 10. A new part takes Rider's size for it rather than a nearby value.",
+        "section": "layout"
+      },
+      {
+        "name": "The Gap Not Line Rule",
+        "body": "Islands are told apart from the frame and from each other by shade and the 6px gap, never by a border or divider.",
+        "section": "elevation & depth"
+      }
+    ],
+    "dos": [
+      "**Do** read a new colour from Rider's theme files and add it to theme.rs with its Rider key.",
+      "**Do** float every work area as an island (#191A1C, 10px) on the frame with 6px gaps.",
+      "**Do** keep chrome text at Inter 13px and mark hierarchy with weight 600 or a muted colour.",
+      "**Do** use the translucent hover and pressed veils so one state token works on any ground.",
+      "**Do** draw IntelliJ expui icons in their own colours at 16px (12px for breadcrumb chevrons, 20px in the stripe)."
+    ],
+    "donts": [
+      "**Don't** write a literal colour in a view.",
+      "**Don't** draw borders or dividers between islands, or between islands and the frame.",
+      "**Don't** add shadows; depth is tonal.",
+      "**Don't** turn on code ligatures by default.",
+      "**Don't** introduce sizes between Rider's (a 36px toolbar, a 26px row); take Rider's."
+    ]
+  }
+}

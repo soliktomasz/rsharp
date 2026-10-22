@@ -1,0 +1,11 @@
+[package]
+name = "rsharp-languages"
+description = "Colour before any language server answers: C# from tree-sitter's syntax, incrementally."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rsharp-text.workspace = true
+tree-sitter.workspace = true
+tree-sitter-c-sharp.workspace = true

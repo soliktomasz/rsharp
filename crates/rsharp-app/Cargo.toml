@@ -1,0 +1,20 @@
+[package]
+name = "rsharp-app"
+description = "The shell: the main window, the Solution view, editor tabs, the code editor and the status bar."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rsharp"
+path = "src/main.rs"
+
+[dependencies]
+futures.workspace = true
+gpui.workspace = true
+rsharp-core.workspace = true
+rsharp-languages.workspace = true
+rsharp-lsp.workspace = true
+rsharp-text.workspace = true
+serde_json.workspace = true
+tree-sitter.workspace = true

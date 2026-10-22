@@ -1,0 +1,60 @@
+//! The command line. A malformed flag or value is fatal, never a silent default.
+
+use std::path::PathBuf;
+
+#[derive(Debug, Default, PartialEq)]
+pub struct LaunchOptions {
+    pub path: Option<PathBuf>,
+    pub file: Option<PathBuf>,
+    /// Line and column, counted from 1 as the person writes them.
+    pub caret: Option<(usize, usize)>,
+}
+
+impl LaunchOptions {
+    pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Self, String> {
+        let mut options = Self::default();
+        let mut args = args.into_iter();
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--file" => options.file = Some(args.next().ok_or("--file needs a file")?.into()),
+                "--caret" => {
+                    let value = args.next().ok_or("--caret needs LINE:COLUMN")?;
+                    let parsed = value.split_once(':').and_then(|(l, c)| Some((l.parse().ok()?, c.parse().ok()?)));
+                    match parsed {
+                        Some((line, column)) if line >= 1 && column >= 1 => options.caret = Some((line, column)),
+                        _ => return Err(format!("--caret takes LINE:COLUMN, each from 1, not {value:?}")),
+                    }
+                }
+                flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
+                path if options.path.is_none() => options.path = Some(path.into()),
+                extra => return Err(format!("one folder or solution at a time, not also {extra:?}")),
+            }
+        }
+        if options.caret.is_some() && options.file.is_none() {
+            return Err("--caret needs --file".into());
+        }
+        Ok(options)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<LaunchOptions, String> {
+        LaunchOptions::parse(args.iter().map(|a| a.to_string()))
+    }
+
+    #[test]
+    fn a_folder_file_and_caret_are_read_and_anything_malformed_refused() {
+        assert_eq!(
+            parse(&[".", "--file", "Program.cs", "--caret", "12:5"]),
+            Ok(LaunchOptions { path: Some(".".into()), file: Some("Program.cs".into()), caret: Some((12, 5)) })
+        );
+        assert!(parse(&["--caret", "12:5"]).is_err(), "a caret with no file");
+        assert!(parse(&["--file", "a", "--caret", "0:1"]).is_err(), "a line counted from 0");
+        assert!(parse(&["--file", "a", "--caret", "x"]).is_err());
+        assert!(parse(&["--theme", "dark"]).is_err(), "an option RSharp does not know");
+        assert!(parse(&["a", "b"]).is_err(), "two folders");
+    }
+}

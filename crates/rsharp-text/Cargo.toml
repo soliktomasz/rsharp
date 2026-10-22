@@ -1,0 +1,9 @@
+[package]
+name = "rsharp-text"
+description = "No UI: the document (a rope with undo), selections and every editing command as a pure function."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ropey.workspace = true
