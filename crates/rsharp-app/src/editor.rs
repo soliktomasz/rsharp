@@ -609,7 +609,10 @@ impl CodeEditor {
         }
         let span = self.rows.row(text, row);
         match layout.lines.get(row.wrapping_sub(layout.first_row)) {
-            Some(shaped) => (span.start + shaped.closest_index_for_x(position.x - layout.text_origin.x)).min(span.end),
+            Some(shaped) => {
+                let x = position.x - layout.text_origin.x - layout.char_width * span.indent as f32;
+                (span.start + shaped.closest_index_for_x(x)).min(span.end)
+            }
             None => span.start,
         }
     }
@@ -954,7 +957,8 @@ impl EntityInputHandler for CodeEditor {
         let text = self.document.text();
         let row = self.rows.row_of(text, offset);
         let shaped = layout.lines.get(row.checked_sub(layout.first_row)?)?;
-        let x = shaped.x_for_index(offset - self.rows.row(text, row).start);
+        let span = self.rows.row(text, row);
+        let x = shaped.x_for_index(offset - span.start) + layout.char_width * span.indent as f32;
         let top = layout.text_origin.y + self.line_height * row as f32;
         Some(Bounds::new(point(layout.text_origin.x + x, top), size(px(2.), self.line_height)))
     }
@@ -1190,12 +1194,10 @@ impl Element for EditorElement {
                 let span = state.rows[i];
                 let (start, end) = (span.start, span.end);
                 let top = top_of(row);
+                let left = state.text_origin.x + state.char_width * span.indent as f32;
                 let band = |window: &mut Window, x0: Pixels, x1: Pixels, colour: gpui::Rgba| {
                     window.paint_quad(fill(
-                        Bounds::from_corners(
-                            point(state.text_origin.x + x0, top),
-                            point(state.text_origin.x + x1, top + line_height),
-                        ),
+                        Bounds::from_corners(point(left + x0, top), point(left + x1, top + line_height)),
                         colour,
                     ));
                 };
@@ -1249,9 +1251,9 @@ impl Element for EditorElement {
                         *fold,
                     ));
                 }
-                let _ = shaped.paint(point(state.text_origin.x, top), line_height, window, cx);
+                let _ = shaped.paint(point(left, top), line_height, window, cx);
                 if let Some(Some((fold, true))) = state.fold_marks.get(i).filter(|_| span.last) {
-                    let x = state.text_origin.x + shaped.width + state.char_width;
+                    let x = left + shaped.width + state.char_width;
                     let chip = Bounds::new(
                         point(x, top + px(2.)),
                         size(state.placeholder.width + state.char_width, line_height - px(4.)),
@@ -1264,12 +1266,12 @@ impl Element for EditorElement {
                     let content = text.byte_slice(start..end).to_string();
                     for (at, c) in content.char_indices().filter(|(_, c)| *c == ' ' || *c == '\t') {
                         let (x0, x1) = (shaped.x_for_index(at), shaped.x_for_index(at + 1));
-                        let mid = state.text_origin.x + (x0 + x1) / 2.;
+                        let mid = left + (x0 + x1) / 2.;
                         let y = top + line_height / 2.;
                         let mark = if c == ' ' {
                             Bounds::new(point(mid - px(1.), y - px(1.)), size(px(2.), px(2.)))
                         } else {
-                            Bounds::new(point(state.text_origin.x + x0 + px(2.), y), size(x1 - x0 - px(4.), px(1.)))
+                            Bounds::new(point(left + x0 + px(2.), y), size(x1 - x0 - px(4.), px(1.)))
                         };
                         window.paint_quad(fill(mark, theme::editor::whitespace()));
                     }
@@ -1279,7 +1281,7 @@ impl Element for EditorElement {
                     let x1 = shaped.x_for_index(diagnostic.range.end.min(end) - start).max(x0 + px(6.));
                     let colour: Hsla = if diagnostic.error { theme::error().into() } else { theme::warning().into() };
                     window.paint_underline(
-                        point(state.text_origin.x + x0, top + line_height - px(3.)),
+                        point(left + x0, top + line_height - px(3.)),
                         x1 - x0,
                         &UnderlineStyle { color: Some(colour), thickness: px(1.), wavy: true },
                     );
@@ -1288,10 +1290,7 @@ impl Element for EditorElement {
                     for (selection, _) in selections.iter().zip(&caret_rows).filter(|(_, r)| **r == row) {
                         let x = shaped.x_for_index(selection.head.clamp(start, end) - start);
                         window.paint_quad(fill(
-                            Bounds::new(
-                                point(state.text_origin.x + x, top + px(2.)),
-                                size(px(2.), line_height - px(4.)),
-                            ),
+                            Bounds::new(point(left + x, top + px(2.)), size(px(2.), line_height - px(4.))),
                             theme::editor::caret(),
                         ));
                     }

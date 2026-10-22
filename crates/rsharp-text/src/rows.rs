@@ -1,7 +1,7 @@
 //! Lines as the editor shows them: folded lines left out, and with soft wrap a long line going on in rows below.
 //! While nothing is folded or wrapped every line is a row and nothing is built, so a key costs what it did.
 
-use crate::{Rope, line_end, line_len_chars};
+use crate::{Rope, line_end, line_indent, line_len_chars};
 use std::ops::Range;
 
 /// One row on screen: the bytes of its line it shows, its break left out.
@@ -14,6 +14,8 @@ pub struct Row {
     pub first: bool,
     /// Whether it ends its line, so a selection past its end shows the line break and a fold's placeholder follows.
     pub last: bool,
+    /// How many columns in it is drawn: a wrapped line's later rows start at the line's own indent, as Rider's.
+    pub indent: usize,
 }
 
 pub enum Rows {
@@ -45,7 +47,7 @@ impl Rows {
             let start = text.line_to_byte(line);
             let end = line_end(text, line);
             match wrap.filter(|w| *w > 0 && line_len_chars(text, line) > *w) {
-                None => rows.push(Row { line, start, end, first: true, last: true }),
+                None => rows.push(Row { line, start, end, first: true, last: true, indent: 0 }),
                 Some(width) => wrap_line(text, line, start, end, width, &mut rows),
             }
             line += 1;
@@ -69,7 +71,14 @@ impl Rows {
         match self {
             Rows::Lines => {
                 let line = index.min(text.len_lines() - 1);
-                Row { line, start: text.line_to_byte(line), end: line_end(text, line), first: true, last: true }
+                Row {
+                    line,
+                    start: text.line_to_byte(line),
+                    end: line_end(text, line),
+                    first: true,
+                    last: true,
+                    indent: 0,
+                }
             }
             Rows::Built(rows) => rows[index.min(rows.len() - 1)],
         }
@@ -85,16 +94,29 @@ impl Rows {
 }
 
 fn wrap_line(text: &Rope, line: usize, start: usize, end: usize, width: usize, rows: &mut Vec<Row>) {
+    // A deep indent would leave the later rows no room, so past half the width they start at the edge.
+    let indent = line_indent(text, line).chars().count();
+    let indent = if indent * 2 < width { indent } else { 0 };
     let mut row_start = start;
+    let mut limit = width;
     let mut count = 0;
     let mut after_space = None;
     let mut at = start;
     for c in text.byte_slice(start..end).chars() {
-        if count == width {
+        if count == limit {
             let cut = after_space.filter(|s| *s > row_start).unwrap_or(at);
-            rows.push(Row { line, start: row_start, end: cut, first: row_start == start, last: false });
+            let first = row_start == start;
+            rows.push(Row {
+                line,
+                start: row_start,
+                end: cut,
+                first,
+                last: false,
+                indent: if first { 0 } else { indent },
+            });
             count = text.byte_slice(cut..at).chars().count();
             row_start = cut;
+            limit = width - indent;
             after_space = None;
         }
         at += c.len_utf8();
@@ -103,5 +125,6 @@ fn wrap_line(text: &Rope, line: usize, start: usize, end: usize, width: usize, r
             after_space = Some(at);
         }
     }
-    rows.push(Row { line, start: row_start, end, first: row_start == start, last: true });
+    let first = row_start == start;
+    rows.push(Row { line, start: row_start, end, first, last: true, indent: if first { 0 } else { indent } });
 }

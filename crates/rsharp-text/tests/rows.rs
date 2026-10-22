@@ -35,3 +35,12 @@ fn a_long_line_wraps_after_a_space_else_at_the_edge() {
     assert!(first.first && !first.last && !second.first, "the rows of a wrapped line did not say which ends it");
     assert_eq!(rows.row_of(&text, 4), 1, "a caret where a line wraps did not stand at the next row's start");
 }
+
+#[test]
+fn a_wrapped_lines_later_rows_start_at_its_indent() {
+    let text = Rope::from_str("    aaaa bbbb cccc\n");
+    let rows = Rows::build(&text, &[], Some(12));
+    assert_eq!(shown(&text, &rows), ["    aaaa ", "bbbb ", "cccc", ""], "the indented rows did not fit their width");
+    let indents: Vec<usize> = (0..3).map(|i| rows.row(&text, i).indent).collect();
+    assert_eq!(indents, [0, 4, 4], "a wrapped line's later rows did not start at its indent");
+}
