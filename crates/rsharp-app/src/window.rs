@@ -11,8 +11,8 @@ use crate::theme;
 use crate::workspace::{Entry, Workspace};
 use futures::StreamExt;
 use gpui::{
-    App, ClickEvent, Context, Entity, FocusHandle, Focusable, FontWeight, MouseButton, PathPromptOptions, Pixels,
-    Point, SharedString, Task, Window, actions, div, prelude::*, px, uniform_list,
+    App, ClickEvent, Context, Entity, FocusHandle, Focusable, FontWeight, MouseButton, MouseDownEvent,
+    PathPromptOptions, Pixels, Point, SharedString, Task, Window, actions, div, prelude::*, px, uniform_list,
 };
 use rsharp_lsp::{LanguageServer, ServerEvent, start_roslyn};
 use std::collections::HashSet;
@@ -67,7 +67,8 @@ pub struct MainWindow {
     rows: Vec<Row>,
     selected: Option<usize>,
     dock: DockLayout,
-    /// Where a floating window's header was taken, from its top left, while it is dragged.
+    /// Where a floating window was taken, from its top left (the header) or bottom right (the corner), so it
+    /// follows the pointer from where it was pressed rather than from where the drag began.
     float_grab: Point<Pixels>,
     opened_as: Option<PathBuf>,
     explorer_focus: FocusHandle,
@@ -720,7 +721,7 @@ impl Render for MainWindow {
                         let FloatDrag { tool, resize } = *event.drag(cx);
                         if let Some((_, r)) = w.dock.floating.iter_mut().find(|(t, _)| *t == tool) {
                             if resize {
-                                (r.w, r.h) = (f32::from(at.x) - r.x, f32::from(at.y) - r.y);
+                                (r.w, r.h) = (f32::from(at.x - grab.x) - r.x, f32::from(at.y - grab.y) - r.y);
                             } else {
                                 (r.x, r.y) = (f32::from(at.x - grab.x), f32::from(at.y - grab.y));
                             }
@@ -952,17 +953,15 @@ impl MainWindow {
 
     /// A tool window's island: its header (the title and Hide) over its content.
     fn tool_island(&self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
-        let this = cx.entity().downgrade();
         let header = div()
             .id(("tool-header", tool as usize))
             .when(self.dock.is_floating(tool), |d| {
-                d.debug_selector(move || format!("floating: {}", tool.title())).on_drag(
-                    FloatDrag { tool, resize: false },
-                    move |dragged, grab, _, cx| {
-                        let _ = this.update(cx, |w, _| w.float_grab = grab);
-                        cx.new(|_| *dragged)
-                    },
-                )
+                d.debug_selector(move || format!("floating: {}", tool.title()))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |w, e: &MouseDownEvent, _, _| w.grab(tool, e, false)),
+                    )
+                    .on_drag(FloatDrag { tool, resize: false }, |dragged, _, _, cx| cx.new(|_| *dragged))
             })
             .h(px(40.))
             .flex_none()
@@ -1031,11 +1030,23 @@ impl MainWindow {
                             .bottom_0()
                             .size(px(12.))
                             .cursor(gpui::CursorStyle::ResizeUpLeftDownRight)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |w, e: &MouseDownEvent, _, _| w.grab(tool, e, true)),
+                            )
                             .on_drag(FloatDrag { tool, resize: true }, |dragged, _, _, cx| cx.new(|_| *dragged)),
                     )
                     .into_any_element()
             })
             .collect()
+    }
+
+    /// Notes where a floating window was pressed, from the point a drag of it moves.
+    fn grab(&mut self, tool: Tool, event: &MouseDownEvent, resize: bool) {
+        if let Some(r) = self.dock.floating_at(tool) {
+            let from = if resize { gpui::point(px(r.x + r.w), px(r.y + r.h)) } else { gpui::point(px(r.x), px(r.y)) };
+            self.float_grab = event.position - from;
+        }
     }
 
     fn focused_tool(&self, window: &Window, cx: &App) -> Option<Tool> {
