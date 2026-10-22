@@ -47,6 +47,8 @@ actions!(
         CloseTabsToRight,
         ReopenClosedTab,
         OpenTabInNewWindow,
+        FileEncoding,
+        LineSeparators,
         ExplorerUp,
         ExplorerDown,
         ExplorerExpand,
@@ -95,6 +97,8 @@ pub struct MainWindow {
     area: EditorArea,
     /// A tab's menu while open, where it was asked for.
     tab_menu: Option<Point<Pixels>>,
+    /// The status bar's line separator or encoding menu while open.
+    status_menu: Option<StatusMenu>,
     /// A tab being dragged, and whether the pointer is outside the window, where letting go opens it in a window.
     tab_drag: Option<(TabDrag, bool)>,
     server: Option<Arc<LanguageServer>>,
@@ -131,6 +135,7 @@ impl MainWindow {
             area: EditorArea::default(),
             tab_menu: None,
             tab_drag: None,
+            status_menu: None,
             server: None,
             server_state: ServerState::None,
             progress: Vec::new(),
@@ -439,7 +444,7 @@ impl MainWindow {
                 if let Some(server) = self.server.clone().filter(|_| is_csharp(&path)) {
                     buffer.update(cx, |b, cx| b.attach_server(server, cx));
                 }
-                let editor = self.new_editor(buffer, cx);
+                let editor = self.new_editor(buffer, window, cx);
                 self.area.add(editor, false)
             }
         };
@@ -450,8 +455,17 @@ impl MainWindow {
     }
 
     /// An editor of a buffer, whose every change the window keeps for the folder.
-    fn new_editor(&mut self, buffer: Entity<Buffer>, cx: &mut Context<Self>) -> Entity<CodeEditor> {
+    fn new_editor(
+        &mut self,
+        buffer: Entity<Buffer>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<CodeEditor> {
         let editor = cx.new(|cx| CodeEditor::new(buffer, cx));
+        cx.subscribe_in(&editor, window, |_, editor, _: &editor::ReadOnlyEdit, window, cx| {
+            editor::ask_clear_read_only(editor.clone(), editor::AfterClearing::Edit, window, cx)
+        })
+        .detach();
         cx.observe(&editor, |w, _, cx| {
             w.save_state(cx);
             cx.notify()
@@ -496,7 +510,7 @@ impl MainWindow {
             let read = shown.read(cx);
             (read.buffer.clone(), read.caret())
         };
-        let editor = self.new_editor(buffer, cx);
+        let editor = self.new_editor(buffer, window, cx);
         editor.update(cx, |e, cx| e.place_caret(caret.line, caret.column, cx));
         self.area.split(right, editor);
         self.focus_editor(window, cx);
@@ -938,8 +952,12 @@ impl Render for MainWindow {
                         w.close_tab(w.area.current, active, window, cx)
                     }
                 }))
-                .on_action(cx.listener(|w, _: &editor::Save, _, cx| {
+                .on_action(cx.listener(|w, _: &editor::Save, window, cx| {
                     if let Some(editor) = w.active_editor().cloned() {
+                        if editor.read(cx).buffer.read(cx).read_only {
+                            editor::ask_clear_read_only(editor, editor::AfterClearing::Save, window, cx);
+                            return;
+                        }
                         w.said =
                             editor.update(cx, |e, cx| e.save(cx)).err().map(|e| format!("Could not save: {e}").into());
                         cx.notify();
@@ -955,6 +973,7 @@ impl Render for MainWindow {
             .children(floating)
             .children(self.main_menu.as_ref().map(|(available, keys, _)| self.main_menu_dropdown(available, keys, cx)))
             .children(self.tab_menu.map(|at| self.tab_menu_view(at, window, cx)))
+            .children(self.status_menu.map(|kind| self.status_menu_view(kind, cx)))
             .children(self.find_action.clone().map(|popup| {
                 div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(
                     div()
@@ -1547,6 +1566,7 @@ impl MainWindow {
         let selected = self.area.groups[group].active == Some(index);
         let current = group == self.area.current;
         let modified = editor.is_modified(cx);
+        let read_only = editor.buffer.read(cx).read_only;
         let hover = SharedString::from(format!("tab-{group}-{index}"));
         let id = |kind: &str| gpui::ElementId::NamedInteger(format!("{kind}-{group}").into(), index as u64);
         let selector = format!("tab {group} {name}");
@@ -1574,6 +1594,7 @@ impl MainWindow {
             })
             .child(icon(file_icon(&name), 16.))
             .child(name)
+            .when(read_only, |d| d.child(icon("locked", 14.)))
             .child(
                 div()
                     .id(id("close"))
@@ -1635,7 +1656,15 @@ impl MainWindow {
         let split = self.area.is_split();
         let closed = !self.area.closed.is_empty();
         d.when(active.is_some(), |d| {
-            d.on_action(cx.listener(|w, _: &OpenTabInNewWindow, window, cx| {
+            d.on_action(cx.listener(|w, _: &FileEncoding, _, cx| {
+                w.status_menu = Some(StatusMenu::Encodings);
+                cx.notify()
+            }))
+            .on_action(cx.listener(|w, _: &LineSeparators, _, cx| {
+                w.status_menu = Some(StatusMenu::LineSeparators);
+                cx.notify()
+            }))
+            .on_action(cx.listener(|w, _: &OpenTabInNewWindow, window, cx| {
                 let (group, index) = (w.area.current, w.area.group().active.unwrap_or(0));
                 let at = window.bounds().origin + gpui::point(px(80.), px(80.));
                 w.move_to_new_window(group, index, at, window, cx)
@@ -1695,6 +1724,69 @@ impl MainWindow {
         .when(closed, |d| {
             d.on_action(cx.listener(|w, _: &ReopenClosedTab, window, cx| w.reopen_closed_tab(window, cx)))
         })
+    }
+
+    /// The status bar's Line Separators or encoding menu, the file's own checked; a choice is how it is written
+    /// from its next save.
+    fn status_menu_view(&self, kind: StatusMenu, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(buffer) = self.active_editor().map(|e| e.read(cx).buffer.clone()) else { return div() };
+        let read = buffer.read(cx);
+        let items: Vec<(String, bool)> = match kind {
+            StatusMenu::LineSeparators => rsharp_text::LineEnding::ALL
+                .iter()
+                .map(|e| (e.title().to_string(), *e == read.document.line_ending))
+                .collect(),
+            StatusMenu::Encodings => {
+                rsharp_core::encodings::LISTED.iter().map(|c| (c.name().to_string(), *c == read.charset)).collect()
+            }
+        };
+        let rows: Vec<_> = items
+            .into_iter()
+            .enumerate()
+            .map(|(i, (title, checked))| {
+                let buffer = buffer.clone();
+                let selector = format!("status menu: {title}");
+                div()
+                    .id(("status-menu", i))
+                    .debug_selector(move || selector.clone())
+                    .h(px(24.))
+                    .mx(px(6.))
+                    .px(px(8.))
+                    .rounded(px(4.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .hover(|d| d.bg(theme::selection()))
+                    .child(div().size(px(14.)).when(checked, |d| d.child(icon("check", 14.))))
+                    .child(title)
+                    .on_click(cx.listener(move |w, _: &ClickEvent, _, cx| {
+                        w.status_menu = None;
+                        buffer.update(cx, |b, cx| match kind {
+                            StatusMenu::LineSeparators => b.set_line_ending(rsharp_text::LineEnding::ALL[i], cx),
+                            StatusMenu::Encodings => b.set_charset(rsharp_core::encodings::LISTED[i], cx),
+                        });
+                        cx.notify();
+                    }))
+            })
+            .collect();
+        div().absolute().bottom(px(32.)).right(px(10.)).child(
+            div()
+                .id("status-menu")
+                .w(px(260.))
+                .max_h(px(420.))
+                .overflow_y_scroll()
+                .py(px(6.))
+                .rounded(px(8.))
+                .bg(theme::popup())
+                .border_1()
+                .border_color(theme::popup_border())
+                .shadow_lg()
+                .on_mouse_down_out(cx.listener(|w, _, _, cx| {
+                    w.status_menu = None;
+                    cx.notify();
+                }))
+                .children(rows),
+        )
     }
 
     /// A tab's menu, Rider's items in its order, each greyed where it cannot run.
@@ -1872,22 +1964,66 @@ impl MainWindow {
                     .text_color(if errors > 0 { theme::error() } else { theme::warning() })
             }))
             .children(server.map(|(text, colour)| status_widget(text).text_color(colour)))
-            .children(
-                editor
-                    .map(|e| {
-                        let caret = e.caret();
-                        [
-                            status_widget(format!("{}:{}", caret.line + 1, caret.utf16_column + 1)),
-                            status_widget(match e.buffer.read(cx).document.line_ending {
-                                rsharp_text::LineEnding::Lf => "LF".into(),
-                                rsharp_text::LineEnding::CrLf => "CRLF".into(),
-                            }),
-                            status_widget("UTF-8".into()),
-                        ]
+            .children(editor.map(|e| {
+                let caret = e.caret();
+                let buffer = e.buffer.clone();
+                let read = buffer.read(cx);
+                let (ending, charset, indent, read_only) =
+                    (read.document.line_ending, read.charset, read.indent, read.read_only);
+                let indent_tip = match &read.indent_source {
+                    crate::buffer::IndentSource::EditorConfig(from) => format!("from {}", from.display()),
+                    crate::buffer::IndentSource::Detected => "detected from the file's own lines".into(),
+                    crate::buffer::IndentSource::Default => "C#'s default".into(),
+                };
+                let menu = |kind: StatusMenu| {
+                    cx.listener(move |w, _: &ClickEvent, _, cx| {
+                        w.status_menu = if w.status_menu == Some(kind) { None } else { Some(kind) };
+                        cx.notify();
                     })
-                    .into_iter()
-                    .flatten(),
-            )
+                };
+                div()
+                    .flex()
+                    .items_center()
+                    .child(status_widget(format!("{}:{}", caret.line + 1, caret.utf16_column + 1)))
+                    .child(
+                        status_widget(ending.name().into())
+                            .id("line-separator")
+                            .debug_selector(|| "status: line separator".into())
+                            .hover(|d| d.bg(theme::button_hover()))
+                            .on_click(menu(StatusMenu::LineSeparators)),
+                    )
+                    .child(
+                        status_widget(charset.name().into())
+                            .id("encoding")
+                            .debug_selector(|| "status: encoding".into())
+                            .hover(|d| d.bg(theme::button_hover()))
+                            .on_click(menu(StatusMenu::Encodings)),
+                    )
+                    .child(
+                        status_widget(indent.name())
+                            .id("indent")
+                            .tooltip(move |_, cx| cx.new(|_| Tip(format!("Indent: {indent_tip}").into())).into()),
+                    )
+                    .when(read_only, |d| {
+                        d.child(
+                            div()
+                                .id("read-only")
+                                .debug_selector(|| "status: read-only".into())
+                                .h(px(22.))
+                                .px(px(6.))
+                                .flex()
+                                .items_center()
+                                .rounded(px(4.))
+                                .hover(|d| d.bg(theme::button_hover()))
+                                .child(icon("locked", 14.))
+                                .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                                    if let Err(error) = buffer.update(cx, |b, cx| b.clear_read_only(cx)) {
+                                        log::warn!("Could not clear the read-only status: {error}");
+                                    }
+                                })),
+                        )
+                    })
+            }))
     }
 }
 
@@ -2011,6 +2147,31 @@ impl Render for FloatDrag {
 }
 
 /// A tool window's stripe button, carried in a drag, drawn as a chip of its title.
+/// A tooltip: a line of text on a popup, as Rider's.
+struct Tip(SharedString);
+
+impl Render for Tip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(8.))
+            .py(px(4.))
+            .rounded(px(6.))
+            .bg(theme::popup())
+            .border_1()
+            .border_color(theme::popup_border())
+            .text_color(theme::text())
+            .font_family(theme::UI_FONT)
+            .text_size(px(13.))
+            .child(self.0.clone())
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum StatusMenu {
+    LineSeparators,
+    Encodings,
+}
+
 /// A tab on its way somewhere: its group and index, and its name for the preview under the pointer.
 #[derive(Clone)]
 pub struct TabDrag {

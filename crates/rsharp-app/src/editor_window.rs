@@ -31,7 +31,11 @@ pub fn open(editor: Entity<CodeEditor>, at: Point<Pixels>, cx: &mut App) -> Opti
         },
         |window, cx| {
             let focus = editor.focus_handle(cx);
-            let view = cx.new(|_| {
+            let view = cx.new(|cx| {
+                cx.subscribe_in(&editor, window, |_, editor, _: &editor::ReadOnlyEdit, window, cx| {
+                    editor::ask_clear_read_only(editor.clone(), editor::AfterClearing::Edit, window, cx)
+                })
+                .detach();
                 let mut area = EditorArea::default();
                 area.add(editor, false);
                 area.groups[0].active = Some(0);
@@ -137,8 +141,12 @@ impl Render for EditorWindow {
                     w.close(active, window, cx)
                 }
             }))
-            .on_action(cx.listener(|w, _: &editor::Save, _, cx| {
+            .on_action(cx.listener(|w, _: &editor::Save, window, cx| {
                 if let Some(editor) = w.area.active_editor().cloned() {
+                    if editor.read(cx).buffer.read(cx).read_only {
+                        editor::ask_clear_read_only(editor, editor::AfterClearing::Save, window, cx);
+                        return;
+                    }
                     // shortcut: a save that fails here is logged, as the window has no status bar to say it in.
                     if let Err(error) = editor.update(cx, |e, cx| e.save(cx)) {
                         log::warn!("Could not save: {error}");

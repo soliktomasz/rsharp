@@ -10,6 +10,39 @@ const MERGE_WINDOW: Duration = Duration::from_secs(2);
 pub enum LineEnding {
     Lf,
     CrLf,
+    /// Classic Mac OS's lone `\r`.
+    Cr,
+}
+
+impl LineEnding {
+    /// Rider's Line Separators menu, in its order.
+    pub const ALL: [LineEnding; 3] = [LineEnding::CrLf, LineEnding::Lf, LineEnding::Cr];
+
+    /// The status bar's name for it.
+    pub fn name(self) -> &'static str {
+        match self {
+            LineEnding::Lf => "LF",
+            LineEnding::CrLf => "CRLF",
+            LineEnding::Cr => "CR",
+        }
+    }
+
+    /// Rider's menu item for it.
+    pub fn title(self) -> &'static str {
+        match self {
+            LineEnding::Lf => "LF - Unix and macOS (\\n)",
+            LineEnding::CrLf => "CRLF - Windows (\\r\\n)",
+            LineEnding::Cr => "CR - Classic Mac OS (\\r)",
+        }
+    }
+
+    pub fn written(self) -> &'static str {
+        match self {
+            LineEnding::Lf => "\n",
+            LineEnding::CrLf => "\r\n",
+            LineEnding::Cr => "\r",
+        }
+    }
 }
 
 /// A place in the text as each consumer counts it: tree-sitter by bytes in the line, the language server by
@@ -50,6 +83,7 @@ pub struct Document {
     redo: Vec<Step>,
     version: u64,
     saved_version: u64,
+    saved_line_ending: LineEnding,
     /// Set by undo and redo, after which nothing joins the step before.
     merge_broken: bool,
     pub line_ending: LineEnding,
@@ -57,14 +91,28 @@ pub struct Document {
 
 impl Document {
     pub fn new(text: &str) -> Self {
-        let line_ending = if text.contains("\r\n") { LineEnding::CrLf } else { LineEnding::Lf };
+        let line_ending = if text.contains("\r\n") {
+            LineEnding::CrLf
+        } else if text.contains('\r') {
+            LineEnding::Cr
+        } else {
+            LineEnding::Lf
+        };
+        // shortcut: a file with mixed breaks is held by its first kind found, the others kept as they are; Rider
+        // makes them one on save.
+        let held = match line_ending {
+            LineEnding::CrLf => text.replace("\r\n", "\n"),
+            LineEnding::Cr => text.replace('\r', "\n"),
+            LineEnding::Lf => text.to_string(),
+        };
         Self {
-            text: Rope::from_str(&text.replace("\r\n", "\n")),
+            text: Rope::from_str(&held),
             selections: vec![Selection::default()],
             undo: Vec::new(),
             redo: Vec::new(),
             version: 0,
             saved_version: 0,
+            saved_line_ending: line_ending,
             merge_broken: true,
             line_ending,
         }
@@ -89,8 +137,9 @@ impl Document {
             selections.into_iter().map(|s| Selection { anchor: s.anchor.min(len), head: s.head.min(len) }).collect();
     }
 
+    /// Whether the file on disk differs: its text changed, or how its lines end.
     pub fn is_modified(&self) -> bool {
-        self.version != self.saved_version
+        self.version != self.saved_version || self.line_ending != self.saved_line_ending
     }
 
     /// The text as the file should hold it, its line endings put back.
@@ -99,11 +148,13 @@ impl Document {
         match self.line_ending {
             LineEnding::Lf => text,
             LineEnding::CrLf => text.replace('\n', "\r\n"),
+            LineEnding::Cr => text.replace('\n', "\r"),
         }
     }
 
     pub fn mark_saved(&mut self) {
         self.saved_version = self.version;
+        self.saved_line_ending = self.line_ending;
     }
 
     /// Applies a command's plan as one undo step, or as part of the step before when it goes on with the same run

@@ -2,7 +2,70 @@
 
 use crate::{Edit, EditKind, EditPlan, Rope, Selection, line_indent, next_char, previous_char};
 
-const INDENT: &str = "    ";
+/// How a file indents: a tab, or so many spaces.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Indent {
+    pub tabs: bool,
+    pub size: usize,
+}
+
+impl Default for Indent {
+    /// C#'s, as Rider's defaults have it.
+    fn default() -> Self {
+        Self { tabs: false, size: 4 }
+    }
+}
+
+impl Indent {
+    /// One level of it.
+    pub fn unit(&self) -> String {
+        if self.tabs { "\t".into() } else { " ".repeat(self.size) }
+    }
+
+    /// The status bar's words for it: "Tab", "4 spaces".
+    pub fn name(&self) -> String {
+        match (self.tabs, self.size) {
+            (true, _) => "Tab".into(),
+            (false, 1) => "1 space".into(),
+            (false, n) => format!("{n} spaces"),
+        }
+    }
+}
+
+/// How a file's own lines indent, as Rider's Detect and use existing file indents reads them: tabs where more lines
+/// start with one than with spaces, else the step most often seen between a line and a deeper one after it. None for
+/// a file with no indented line.
+pub fn detect_indent(text: &Rope) -> Option<Indent> {
+    let (mut tabs, mut spaces) = (0, 0);
+    let mut steps = [0usize; 9];
+    let mut previous = 0;
+    // A file's first thousand lines say as much as the rest.
+    for line in text.lines().take(1000) {
+        let leading: String = line.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+        if line.chars().all(char::is_whitespace) {
+            continue;
+        }
+        if leading.starts_with('\t') {
+            tabs += 1;
+        } else if !leading.is_empty() {
+            spaces += 1;
+            let width = leading.len();
+            if width > previous && width - previous < steps.len() {
+                steps[width - previous] += 1;
+            }
+        }
+        previous = if leading.starts_with('\t') { previous } else { leading.len() };
+    }
+    if tabs + spaces == 0 {
+        return None;
+    }
+    if tabs > spaces {
+        return Some(Indent { tabs: true, size: 4 });
+    }
+    let (size, seen) =
+        steps.iter().enumerate().skip(1).max_by_key(|(size, seen)| (**seen, std::cmp::Reverse(*size)))?;
+    (*seen > 0).then_some(Indent { tabs: false, size })
+}
 
 /// Replaces each selection with `text` (typing, paste).
 pub fn insert(_text: &Rope, selections: &[Selection], typed: &str) -> EditPlan {
@@ -40,24 +103,27 @@ pub fn insert_each(selections: &[Selection], pieces: &[&str]) -> EditPlan {
 }
 
 /// Enter: a new line at the line's indent, one deeper after an opening brace.
-pub fn newline(text: &Rope, selections: &[Selection]) -> EditPlan {
+pub fn newline(text: &Rope, selections: &[Selection], unit: &Indent) -> EditPlan {
     plan(selections, |s| {
         let line = text.byte_to_line(s.start());
         let mut indent = line_indent(text, line);
         let line_start = text.line_to_byte(line);
         let before = text.byte_slice(line_start..s.start()).to_string();
         if before.trim_end().ends_with('{') {
-            indent.push_str(INDENT);
+            indent.push_str(&unit.unit());
         }
         Some(Edit { range: s.range(), text: format!("\n{indent}") })
     })
 }
 
-/// Tab: an indent's worth of spaces to the next tab stop.
-pub fn tab(text: &Rope, selections: &[Selection]) -> EditPlan {
+/// Tab: a tab, or an indent's worth of spaces to the next tab stop.
+pub fn tab(text: &Rope, selections: &[Selection], unit: &Indent) -> EditPlan {
     plan(selections, |s| {
+        if unit.tabs {
+            return Some(Edit { range: s.range(), text: "\t".into() });
+        }
         let column = crate::column_of(text, s.start());
-        let spaces = INDENT.len() - column % INDENT.len();
+        let spaces = unit.size.max(1) - column % unit.size.max(1);
         Some(Edit { range: s.range(), text: " ".repeat(spaces) })
     })
 }

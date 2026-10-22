@@ -128,6 +128,58 @@ pub struct CodeEditor {
     /// The line height in force, from the settings, as the last frame used it.
     line_height: Pixels,
     _buffer_events: Subscription,
+    /// An edit a read-only file refused, made once its read-only status is cleared if the text is as it was then.
+    pending: Option<(EditPlan, u64)>,
+}
+
+/// An edit refused because the file is read-only: the window asks to clear that.
+pub struct ReadOnlyEdit;
+
+impl gpui::EventEmitter<ReadOnlyEdit> for CodeEditor {}
+
+/// What follows a read-only file's status being cleared.
+#[derive(Clone, Copy, PartialEq)]
+pub enum AfterClearing {
+    Edit,
+    Save,
+}
+
+/// Rider's Clear Read-Only Status, asked of a read-only file's first edit or save: on yes the file is made
+/// writable and the edit made, or the file saved; a failure is logged.
+pub fn ask_clear_read_only(editor: Entity<CodeEditor>, then: AfterClearing, window: &mut Window, cx: &mut App) {
+    let name = editor.read(cx).path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let answer = window.prompt(
+        gpui::PromptLevel::Warning,
+        &format!("{name} is read-only"),
+        Some("Clear its read-only status to change it?"),
+        &["Clear Read-Only Status", "Cancel"],
+        cx,
+    );
+    cx.spawn(async move |cx| {
+        if answer.await != Ok(0) {
+            return;
+        }
+        let _ = editor.update(cx, |e, cx| {
+            let buffer = e.buffer.clone();
+            if let Err(error) = buffer.update(cx, |b, cx| b.clear_read_only(cx)) {
+                log::warn!("Could not clear the read-only status of {}: {error}", e.path.display());
+                return;
+            }
+            match then {
+                AfterClearing::Edit => {
+                    if let Some((plan, _)) = e.pending.take().filter(|(_, v)| *v == e.version) {
+                        e.apply(plan, cx);
+                    }
+                }
+                AfterClearing::Save => {
+                    if let Err(error) = e.save(cx) {
+                        log::warn!("Could not save {}: {error}", e.path.display());
+                    }
+                }
+            }
+        });
+    })
+    .detach();
 }
 
 /// Where the last frame put things, for the mouse and the input method to find their way back.
@@ -196,6 +248,7 @@ impl CodeEditor {
             layout: None,
             line_height: px(crate::settings::settings(cx).line_height()),
             _buffer_events: subscription,
+            pending: None,
         };
         editor.take_regions(&buffer, cx);
         editor
@@ -236,7 +289,7 @@ impl CodeEditor {
     }
 
     pub fn is_modified(&self, cx: &App) -> bool {
-        self.buffer.read(cx).document.is_modified()
+        self.buffer.read(cx).is_modified()
     }
 
     pub fn save(&mut self, cx: &mut Context<Self>) -> std::io::Result<()> {
@@ -279,12 +332,21 @@ impl CodeEditor {
     }
 
     fn apply(&mut self, plan: EditPlan, cx: &mut Context<Self>) {
+        if self.buffer.read(cx).read_only {
+            self.pending = Some((plan, self.version));
+            cx.emit(ReadOnlyEdit);
+            return;
+        }
         let (carets, me) = (self.carets.clone(), cx.entity_id());
         let (after, changes) = self.buffer.update(cx, |b, cx| b.edit(carets, plan, me, cx));
         self.edited(after, &changes, cx);
     }
 
     fn undo(&mut self, redo: bool, cx: &mut Context<Self>) {
+        if self.buffer.read(cx).read_only {
+            cx.emit(ReadOnlyEdit);
+            return;
+        }
         let me = cx.entity_id();
         if let Some((after, changes)) = self.buffer.update(cx, |b, cx| b.undo(redo, me, cx)) {
             self.edited(after, &changes, cx);
@@ -713,8 +775,8 @@ moves! {
     SelectAll => |e, cx| { let len = e.text.len_bytes(); e.set_selections(vec![Selection { anchor: 0, head: len }]); cx.notify() };
     Backspace => |e, cx| { let plan = backspace(&e.text, e.carets.as_slice()); e.apply(plan, cx) };
     Delete => |e, cx| { let plan = delete(&e.text, e.carets.as_slice()); e.apply(plan, cx) };
-    Newline => |e, cx| { let plan = newline(&e.text, e.carets.as_slice()); e.apply(plan, cx) };
-    Tab => |e, cx| { let plan = tab(&e.text, e.carets.as_slice()); e.apply(plan, cx) };
+    Newline => |e, cx| { let indent = e.buffer.read(cx).indent; let plan = newline(&e.text, e.carets.as_slice(), &indent); e.apply(plan, cx) };
+    Tab => |e, cx| { let indent = e.buffer.read(cx).indent; let plan = tab(&e.text, e.carets.as_slice(), &indent); e.apply(plan, cx) };
     Undo => |e, cx| e.undo(false, cx);
     Redo => |e, cx| e.undo(true, cx);
     Copy => |e, cx| { let text = e.selected_text(); if !text.is_empty() { cx.write_to_clipboard(ClipboardItem::new_string(text)) } };

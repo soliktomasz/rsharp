@@ -25,6 +25,7 @@ static FILES: &[(&str, &[u8])] = carried![
     "icons/file-xml.svg",
     "icons/folder.svg",
     "icons/hide.svg",
+    "icons/locked.svg",
     "icons/main-menu.svg",
     "icons/match-case.svg",
     "icons/pin.svg",

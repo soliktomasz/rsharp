@@ -4,9 +4,11 @@
 
 use crate::editor::Diagnostic;
 use gpui::{App, AppContext, Context, Entity, EntityId, EventEmitter, Global, Task, WeakEntity};
+use rsharp_core::editorconfig::EditorConfig;
+use rsharp_core::encodings::{Charset, decode, encode};
 use rsharp_languages::{FoldRegion, edit as edit_tree, folds, parse};
 use rsharp_lsp::LanguageServer;
-use rsharp_text::{Change, Document, EditPlan, Selection};
+use rsharp_text::{Change, Document, Edit, EditPlan, Indent, LineEnding, Rope, Selection, detect_indent, line_end};
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -21,9 +23,27 @@ pub enum BufferEvent {
     Parsed,
 }
 
+/// Where a file's indentation comes from, the first of these that says, as Rider's indent widget names it.
+#[derive(Clone, PartialEq, Debug)]
+pub enum IndentSource {
+    EditorConfig(PathBuf),
+    Detected,
+    Default,
+}
+
 pub struct Buffer {
     pub path: PathBuf,
     pub document: Document,
+    /// How the file's bytes are its text, as read, or as chosen since in the status bar.
+    pub charset: Charset,
+    saved_charset: Charset,
+    pub indent: Indent,
+    pub indent_source: IndentSource,
+    config: EditorConfig,
+    /// Whether the file may not be written; its first edit and its save ask to clear that.
+    pub read_only: bool,
+    /// The line separator chosen in the status bar, which wins over the .editorconfig's while the file is open.
+    line_ending_chosen: bool,
     pub diagnostics: Vec<Diagnostic>,
     pub tree: Option<Tree>,
     /// The document's version the tree was parsed from: brackets are paired only in a tree that is current.
@@ -36,6 +56,68 @@ pub struct Buffer {
 }
 
 impl EventEmitter<BufferEvent> for Buffer {}
+
+impl Buffer {
+    /// The .editorconfig's trim_trailing_whitespace and insert_final_newline, as one edit every editor sees.
+    // shortcut: whitespace is trimmed on the caret's line too; Rider keeps it there while the caret stays.
+    fn tidy(&mut self, cx: &mut Context<Self>) {
+        let text = self.document.text().clone();
+        let mut edits = Vec::new();
+        if self.config.flag("trim_trailing_whitespace") == Some(true) {
+            for line in 0..text.len_lines() {
+                let (start, end) = (text.line_to_byte(line), line_end(&text, line));
+                let content = text.byte_slice(start..end).to_string();
+                let kept = content.trim_end_matches([' ', '\t']).len();
+                if kept < content.len() {
+                    edits.push(Edit { range: start + kept..end, text: String::new() });
+                }
+            }
+        }
+        let len = text.len_bytes();
+        if self.config.flag("insert_final_newline") == Some(true) && len > 0 && text.char(text.len_chars() - 1) != '\n'
+        {
+            edits.push(Edit { range: len..len, text: "\n".into() });
+        }
+        if edits.is_empty() {
+            return;
+        }
+        let selections = self.document.selections().to_vec();
+        let changes = self.document.apply(EditPlan { edits, selections, ..Default::default() });
+        let me = cx.entity_id();
+        self.changed(changes, me, cx);
+    }
+}
+
+/// A file's indentation: its .editorconfig's, else what its own lines show, else C#'s.
+fn choose_indent(config: &EditorConfig, text: &Rope) -> (Indent, IndentSource) {
+    let number = |key: &str| config.get(key).and_then(|v| v.parse::<usize>().ok()).filter(|n| *n > 0);
+    let size = match config.get("indent_size") {
+        Some("tab") => number("tab_width"),
+        _ => number("indent_size").or_else(|| number("tab_width")),
+    };
+    let configured = match config.get("indent_style") {
+        Some("tab") => Some(Indent { tabs: true, size: size.unwrap_or(4) }),
+        Some("space") => Some(Indent { tabs: false, size: size.unwrap_or(4) }),
+        _ => size.map(|size| Indent { tabs: false, size }),
+    };
+    let from = config.source("indent_style").or_else(|| config.source("indent_size"));
+    match (configured, from) {
+        (Some(indent), Some(from)) => (indent, IndentSource::EditorConfig(from.to_path_buf())),
+        _ => match detect_indent(text) {
+            Some(indent) => (indent, IndentSource::Detected),
+            None => (Indent::default(), IndentSource::Default),
+        },
+    }
+}
+
+fn line_ending_named(value: &str) -> Option<LineEnding> {
+    match value {
+        "lf" => Some(LineEnding::Lf),
+        "crlf" => Some(LineEnding::CrLf),
+        "cr" => Some(LineEnding::Cr),
+        _ => None,
+    }
+}
 
 /// Every buffer open in the process, by its file, so a file shown in the main window and an editor window is one
 /// text.
@@ -68,12 +150,22 @@ impl Drop for Buffer {
 
 impl Buffer {
     pub fn new(path: PathBuf, bytes: &[u8], cx: &mut Context<Self>) -> Self {
-        // shortcut: bytes that are not UTF-8 are read lossily; Passenger reads them in the file's 8-bit charset.
-        let document = Document::new(&String::from_utf8_lossy(bytes));
+        let config = EditorConfig::for_file(&path);
+        let (text, charset) = decode(bytes, config.get("charset").and_then(Charset::from_editorconfig));
+        let document = Document::new(&text);
+        let (indent, indent_source) = choose_indent(&config, document.text());
+        let read_only = std::fs::metadata(&path).is_ok_and(|m| m.permissions().readonly());
         let is_csharp = path.extension().is_some_and(|e| e == "cs" || e == "csx");
         let mut buffer = Self {
             path,
             document,
+            charset,
+            saved_charset: charset,
+            indent,
+            indent_source,
+            config,
+            read_only,
+            line_ending_chosen: false,
             diagnostics: Vec::new(),
             tree: None,
             tree_version: u64::MAX,
@@ -228,8 +320,53 @@ impl Buffer {
         }));
     }
 
+    /// Whether the file on disk differs: its text, its line separator or its encoding.
+    pub fn is_modified(&self) -> bool {
+        self.document.is_modified() || self.charset != self.saved_charset
+    }
+
+    /// The status bar's Line Separators: the file's breaks written as `ending` from its next save.
+    pub fn set_line_ending(&mut self, ending: LineEnding, cx: &mut Context<Self>) {
+        self.document.line_ending = ending;
+        self.line_ending_chosen = true;
+        cx.notify();
+    }
+
+    /// The status bar's encoding: the text kept and written in `charset` from its next save (Rider's Convert).
+    // shortcut: no Reload, which reads the file's bytes again in the encoding chosen; offer it once a file opens
+    // in the wrong one.
+    pub fn set_charset(&mut self, charset: Charset, cx: &mut Context<Self>) {
+        self.charset = charset;
+        cx.notify();
+    }
+
+    /// Clear Read-Only Status: the file made writable.
+    pub fn clear_read_only(&mut self, cx: &mut Context<Self>) -> std::io::Result<()> {
+        let mut permissions = std::fs::metadata(&self.path)?.permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&self.path, permissions)?;
+        self.read_only = false;
+        cx.notify();
+        Ok(())
+    }
+
+    /// Writes the file: the .editorconfig's save-time rules applied, then its text in its encoding with its line
+    /// separator. A read-only file, or a character the encoding cannot hold, is refused before anything is written.
     pub fn save(&mut self, cx: &mut Context<Self>) -> std::io::Result<()> {
-        rsharp_core::files::write(&self.path, self.document.contents().as_bytes())?;
+        if self.read_only {
+            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "the file is read-only"));
+        }
+        self.tidy(cx);
+        if !self.line_ending_chosen
+            && let Some(ending) = self.config.get("end_of_line").and_then(line_ending_named)
+        {
+            self.document.line_ending = ending;
+        }
+        let bytes = encode(&self.document.contents(), self.charset)
+            .map_err(|c| std::io::Error::other(format!("'{c}' cannot be written in {}", self.charset.name())))?;
+        rsharp_core::files::write(&self.path, &bytes)?;
+        self.saved_charset = self.charset;
         self.document.mark_saved();
         if let Some((server, uri)) = &self.server {
             server.notify("textDocument/didSave", json!({ "textDocument": { "uri": uri } }));

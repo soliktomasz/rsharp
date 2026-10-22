@@ -129,7 +129,7 @@ fn every_key_of_a_long_session_leaves_the_text_a_plain_string_would_hold() {
 fn a_file_saved_keeps_its_line_endings() {
     let mut document = Document::new("a\r\nb\r\n");
     document.set_selections(vec![Selection::caret(1)]);
-    document.apply(newline(document.text(), document.selections()));
+    document.apply(newline(document.text(), document.selections(), &Indent::default()));
     assert_eq!(document.contents(), "a\r\n\r\nb\r\n");
 }
 
@@ -137,7 +137,7 @@ fn a_file_saved_keeps_its_line_endings() {
 fn enter_after_an_opening_brace_indents_the_new_line() {
     let mut document = Document::new("    if (x) {");
     document.set_selections(vec![Selection::caret(12)]);
-    document.apply(newline(document.text(), document.selections()));
+    document.apply(newline(document.text(), document.selections(), &Indent::default()));
     assert_eq!(document.text().to_string(), "    if (x) {\n        ");
 }
 
@@ -148,4 +148,26 @@ fn a_place_is_counted_in_utf16_for_the_language_server() {
     assert_eq!((place.line, place.utf16_column), (0, 3), "an emoji is two UTF-16 units, é one");
     assert_eq!(document.offset_of_utf16(0, 3), "😀é".len());
     assert_eq!(document.offset_of_utf16(1, 99), document.text().len_bytes(), "a column past the line's end is its end");
+}
+
+#[test]
+fn a_classic_mac_file_keeps_its_lone_carriage_returns_and_a_changed_separator_is_a_change() {
+    let mut document = Document::new("a\rb\r");
+    assert_eq!(document.line_ending, LineEnding::Cr);
+    assert_eq!(document.text().len_lines(), 3, "a CR file's breaks were not read as line breaks");
+    assert_eq!(document.contents(), "a\rb\r");
+    document.line_ending = LineEnding::Lf;
+    assert!(document.is_modified(), "a new line separator did not count as a change to save");
+    assert_eq!(document.contents(), "a\nb\n");
+}
+
+#[test]
+fn a_files_indent_is_read_from_its_own_lines() {
+    let two = Rope::from_str("class C\n{\n  void M()\n  {\n    x();\n  }\n}\n");
+    assert_eq!(detect_indent(&two), Some(Indent { tabs: false, size: 2 }), "two-space indents were not seen");
+    let tabs = Rope::from_str("class C\n{\n\tvoid M()\n\t{\n\t\tx();\n\t}\n}\n");
+    assert_eq!(detect_indent(&tabs).map(|i| i.tabs), Some(true), "tab indents were not seen");
+    assert_eq!(detect_indent(&Rope::from_str("x\ny\n")), None, "a file with no indents was given one");
+    let plan = tab(&two, &[Selection::caret(0)], &Indent { tabs: false, size: 2 });
+    assert_eq!(plan.edits[0].text, "  ", "Tab did not insert the file's own indent");
 }
