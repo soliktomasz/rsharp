@@ -1,0 +1,60 @@
+# Every test on macOS, Windows and Linux: what RSharp ships on. Warnings are errors (.cargo/config.toml).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Roslyn's server as a dotnet tool, for the test that runs it (it skips, saying why, without one).
+  ROSLYN_VERSION: 5.8.0-1.26266.2
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "macOS (arm64)", os: macos-15 }
+          - { name: "Windows (x64)", os: windows-2025 }
+          - { name: "Linux (x64)", os: ubuntu-24.04 }
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: The libraries gpui builds against on Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev \
+            libvulkan-dev libfontconfig-dev libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Roslyn's language server
+        run: dotnet tool install --global roslyn-language-server --version ${{ env.ROSLYN_VERSION }}
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      - name: Build
+        run: cargo build --workspace --all-targets
+
+      - name: Tests
+        run: cargo test --workspace

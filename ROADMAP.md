@@ -41,8 +41,10 @@ Built: window tests on gpui's test platform (crates.io gpui's `test-support` ser
 the state store, recent solutions, each folder's tabs, carets and layout; the log; the action registry, the
 macOS menu bar and Find Action; Settings with its first three settings; the dock (six places, stripes, drag to
 move, gaps that resize, Solution and Problems); several windows and the session kept at quit; `--key`/`--type`
-for screenshots; the Lifeline; `tools/bench.sh`. Not yet: floating windows, Windows and Linux menus (Rider's
-toolbar menu button), and the comparison with Passenger on the same machine (Passenger has no `--bench`).
+for screenshots; the Lifeline; `tools/bench.sh`. Since: Windows' job-object Lifeline, Windows paths and URIs, the toolbar as Windows'
+title bar, the main-menu button on Windows and Linux, and CI on all three systems (decisions 3 and 4: from
+now, on GitHub). Not yet: floating windows, and the comparison with Passenger on the same machine (Passenger
+has no `--bench`).
 
 What every later phase builds on. Most of it is invisible, but without it each feature reinvents state, keys
 and tests.

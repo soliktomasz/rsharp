@@ -37,9 +37,11 @@ terminal and takes focus for a moment.
 
 ## Layout
 
-- `crates/rsharp-core`: no UI. `process` starts every program (`spawn`): each leads a process group, and a
-  watchdog shell (Passenger's Lifeline) kills that group once the IDE's pipe to it closes, however the IDE
-  ended, SIGKILL included (Roslyn's BuildHost ignores SIGTERM and outlived Roslyn before it). `paths` (canonical
+- `crates/rsharp-core`: no UI. `process` starts every program (`spawn`) with a Lifeline: on macOS and Linux the
+  child leads a process group and a watchdog shell kills that group once the IDE's pipe to it closes; on
+  Windows the child is in a job of its own, killed when the IDE's handle closes. Either way it holds however
+  the IDE ended, SIGKILL included (Roslyn's BuildHost ignores SIGTERM and outlived Roslyn before it).
+  `paths::canonical` drops Windows' `\\?\` and URIs are `file:///C:/…`, as Roslyn reports them. `paths` (canonical
   paths, `file://` URIs), `programs` (finds `dotnet` as a login shell would), `files::write` (every save:
   temporary file and rename), `state` (the one `StateStore`: `RSHARP_STATE` or the local app data; app documents
   at its root, each folder's under `workspaces/<name>-<hash>/`; writes debounced on its own thread, merged over
@@ -75,6 +77,15 @@ terminal and takes focus for a moment.
   what `--bench` measures. Roslyn's progress is followed by token, and a Restore counts only once it names a
   project: Roslyn also restores its stand-in for files no project holds (`Canonical.csproj`), which never ends
   while such a file is open and is never shown or waited for.
+
+## Systems
+
+macOS, Windows and Linux, each built and tested by `.github/workflows/ci.yml` on every push to main and every
+pull request. The toolbar is the title bar on macOS (the traffic lights drawn by the system over it) and on
+Windows (marked `WindowControlArea::Drag`, so Windows moves, snaps and maximizes the window, with caption
+buttons in Segoe's glyphs); Linux keeps its desktop's title bar. Windows and Linux have no menu bar, so the
+toolbar's main-menu button opens every menu from `actions.rs` as one dropdown (`tests/main_menu.rs`, which runs
+there only). `tools/screenshot.sh` and `tools/bench.sh` are macOS's.
 
 ## Rules
 

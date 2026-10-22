@@ -64,6 +64,10 @@ pub fn separator() -> Rgba {
 pub fn drop_zone() -> Rgba {
     rgba(0x3671E580)
 }
+/// Windows' own red under the pointer on a caption's Close.
+pub fn close_hover() -> Rgba {
+    rgb(0xE81123)
+}
 pub fn tab_selected() -> Rgba {
     rgb(0x233558)
 }

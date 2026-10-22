@@ -81,6 +81,9 @@ pub struct MainWindow {
     projects_loaded: bool,
     said: Option<SharedString>,
     find_action: Option<Entity<FindActionPopup>>,
+    /// The main menu's dropdown while open (Windows and Linux, which have no menu bar): each action's
+    /// availability and keys where the person was, and what had the keys.
+    main_menu: Option<(Vec<bool>, Vec<Option<SharedString>>, Option<FocusHandle>)>,
     _server_task: Option<Task<()>>,
 }
 
@@ -107,6 +110,7 @@ impl MainWindow {
             projects_loaded: false,
             said: None,
             find_action: None,
+            main_menu: None,
             _server_task: None,
         }
     }
@@ -487,17 +491,22 @@ impl MainWindow {
     }
 
     /// Opens Find Action over the window, each action's availability judged where the person was.
+    /// Whether each action of `ALL` can run where the person is, and its keys as the platform writes them.
+    fn actions_here(window: &mut Window, cx: &mut App) -> (Vec<bool>, Vec<Option<SharedString>>) {
+        ALL.iter()
+            .map(|entry| {
+                let action = (entry.action)();
+                let keys = window.highest_precedence_binding_for_action(&*action).map(|binding| {
+                    binding.keystrokes().iter().map(ToString::to_string).collect::<Vec<_>>().join(" ").into()
+                });
+                (window.is_action_available(&*action, cx), keys)
+            })
+            .unzip()
+    }
+
     pub fn find_action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let before = window.focused(cx);
-        let mut available = Vec::with_capacity(ALL.len());
-        let mut keys = Vec::with_capacity(ALL.len());
-        for entry in ALL {
-            let action = (entry.action)();
-            available.push(window.is_action_available(&*action, cx));
-            keys.push(window.highest_precedence_binding_for_action(&*action).map(|binding| {
-                binding.keystrokes().iter().map(ToString::to_string).collect::<Vec<_>>().join(" ").into()
-            }));
-        }
+        let (available, keys) = Self::actions_here(window, cx);
         let popup = cx.new(|cx| FindActionPopup::new(available.clone(), keys, cx));
         cx.subscribe_in(&popup, window, move |w, _, ended: &Ended, window, cx| {
             w.find_action = None;
@@ -520,6 +529,94 @@ impl MainWindow {
     }
 
     /// What Find Action lists now, or `None` while it is closed.
+    fn main_menu_dropdown(
+        &self,
+        available: &[bool],
+        keys: &[Option<SharedString>],
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let mut rows: Vec<gpui::AnyElement> = Vec::new();
+        for menu in crate::actions::MENUS {
+            let items: Vec<usize> = (0..ALL.len()).filter(|i| ALL[*i].menu == *menu).collect();
+            if items.is_empty() {
+                continue;
+            }
+            rows.push(
+                div()
+                    .h(px(24.))
+                    .px(px(14.))
+                    .flex()
+                    .items_center()
+                    .text_color(theme::text_secondary())
+                    .child(*menu)
+                    .into_any_element(),
+            );
+            for i in items {
+                let enabled = available[i];
+                rows.push(
+                    div()
+                        .id(("menu", i))
+                        .debug_selector(move || format!("menu: {}", ALL[i].title))
+                        .h(px(24.))
+                        .mx(px(6.))
+                        .px(px(8.))
+                        .rounded(px(4.))
+                        .flex()
+                        .items_center()
+                        .gap(px(24.))
+                        .when(enabled, |d| d.hover(|d| d.bg(theme::selection())))
+                        .when(!enabled, |d| d.text_color(theme::text_secondary()))
+                        .child(div().flex_1().child(ALL[i].title))
+                        .children(keys[i].clone().map(|k| div().text_color(theme::text_muted()).child(k)))
+                        .on_click(cx.listener(move |w, _: &ClickEvent, window, cx| w.choose_from_menu(i, window, cx)))
+                        .into_any_element(),
+                );
+            }
+        }
+        div().absolute().top(px(TOOLBAR_HEIGHT - 2.)).left(px(8.)).child(
+            div()
+                .id("main-menu-dropdown")
+                .w(px(300.))
+                .py(px(6.))
+                .rounded(px(8.))
+                .bg(theme::popup())
+                .border_1()
+                .border_color(theme::popup_border())
+                .shadow_lg()
+                .on_mouse_down_out(cx.listener(|w, _, window, cx| {
+                    if let Some((_, _, before)) = w.main_menu.take() {
+                        if let Some(before) = before {
+                            window.focus(&before);
+                        }
+                        cx.notify();
+                    }
+                }))
+                .children(rows),
+        )
+    }
+
+    /// Opens the main menu's dropdown under its button.
+    pub fn open_main_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let before = window.focused(cx);
+        let (available, keys) = Self::actions_here(window, cx);
+        self.main_menu = Some((available, keys, before));
+        cx.notify();
+    }
+
+    /// Runs the main menu's choice where the person was, or says why it cannot run.
+    fn choose_from_menu(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((available, _, before)) = self.main_menu.take() else { return };
+        if let Some(before) = &before {
+            window.focus(before);
+        }
+        if available[index] {
+            window.dispatch_action((ALL[index].action)(), cx);
+        } else {
+            self.said = Some(format!("{} is not available here", ALL[index].title.trim_end_matches('…')).into());
+        }
+        cx.notify();
+    }
+
     pub fn find_action_listed(&self, cx: &App) -> Option<Vec<&'static str>> {
         self.find_action.as_ref().map(|p| p.read(cx).listed())
     }
@@ -629,6 +726,7 @@ impl Render for MainWindow {
                 None => div().flex().flex_1().min_h_0().px(px(GAP)).child(self.welcome(cx)).into_any_element(),
             })
             .child(self.status_bar(cx))
+            .children(self.main_menu.as_ref().map(|(available, keys, _)| self.main_menu_dropdown(available, keys, cx)))
             .children(self.find_action.clone().map(|popup| {
                 div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(
                     div()
@@ -646,7 +744,8 @@ impl Render for MainWindow {
 }
 
 impl MainWindow {
-    fn toolbar(&self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    /// The toolbar, which is the window's title bar on macOS and Windows, as Rider's header is.
+    fn toolbar(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let name = self.workspace.as_ref().map(Workspace::name);
         div()
             .id("toolbar")
@@ -657,12 +756,24 @@ impl MainWindow {
             .gap(px(4.))
             // Room for macOS's window buttons, drawn by the system over the merged title bar.
             .pl(px(if cfg!(target_os = "macos") { 84. } else { 8. }))
-            .on_mouse_down(MouseButton::Left, |event, window, _| {
-                if event.click_count == 2 {
-                    window.titlebar_double_click();
-                } else {
-                    window.start_window_move();
-                }
+            // Windows itself moves, snaps and maximizes the window by the bar, and shows its snap layouts.
+            .when(cfg!(windows), |d| d.window_control_area(gpui::WindowControlArea::Drag))
+            .when(cfg!(target_os = "macos"), |d| {
+                d.on_mouse_down(MouseButton::Left, |event, window, _| {
+                    if event.click_count == 2 {
+                        window.titlebar_double_click();
+                    } else {
+                        window.start_window_move();
+                    }
+                })
+            })
+            .when(!cfg!(target_os = "macos"), |d| {
+                d.child(
+                    widget("main-menu")
+                        .debug_selector(|| "main menu".into())
+                        .child(icon("main-menu", 20.))
+                        .on_click(cx.listener(|w, _: &ClickEvent, window, cx| w.open_main_menu(window, cx))),
+                )
             })
             .children(name.map(|name| {
                 widget("project-widget")
@@ -672,6 +783,7 @@ impl MainWindow {
             .children(
                 self.branch.clone().map(|branch| widget("branch-widget").child(icon("branch", 16.)).child(branch)),
             )
+            .when(cfg!(windows), |d| d.child(div().flex_1()).child(caption_buttons()))
     }
 
     /// The work area: a stripe down each side, the open tool windows as islands round the editor, and the gaps
@@ -1257,6 +1369,31 @@ fn tilde(path: &Path) -> String {
         Ok(rest) if !home.as_os_str().is_empty() => format!("~/{}", rest.display()),
         _ => path.display().to_string(),
     }
+}
+
+/// Windows' caption buttons, in its own glyphs (Segoe's), handed to Windows by their control areas.
+fn caption_buttons() -> impl IntoElement {
+    let button = |id: &'static str, glyph: &'static str, area: gpui::WindowControlArea, close: bool| {
+        div()
+            .id(id)
+            .w(px(46.))
+            .h_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .font_family("Segoe Fluent Icons")
+            .text_size(px(10.))
+            .window_control_area(area)
+            .when(close, |d| d.hover(|d| d.bg(theme::close_hover()).text_color(theme::on_accent())))
+            .when(!close, |d| d.hover(|d| d.bg(theme::button_hover())))
+            .child(glyph)
+    };
+    div()
+        .h_full()
+        .flex()
+        .child(button("minimize", "\u{E921}", gpui::WindowControlArea::Min, false))
+        .child(button("maximize", "\u{E922}", gpui::WindowControlArea::Max, false))
+        .child(button("close", "\u{E8BB}", gpui::WindowControlArea::Close, true))
 }
 
 /// `1 error`, `2 errors`.

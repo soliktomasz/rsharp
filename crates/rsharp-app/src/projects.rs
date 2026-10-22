@@ -33,9 +33,10 @@ pub fn new_window(cx: &mut App) -> WindowHandle<MainWindow> {
     cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
+            // The toolbar is the title bar on macOS and Windows; Linux keeps its desktop's bar.
             titlebar: Some(TitlebarOptions {
                 title: Some("RSharp".into()),
-                appears_transparent: true,
+                appears_transparent: !cfg!(target_os = "linux"),
                 traffic_light_position: Some(point(px(14.), px(13.))),
             }),
             window_min_size: Some(size(px(640.), px(400.))),

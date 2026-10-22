@@ -46,7 +46,7 @@ pub static ALL: &[IdeAction] = &[
 ];
 
 /// Rider's main menus in its order.
-const MENUS: &[&str] = &["File", "Edit", "View", "Navigate", "Code", "Window", "Help"];
+pub const MENUS: &[&str] = &["File", "Edit", "View", "Navigate", "Code", "Window", "Help"];
 
 /// The main menu: macOS's menu bar, the app menu first with Settings and Quit where a Mac keeps them.
 // shortcut: Windows and Linux get no in-window menu yet; Rider's is the toolbar's main menu button.
