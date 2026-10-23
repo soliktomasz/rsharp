@@ -4,6 +4,7 @@
 # SHOT_WINDOW names the window to capture by its title (Settings), else the main window.
 # Its state is RSHARP_STATE when set, else a folder of its own removed as it ends: never the person's.
 set -eu
+export RSHARP_SCREENSHOT=1
 out=$1; shift
 own=""
 if [ -z "${RSHARP_STATE:-}" ]; then

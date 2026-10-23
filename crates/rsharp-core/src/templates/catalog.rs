@@ -21,7 +21,8 @@ const NOT_SHOWN: &[&str] = &[
 
 pub fn parse_cache(path: &Path, sdk: &str, platform: TemplatePlatform) -> Result<TemplateCatalog, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let value: Value = serde_json_lenient::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    let value: Value = serde_json_lenient::from_slice(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes))
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     let all = prop(&value, "TemplateInfo").as_array().ok_or("The template cache has no TemplateInfo array")?;
     let mut hosts = HostFiles::default();
     let mut groups: Vec<(String, Vec<&Value>)> = Vec::new();
@@ -346,6 +347,6 @@ impl HostFiles {
                 Some(bytes)
             })?
         };
-        serde_json_lenient::from_slice(&bytes).ok()
+        serde_json_lenient::from_slice(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes)).ok()
     }
 }

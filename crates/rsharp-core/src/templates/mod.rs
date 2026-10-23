@@ -1,5 +1,6 @@
 //! dotnet new's installed templates and Rider's project families, with the options an IDE asks for.
 
+pub mod cache;
 pub mod catalog;
 mod command;
 pub mod create;

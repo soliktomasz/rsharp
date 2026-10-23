@@ -25,6 +25,7 @@ pub mod settings_dialog;
 pub mod solution_menu;
 pub mod solution_view;
 pub mod state;
+pub mod templates;
 pub mod theme;
 pub mod window;
 pub mod workspace;
@@ -36,6 +37,7 @@ pub fn init(state_root: std::path::PathBuf, cx: &mut gpui::App) {
     let store = rsharp_core::state::StateStore::open(state_root);
     cx.set_global(settings::Settings(store.read::<settings::AppSettings>().clamped()));
     cx.set_global(state::Ide { store, servers: true });
+    templates::init(cx);
     cx.on_action(|_: &keymap::OpenSettings, cx| settings_dialog::open(cx));
     let history = history_window::local_history(cx);
     cx.background_executor()

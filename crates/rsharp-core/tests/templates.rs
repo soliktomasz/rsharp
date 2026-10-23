@@ -174,3 +174,19 @@ fn absent_or_invalid_ide_host_falls_back_but_corrupt_cache_is_an_error() {
     std::fs::write(&cache, "{").unwrap();
     assert!(catalog::parse_cache(&cache, "10.0.100", TemplatePlatform::Linux).is_err());
 }
+
+#[test]
+fn cache_and_ide_host_utf8_boms_are_read_like_dotnet() {
+    let fixture = Fixture::new();
+    let mut host = b"\xEF\xBB\xBF".to_vec();
+    host.extend_from_slice(HOST.as_bytes());
+    std::fs::write(fixture.root.join("mount/console/.template.config/ide.host.json"), host).unwrap();
+    let expected = fixture.read(TemplatePlatform::Linux);
+    let console = expected.templates().into_iter().find(|t| t.short_name() == "console").unwrap();
+    assert_eq!(console.variants[0].options[0].label, "Do not use top-level statements");
+    let path = fixture.root.join("templatecache.json");
+    let mut marked = b"\xEF\xBB\xBF".to_vec();
+    marked.extend(std::fs::read(&path).unwrap());
+    std::fs::write(&path, marked).unwrap();
+    assert_eq!(catalog::parse_cache(&path, "10.0.100", TemplatePlatform::Linux).unwrap(), expected);
+}
