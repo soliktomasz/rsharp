@@ -17,6 +17,7 @@ pub mod history_window;
 pub mod keymap;
 pub mod language;
 pub mod launch;
+pub mod new_project_dialog;
 pub mod projects;
 pub mod refactor_dialog;
 pub mod reference_dialog;
