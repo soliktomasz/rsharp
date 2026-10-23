@@ -23,7 +23,10 @@ imara-diff = "0.1"
 libc = ">=0.2.186, <0.2.190"
 log = { version = "0.4", features = ["std"] }
 regex = "1"
+notify = "8"
+quick-xml = "0.37"
 ropey = "1.6"
+trash = "5.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tree-sitter = "0.25"

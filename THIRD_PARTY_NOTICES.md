@@ -13,10 +13,13 @@ change that brings it in.
 | `imara-diff` | Apache-2.0 | Pascal Kuthe |
 | `libc` | MIT OR Apache-2.0 | The Rust Project Developers |
 | `log` | MIT OR Apache-2.0 | The Rust Project Developers |
+| `notify` | CC0-1.0 | Félix Saparelli, Daniel Faust, Aron Heinecke and contributors |
+| `quick-xml` | MIT | Johann Tuffe, Mingun |
 | `regex` | MIT OR Apache-2.0 | The Rust Project Developers |
 | `ropey` | MIT | Nathan Vegdahl |
 | `serde` | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
 | `serde_json` | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
+| `trash` | MIT | Artur Kovacs and contributors |
 | `tree-sitter` | MIT | Max Brunsfeld |
 | `tree-sitter-c-sharp` | MIT | Max Brunsfeld, Damien Guard and contributors |
 

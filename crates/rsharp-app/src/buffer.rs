@@ -202,14 +202,32 @@ impl Buffer {
 
     /// The file read again if another program changed it since, while nothing here is unsaved, as Rider reloads a
     /// file it sees changed; its new content kept in Local History as an External change.
-    // shortcut: looked at only when the file is opened again; the folder watcher (phase 4) tells it as it happens.
     pub fn refresh_from_disk(&mut self, cx: &mut Context<Self>) {
+        self.read_again(Some("External change"), cx);
+    }
+
+    /// The file read again after RSharp wrote it itself, which Local History has already kept.
+    pub fn reload(&mut self, cx: &mut Context<Self>) {
+        self.read_again(None, cx);
+    }
+
+    fn read_again(&mut self, external: Option<&'static str>, cx: &mut Context<Self>) {
         let now = stamp(&self.path);
-        if now.is_none() || now == self.on_disk || self.is_modified() {
+        if now.is_none() || now == self.on_disk {
             return;
         }
         let Ok(bytes) = std::fs::read(&self.path) else { return };
-        crate::history_window::record(self.path.clone(), bytes.clone(), Some("External change"), cx);
+        // shortcut: unsaved edits win over a change from elsewhere, which Local History keeps so the next save loses
+        // nothing for good; ask which to keep, as Rider's File Cache Conflict does, once someone meets it.
+        if self.is_modified() {
+            if external.is_some() {
+                crate::history_window::record(self.path.clone(), bytes, external, cx);
+            }
+            return;
+        }
+        if external.is_some() {
+            crate::history_window::record(self.path.clone(), bytes.clone(), external, cx);
+        }
         let (text, charset) = decode(&bytes, self.config.get("charset").and_then(Charset::from_editorconfig));
         let read = Document::new(&text);
         self.charset = charset;
@@ -324,6 +342,12 @@ impl Buffer {
     /// editor of it told. Refused, with nothing changed, when the rename fails.
     pub fn move_to(&mut self, to: PathBuf, cx: &mut Context<Self>) -> std::io::Result<()> {
         std::fs::rename(&self.path, &to)?;
+        self.moved(to, cx);
+        Ok(())
+    }
+
+    /// The file is at `to` now, moved with the folder it was in: the buffer goes by its new path, its text kept.
+    pub fn moved(&mut self, to: PathBuf, cx: &mut Context<Self>) {
         let server = self.server.as_ref().map(|(s, _)| s.clone());
         self.detach_server();
         let me = cx.entity().downgrade();
@@ -337,7 +361,6 @@ impl Buffer {
         }
         cx.emit(BufferEvent::Moved(to));
         cx.notify();
-        Ok(())
     }
 
     /// The server the file is open in, and its URI there.

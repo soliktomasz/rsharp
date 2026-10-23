@@ -155,7 +155,9 @@ pub fn replace_in_files(
 pub fn move_files(moves: &[(PathBuf, PathBuf)], server: Option<&LanguageServer>, cx: &mut App) -> Result<(), String> {
     let mut changes = Vec::new();
     for (from, to) in moves {
-        if to.exists() {
+        // On macOS and Windows a name differing only in letter case is the same file, there already.
+        let same = !cfg!(target_os = "linux") && from.to_string_lossy().eq_ignore_ascii_case(&to.to_string_lossy());
+        if to.exists() && !same {
             return Err(format!("{} was not renamed: {} is there already", name(from), name(to)));
         }
         let renamed = match buffer::find(from, cx) {

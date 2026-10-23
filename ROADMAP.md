@@ -134,6 +134,18 @@ Roslyn window tests print when they fail; Passenger's Host (decision 1) loading 
 round it. Since the Host and the extension load the projects, the stall has not been seen; watch for it.
 
 ### Phase 4: Solution and projects (M)
+Built: the Solution view's first piece, seeing the solution: its folders, the files they list and its projects
+(`rsharp-core`'s `solution`, a .sln and a .slnx); each project's Dependencies, by framework when it has several, and
+its files as Passenger's Host evaluates them (`project`'s `ProjectFiles`, links and removes kept), nested by Rider's
+rules (`nesting`); the folder's last evaluations shown first (`projectModels.json`), each project evaluated again once
+its inputs change, the active file's first, and on a project file saved in the IDE. Its second piece, changing it:
+the row's menu and Rider's keys; New Solution Folder, Existing Project and Item, Rename and Remove of solution folders,
+projects and items (`solution_edits`, a .sln line by line and a .slnx spliced at its elements); New File, New Folder
+and Rider's five C# types in their folder's namespace; Rename (a type named after its file renamed by Roslyn with it)
+and Delete to the Trash; Add Reference and Remove of one (`project_edits`); Cut, Copy, Paste and drags, a file's
+dependents and the project's items following; every write saving an open file first, keeping the old bytes in Local
+History and every other byte of the file; and the folder watcher (`watcher`). Next: New Solution and New Project from
+dotnet new's templates, then NuGet, then code help in MSBuild files.
 - **The Solution view as Rider's:** the solution's projects, Dependencies, solution folders, file nesting.
   Cut, copy, paste and drag; every Add kind; Add Reference.
 - **Edits that keep every other byte:** `SolutionEdits` (.sln line by line, .slnx with its whitespace kept) and

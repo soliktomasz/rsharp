@@ -28,7 +28,7 @@ impl Workspace {
         } else {
             (path, None)
         };
-        let solution = named.or_else(|| find_solution(&folder));
+        let solution = named.or_else(|| rsharp_core::solution::find(&folder));
         Self { folder, solution, listings: HashMap::new() }
     }
 
@@ -177,17 +177,6 @@ pub fn fits_mask(name: &str, mask: &str) -> bool {
 }
 
 /// The folder's solution: a .slnx before a .sln, as `dotnet` picks; one of several by name.
-fn find_solution(folder: &Path) -> Option<PathBuf> {
-    let mut found: Vec<PathBuf> = std::fs::read_dir(folder)
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| matches!(p.extension().and_then(|e| e.to_str()), Some("slnx" | "sln")))
-        .collect();
-    found.sort_by_key(|p| (p.extension().and_then(|e| e.to_str()) != Some("slnx"), p.clone()));
-    found.into_iter().next()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

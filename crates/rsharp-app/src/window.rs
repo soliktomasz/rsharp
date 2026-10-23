@@ -9,13 +9,14 @@ use crate::editor::{self, CodeEditor};
 use crate::editor_area::{EditorArea, Split};
 use crate::find_action::{Ended, FindActionPopup};
 use crate::find_bar::{self, FindBar};
+use crate::solution_view::{NodeKind, SolutionTree, TreeRow};
 use crate::state::{FolderState, KeptTab, RecentSolutions, store};
 use crate::theme;
-use crate::workspace::{Entry, Workspace};
+use crate::workspace::Workspace;
 use futures::StreamExt;
 use gpui::{
     App, ClickEvent, Context, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement, MouseButton,
-    MouseDownEvent, PathPromptOptions, Pixels, Point, SharedString, Task, Window, actions, div, prelude::*, px,
+    MouseDownEvent, PathPromptOptions, Pixels, Point, SharedString, Task, Window, actions, div, point, prelude::*, px,
     uniform_list,
 };
 use rsharp_lsp::{LanguageServer, ServerEvent, start_roslyn};
@@ -55,6 +56,12 @@ actions!(
         ExplorerExpand,
         ExplorerCollapse,
         ExplorerOpen,
+        SolutionNew,
+        SolutionRename,
+        SolutionDelete,
+        SolutionCut,
+        SolutionCopy,
+        SolutionPaste,
         Back,
         Forward,
         LastEditLocation,
@@ -68,6 +75,12 @@ actions!(
         ReplaceInFiles
     ]
 );
+
+mod file_moves;
+mod file_ops;
+mod solution_actions;
+
+use solution_actions::{NameFor, SolutionMenu};
 
 const TOOLBAR_HEIGHT: f32 = 40.;
 const STRIPE_WIDTH: f32 = 40.;
@@ -120,17 +133,23 @@ struct Found {
     text: String,
 }
 
-struct Row {
-    entry: Entry,
-    depth: usize,
-    expanded: bool,
-}
-
 pub struct MainWindow {
     workspace: Option<Workspace>,
     branch: Option<String>,
     expanded: HashSet<PathBuf>,
-    rows: Vec<Row>,
+    rows: Vec<TreeRow>,
+    /// The solution as the Solution view shows it; none for a folder without one, which shows its files.
+    tree: Option<SolutionTree>,
+    /// The Solution view's row menu, the name popup asking for New or Rename, and the last question asked.
+    solution_menu_open: Option<SolutionMenu>,
+    name_popup: Option<(Entity<crate::solution_menu::NamePopup>, NameFor)>,
+    asked: Option<String>,
+    reference_dialog: Option<(Entity<crate::reference_dialog::ReferenceDialog>, PathBuf)>,
+    /// What Cut or Copy last put on the clipboard: its paths, whether cut, and the clipboard's text then.
+    held: Option<(Vec<PathBuf>, bool, String)>,
+    /// The open folder's watcher, and the task taking its bursts to the window.
+    _watcher: Option<rsharp_core::watcher::Watcher>,
+    _watch_task: Option<Task<()>>,
     selected: Option<usize>,
     dock: DockLayout,
     /// Where a floating window was taken, from its top left (the header) or bottom right (the corner), so it
@@ -186,6 +205,12 @@ pub struct MainWindow {
     /// availability and keys where the person was, and what had the keys.
     main_menu: Option<(Vec<bool>, Vec<Option<SharedString>>, Option<FocusHandle>)>,
     _server_task: Option<Task<()>>,
+    /// The folder's one Passenger Host, which Roslyn's builds and the Solution view's evaluations share.
+    host: Option<rsharp_lsp::SharedHost>,
+    /// A round of evaluations is running; `evaluate_again` asks for one more after it.
+    evaluating: bool,
+    evaluate_again: bool,
+    _evaluate_task: Option<Task<()>>,
 }
 
 impl MainWindow {
@@ -198,6 +223,14 @@ impl MainWindow {
             branch: None,
             expanded: HashSet::new(),
             rows: Vec::new(),
+            tree: None,
+            solution_menu_open: None,
+            name_popup: None,
+            asked: None,
+            reference_dialog: None,
+            held: None,
+            _watcher: None,
+            _watch_task: None,
             selected: None,
             dock: store(cx).read::<DockLayout>().complete().clamped(),
             float_grab: Point::default(),
@@ -232,6 +265,10 @@ impl MainWindow {
             find_bar: None,
             main_menu: None,
             _server_task: None,
+            host: None,
+            evaluating: false,
+            evaluate_again: false,
+            _evaluate_task: None,
         }
     }
 
@@ -253,6 +290,12 @@ impl MainWindow {
         self.expanded = std::iter::once(folder.clone()).chain(kept.expanded.iter().map(|p| folder.join(p))).collect();
         self.dock = kept.dock.clone().unwrap_or_else(|| store.read::<DockLayout>()).complete().clamped();
         self.solution_wide = kept.solution_wide;
+        self.tree = workspace.solution.as_deref().and_then(rsharp_core::solution::read).map(|solution| {
+            let cached: rsharp_core::project::Evaluations = store.read_for(&folder);
+            let evaluated = cached.projects.into_iter().map(|p| (p.path.clone(), p)).collect();
+            SolutionTree::new(solution, evaluated, kept.open.iter().cloned().collect())
+        });
+        self.start_watching(&folder, cx);
         self.workspace = Some(workspace);
         self.selected = Some(0);
         self.rebuild_rows();
@@ -300,7 +343,14 @@ impl MainWindow {
         let store = store(cx);
         store.write_for(
             folder,
-            &FolderState { tabs, active, expanded, dock: Some(self.dock.clone()), solution_wide: self.solution_wide },
+            &FolderState {
+                tabs,
+                active,
+                expanded,
+                open: self.tree.as_ref().map(SolutionTree::open_keys).unwrap_or_default(),
+                dock: Some(self.dock.clone()),
+                solution_wide: self.solution_wide,
+            },
         );
         store.write(&self.dock);
     }
@@ -320,6 +370,8 @@ impl MainWindow {
 
     fn start_server(&mut self, cx: &mut Context<Self>) {
         self.server = None;
+        self.host = None;
+        (self.evaluating, self.evaluate_again, self._evaluate_task) = (false, false, None);
         let Some(workspace) = &self.workspace else { return };
         if !cx.global::<crate::state::Ide>().servers {
             self.server_state = ServerState::None;
@@ -342,10 +394,25 @@ impl MainWindow {
         let logs = store(cx).root().join("logs").join("roslyn");
         let (sender, mut events) = futures::channel::mpsc::unbounded();
         self._server_task = Some(cx.spawn(async move |this, cx| {
+            // Found off the UI thread, as finding dotnet looks along PATH; the evaluations and Roslyn share it.
+            let host = {
+                let folder = folder.clone();
+                cx.background_executor().spawn(async move { rsharp_lsp::SharedHost::carried(&folder) }).await
+            };
+            let given = host.clone();
+            if this
+                .update(cx, |w, cx| {
+                    w.host = given;
+                    w.evaluate_projects(cx);
+                })
+                .is_err()
+            {
+                return;
+            }
             let started = cx
                 .background_executor()
                 .spawn(async move {
-                    start_roslyn(&folder, solution.as_deref(), &logs, move |event| {
+                    start_roslyn(&folder, solution.as_deref(), &logs, host, move |event| {
                         let _ = sender.unbounded_send(event);
                     })
                 })
@@ -603,66 +670,220 @@ impl MainWindow {
     }
 
     fn rebuild_rows(&mut self) {
+        // The selection follows its row, which an evaluation landing above it moves.
+        let selected = self.selected.and_then(|at| self.rows.get(at)).map(|r| r.key.clone());
+        if let Some(tree) = &self.tree {
+            self.rows = tree.rows().to_vec();
+        } else {
+            self.rebuild_folder_rows();
+        }
+        let found = selected.and_then(|key| self.rows.iter().position(|r| r.key == key));
+        if let Some(at) = self.selected {
+            self.selected = Some(found.unwrap_or(at).min(self.rows.len().saturating_sub(1)));
+        }
+    }
+
+    /// A folder without a solution: its files on disk.
+    fn rebuild_folder_rows(&mut self) {
         let Some(workspace) = &mut self.workspace else { return };
         let root = workspace.folder.clone();
-        let mut rows = vec![Row {
-            entry: Entry { path: root.clone(), name: workspace.name(), is_folder: true },
-            depth: 0,
-            expanded: self.expanded.contains(&root),
-        }];
+        let row = |path: PathBuf, name: String, is_folder: bool, depth: usize, expanded: bool| TreeRow {
+            kind: if is_folder { NodeKind::Folder } else { NodeKind::File },
+            name,
+            detail: None,
+            depth,
+            expandable: is_folder,
+            expanded,
+            dimmed: false,
+            tip: None,
+            key: path.display().to_string(),
+            path: Some(path),
+        };
+        let mut rows = vec![row(root.clone(), workspace.name(), true, 0, self.expanded.contains(&root))];
         fn walk(
             workspace: &mut Workspace,
             expanded: &HashSet<PathBuf>,
             folder: &Path,
             depth: usize,
-            rows: &mut Vec<Row>,
+            rows: &mut Vec<TreeRow>,
+            row: &dyn Fn(PathBuf, String, bool, usize, bool) -> TreeRow,
         ) {
             for entry in workspace.entries(folder).to_vec() {
                 let open = entry.is_folder && expanded.contains(&entry.path);
-                let path = entry.path.clone();
-                rows.push(Row { entry, depth, expanded: open });
+                rows.push(row(entry.path.clone(), entry.name, entry.is_folder, depth, open));
                 if open {
-                    walk(workspace, expanded, &path, depth + 1, rows);
+                    walk(workspace, expanded, &entry.path, depth + 1, rows, row);
                 }
             }
         }
         if rows[0].expanded {
-            walk(workspace, &self.expanded, &root, 1, &mut rows);
+            walk(workspace, &self.expanded, &root, 1, &mut rows, &row);
         }
         self.rows = rows;
-        if let Some(selected) = self.selected {
-            self.selected = Some(selected.min(self.rows.len().saturating_sub(1)));
+    }
+
+    /// Evaluates, in the Host, each project of the solution never evaluated or changed since, the active file's first,
+    /// each landing in the Solution view and the folder's cache as it comes. One round runs at a time.
+    fn evaluate_projects(&mut self, cx: &mut Context<Self>) {
+        let (Some(host), Some(tree), Some(workspace)) = (self.host.clone(), &self.tree, &self.workspace) else {
+            return;
+        };
+        if self.evaluating {
+            self.evaluate_again = true;
+            return;
         }
+        let folder = workspace.folder.clone();
+        let solution = tree.solution().path.clone();
+        let active = self.active_editor().and_then(|e| rsharp_lsp::project_of(&e.read(cx).path));
+        let mut projects: Vec<(PathBuf, Option<rsharp_core::project::EvaluatedProject>)> = tree
+            .solution()
+            .projects()
+            .into_iter()
+            .filter(|p| p.exists)
+            .map(|p| (p.path.clone(), tree.evaluated(&p.path).cloned()))
+            .collect();
+        projects.sort_by_key(|(p, _)| Some(p) != active.as_ref());
+        self.evaluating = true;
+        self._evaluate_task = Some(cx.spawn(async move |this, cx| {
+            for (project, known) in projects {
+                let (host, solution) = (host.clone(), solution.clone());
+                let evaluated = cx
+                    .background_executor()
+                    .spawn(async move {
+                        // Stamped files are read here, off the UI thread.
+                        if known.is_some_and(|k| !k.is_stale()) {
+                            return None;
+                        }
+                        Some(host.evaluate(&project, Some(&solution)))
+                    })
+                    .await;
+                let landed = this.update(cx, |w, cx| {
+                    if w.workspace.as_ref().map(|ws| &ws.folder) != Some(&folder) {
+                        return false;
+                    }
+                    match evaluated {
+                        Some(Ok(project)) => w.set_evaluated(project, cx),
+                        Some(Err(failed)) => {
+                            // A Host that cannot start or answer fails the same for every project: the round ends
+                            // here, saying why, rather than starting it again for each.
+                            log::warn!("{}", failed.0);
+                            if let Some(tree) = &mut w.tree {
+                                tree.set_problem(Some(failed.0));
+                            }
+                            w.rebuild_rows();
+                            cx.notify();
+                            return false;
+                        }
+                        None => {}
+                    }
+                    true
+                });
+                if !landed.unwrap_or(false) {
+                    break;
+                }
+            }
+            // Kept once a round, serialized off the UI thread.
+            let kept = this
+                .update(cx, |w, cx| {
+                    let tree =
+                        w.tree.as_ref().filter(|_| w.workspace.as_ref().map(|ws| &ws.folder) == Some(&folder))?;
+                    Some((store(cx), rsharp_core::project::Evaluations { projects: tree.all_evaluated() }))
+                })
+                .ok()
+                .flatten();
+            if let Some((store, kept)) = kept {
+                let folder = folder.clone();
+                cx.background_executor().spawn(async move { store.write_for(&folder, &kept) }).await;
+            }
+            let _ = this.update(cx, |w, cx| {
+                w.evaluating = false;
+                if std::mem::take(&mut w.evaluate_again) {
+                    w.evaluate_projects(cx);
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// A project's evaluation landing in the Solution view.
+    pub fn set_evaluated(&mut self, project: rsharp_core::project::EvaluatedProject, cx: &mut Context<Self>) {
+        let Some(tree) = &mut self.tree else { return };
+        tree.set_evaluated(project);
+        self.rebuild_rows();
+        cx.notify();
+    }
+
+    /// Selects a row of the Solution view, as a click does.
+    pub fn select_row(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.selected = Some(index.min(self.rows.len().saturating_sub(1)));
+        cx.notify();
+    }
+
+    /// What hovering a row of the Solution view says.
+    pub fn solution_row_tip(&self, index: usize) -> Option<String> {
+        self.rows.get(index)?.tip.clone()
+    }
+
+    /// The selected row of the Solution view, as `solution_rows` shows it.
+    pub fn selected_row(&self) -> Option<String> {
+        self.selected.and_then(|at| self.solution_rows().get(at).cloned())
+    }
+
+    /// Whether the Solution view is waiting on the Host for an evaluation.
+    pub fn evaluating(&self) -> bool {
+        self.evaluating
+    }
+
+    /// Opens or closes a row of the Solution view, as its chevron does.
+    pub fn toggle_row(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.toggle(index, None, cx);
     }
 
     fn toggle(&mut self, index: usize, open: Option<bool>, cx: &mut Context<Self>) {
         let Some(row) = self.rows.get(index) else { return };
-        if !row.entry.is_folder {
+        if !row.expandable {
             return;
         }
-        let path = row.entry.path.clone();
-        let opening = open.unwrap_or(!row.expanded);
-        if opening {
-            if let Some(workspace) = &mut self.workspace {
-                workspace.forget(&path);
-            }
-            self.expanded.insert(path);
+        if let Some(tree) = &mut self.tree {
+            tree.toggle(index, open);
         } else {
-            self.expanded.remove(&path);
+            let path = row.path.clone().unwrap_or_default();
+            let opening = open.unwrap_or(!row.expanded);
+            if opening {
+                if let Some(workspace) = &mut self.workspace {
+                    workspace.forget(&path);
+                }
+                self.expanded.insert(path);
+            } else {
+                self.expanded.remove(&path);
+            }
         }
         self.rebuild_rows();
         self.save_state(cx);
         cx.notify();
     }
 
-    fn activate_row(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    /// What a double-click or Enter on a row does: a file opens, anything else opens or closes.
+    pub fn activate_row(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(row) = self.rows.get(index) else { return };
-        if row.entry.is_folder {
-            self.toggle(index, None, cx);
-        } else {
-            let path = row.entry.path.clone();
-            self.open_file(&path, None, window, cx);
+        match (&row.kind, &row.path) {
+            (NodeKind::File, Some(path)) => {
+                let path = path.clone();
+                self.open_file(&path, None, window, cx);
+            }
+            _ => self.toggle(index, None, cx),
         }
+    }
+
+    /// Each row of the Solution view as shown: indented two spaces a level, its detail after it in brackets.
+    pub fn solution_rows(&self) -> Vec<String> {
+        self.rows
+            .iter()
+            .map(|r| {
+                let detail = r.detail.as_ref().map(|d| format!(" ({d})")).unwrap_or_default();
+                format!("{}{}{detail}", "  ".repeat(r.depth), r.name)
+            })
+            .collect()
     }
 
     /// Opens a file in a tab, or shows its tab, with the caret at a line and column counted from 0.
@@ -1193,6 +1414,10 @@ impl MainWindow {
         self.workspace = None;
         self.opened_as = None;
         self.rows.clear();
+        self.tree = None;
+        (self._watcher, self._watch_task) = (None, None);
+        self.host = None;
+        (self.evaluating, self.evaluate_again, self._evaluate_task) = (false, false, None);
         self.server = None;
         self.server_state = ServerState::None;
         self._server_task = None;
@@ -1565,6 +1790,12 @@ impl Render for MainWindow {
                         }
                         w.said =
                             editor.update(cx, |e, cx| e.save(cx)).err().map(|e| format!("Could not save: {e}").into());
+                        let saved = editor.read(cx).path.extension().and_then(|e| e.to_str()).map(str::to_lowercase);
+                        if w.said.is_none()
+                            && saved.is_some_and(|e| e.ends_with("proj") || e == "props" || e == "targets")
+                        {
+                            w.evaluate_projects(cx);
+                        }
                         w.refresh_solution_problems(cx);
                         cx.notify();
                     }
@@ -1593,6 +1824,27 @@ impl Render for MainWindow {
                         }))
                         .child(popup),
                 )
+            }))
+            .children(self.solution_menu_view(cx))
+            .children(self.reference_dialog.as_ref().map(|(dialog, _)| {
+                div()
+                    .absolute()
+                    .top(px(TOOLBAR_HEIGHT + 60.))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(dialog.clone())
+            }))
+            .children(self.name_popup.as_ref().map(|(popup, _)| {
+                div()
+                    .absolute()
+                    .top(px(TOOLBAR_HEIGHT + 60.))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(popup.clone())
             }))
             .children(self.find_action.clone().map(|popup| {
                 div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(
@@ -1991,6 +2243,16 @@ impl MainWindow {
                     w.activate_row(s, window, cx)
                 }
             }))
+            .on_action(cx.listener(|w, _: &SolutionNew, _, cx| w.open_new_menu(cx)))
+            .on_action(cx.listener(|w, _: &SolutionRename, window, cx| w.run_row_item(&["Rename..."], window, cx)))
+            .on_action(
+                cx.listener(|w, _: &SolutionDelete, window, cx| {
+                    w.run_row_item(&["Delete...", "Remove..."], window, cx)
+                }),
+            )
+            .on_action(cx.listener(|w, _: &SolutionCut, window, cx| w.run_row_item(&["Cut"], window, cx)))
+            .on_action(cx.listener(|w, _: &SolutionCopy, window, cx| w.run_row_item(&["Copy"], window, cx)))
+            .on_action(cx.listener(|w, _: &SolutionPaste, window, cx| w.run_row_item(&["Paste"], window, cx)))
             .child(
                 uniform_list(
                     "solution-rows",
@@ -2218,16 +2480,25 @@ impl MainWindow {
     fn solution_row(&self, index: usize, focused: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let row = &self.rows[index];
         let selected = self.selected == Some(index);
-        let chevron = row.entry.is_folder.then(|| if row.expanded { "chevron-down" } else { "chevron-right" });
-        let kind = if index == 0 {
-            "project"
-        } else if row.entry.is_folder {
-            "folder"
-        } else {
-            file_icon(&row.entry.name)
+        let chevron = row.expandable.then(|| if row.expanded { "chevron-down" } else { "chevron-right" });
+        let kind = match row.kind {
+            NodeKind::Solution => "solution",
+            NodeKind::SolutionFolder => "solution-folder",
+            NodeKind::Project | NodeKind::ProjectReference => "project",
+            NodeKind::Dependencies => "dependencies",
+            NodeKind::Framework => "framework",
+            NodeKind::Package => "package",
+            NodeKind::Folder if index == 0 => "project",
+            NodeKind::Folder => "folder",
+            NodeKind::File => file_icon(&row.name),
         };
+        let tip = row.tip.clone();
         div()
             .id(("row", index))
+            .debug_selector({
+                let name = row.name.clone();
+                move || format!("solution row: {name}")
+            })
             .h(px(ROW_HEIGHT))
             .w_full()
             .rounded(px(4.))
@@ -2250,7 +2521,29 @@ impl MainWindow {
                 div()
                     .truncate()
                     .when(index == 0, |d| d.font_weight(FontWeight::SEMIBOLD))
-                    .child(row.entry.name.clone()),
+                    .when(row.dimmed, |d| d.text_color(theme::text_muted()))
+                    .child(row.name.clone()),
+            )
+            .when_some(row.detail.clone(), |d, detail| {
+                d.child(div().flex_none().text_color(theme::text_secondary()).child(detail))
+            })
+            .when_some(tip, |d, tip| d.tooltip(move |_, cx| cx.new(|_| Tip(tip.clone().into())).into()))
+            .when_some(
+                row.path
+                    .clone()
+                    .filter(|_| matches!(row.kind, NodeKind::File | NodeKind::Folder) && !row.key.starts_with("si:")),
+                |d, path| {
+                    let drag = file_moves::RowDrag { paths: vec![path], name: row.name.clone().into() };
+                    d.on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
+                },
+            )
+            .on_drop(cx.listener(move |w, drag: &file_moves::RowDrag, window, cx| w.dropped(drag, index, window, cx)))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |w, event: &MouseDownEvent, window, cx| {
+                    window.focus(&w.explorer_focus);
+                    w.open_row_menu(index, event.position, cx);
+                }),
             )
             .on_click(cx.listener(move |w, event: &ClickEvent, window, cx| {
                 w.selected = Some(index);

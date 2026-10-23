@@ -62,6 +62,15 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("right", ExplorerExpand, explorer),
         KeyBinding::new("left", ExplorerCollapse, explorer),
         KeyBinding::new("enter", ExplorerOpen, explorer),
+        KeyBinding::new("up", SelectPrevious, Some("ReferenceDialog")),
+        KeyBinding::new("down", SelectNext, Some("ReferenceDialog")),
+        KeyBinding::new("space", crate::reference_dialog::ToggleChoice, Some("ReferenceDialog")),
+        KeyBinding::new("enter", Choose, Some("ReferenceDialog")),
+        KeyBinding::new("escape", Dismiss, Some("ReferenceDialog")),
+        KeyBinding::new("up", SelectPrevious, Some("NamePopup")),
+        KeyBinding::new("down", SelectNext, Some("NamePopup")),
+        KeyBinding::new("enter", Choose, Some("NamePopup")),
+        KeyBinding::new("escape", Dismiss, Some("NamePopup")),
         KeyBinding::new("secondary-shift-a", FindAction, None),
         KeyBinding::new("up", SelectPrevious, Some("FindAction")),
         KeyBinding::new("down", SelectNext, Some("FindAction")),
@@ -90,6 +99,15 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("escape", Dismiss, Some("RefactorDialog")),
     ]);
     if mac {
+        cx.bind_keys([
+            KeyBinding::new("cmd-n", SolutionNew, explorer),
+            KeyBinding::new("shift-f6", SolutionRename, explorer),
+            KeyBinding::new("backspace", SolutionDelete, explorer),
+            KeyBinding::new("cmd-backspace", SolutionDelete, explorer),
+            KeyBinding::new("cmd-x", SolutionCut, explorer),
+            KeyBinding::new("cmd-c", SolutionCopy, explorer),
+            KeyBinding::new("cmd-v", SolutionPaste, explorer),
+        ]);
         cx.bind_keys([
             KeyBinding::new("alt-left", WordLeft, editor),
             KeyBinding::new("alt-right", WordRight, editor),
@@ -157,6 +175,14 @@ pub fn bind(cx: &mut App) {
             KeyBinding::new("cmd-right", LineEnd, Some("TextField")),
         ]);
     } else {
+        cx.bind_keys([
+            KeyBinding::new("alt-insert", SolutionNew, explorer),
+            KeyBinding::new("f2", SolutionRename, explorer),
+            KeyBinding::new("delete", SolutionDelete, explorer),
+            KeyBinding::new("ctrl-x", SolutionCut, explorer),
+            KeyBinding::new("ctrl-c", SolutionCopy, explorer),
+            KeyBinding::new("ctrl-v", SolutionPaste, explorer),
+        ]);
         cx.bind_keys([
             KeyBinding::new("ctrl-left", WordLeft, editor),
             KeyBinding::new("ctrl-right", WordRight, editor),
