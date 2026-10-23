@@ -103,6 +103,38 @@ impl SolutionTree {
         self.rebuild();
     }
 
+    /// The solution read again after a change to its file; what was open stays open.
+    pub fn set_solution(&mut self, solution: Solution) {
+        self.solution = solution;
+        self.rebuild();
+    }
+
+    /// Opens nodes by their keys.
+    pub fn reveal(&mut self, keys: &[String]) {
+        self.open.extend(keys.iter().cloned());
+        self.rebuild();
+    }
+
+    pub fn is_open(&self, key: &str) -> bool {
+        self.open.contains(key)
+    }
+
+    /// What is on disk at and under a path read again the next time it shows, as after a file made, moved or removed.
+    pub fn forget(&mut self, path: &Path) {
+        let disk = format!("disk:{}", path.display());
+        let root = self.root.clone();
+        self.levels.borrow_mut().retain(|key, _| {
+            if key.starts_with(&disk) {
+                return false;
+            }
+            // A project's level, "pf:{project}|{place}", stands for a folder under the project's.
+            let Some((project, place)) = key.strip_prefix("pf:").and_then(|k| k.split_once('|')) else { return true };
+            let folder = root.join(project).parent().map(|f| f.join(place)).unwrap_or_default();
+            !(folder.starts_with(path) || path.starts_with(&folder))
+        });
+        self.rebuild();
+    }
+
     /// Why the projects could not be evaluated, or none once they can.
     pub fn set_problem(&mut self, problem: Option<String>) {
         self.problem = problem;

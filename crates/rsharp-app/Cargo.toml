@@ -26,4 +26,5 @@ serde_json.workspace = true
 tree-sitter.workspace = true
 
 [dev-dependencies]
+encoding_rs.workspace = true
 gpui = { workspace = true, features = ["test-support"] }

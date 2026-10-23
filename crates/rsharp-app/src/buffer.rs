@@ -204,12 +204,23 @@ impl Buffer {
     /// file it sees changed; its new content kept in Local History as an External change.
     // shortcut: looked at only when the file is opened again; the folder watcher (phase 4) tells it as it happens.
     pub fn refresh_from_disk(&mut self, cx: &mut Context<Self>) {
+        self.read_again(Some("External change"), cx);
+    }
+
+    /// The file read again after RSharp wrote it itself, which Local History has already kept.
+    pub fn reload(&mut self, cx: &mut Context<Self>) {
+        self.read_again(None, cx);
+    }
+
+    fn read_again(&mut self, external: Option<&'static str>, cx: &mut Context<Self>) {
         let now = stamp(&self.path);
         if now.is_none() || now == self.on_disk || self.is_modified() {
             return;
         }
         let Ok(bytes) = std::fs::read(&self.path) else { return };
-        crate::history_window::record(self.path.clone(), bytes.clone(), Some("External change"), cx);
+        if external.is_some() {
+            crate::history_window::record(self.path.clone(), bytes.clone(), external, cx);
+        }
         let (text, charset) = decode(&bytes, self.config.get("charset").and_then(Charset::from_editorconfig));
         let read = Document::new(&text);
         self.charset = charset;

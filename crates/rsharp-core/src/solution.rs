@@ -58,7 +58,9 @@ impl Solution {
 /// Reads a solution; none when it cannot be read or a .slnx is not well-formed XML.
 pub fn read(path: &Path) -> Option<Solution> {
     let path = paths::canonical(path);
-    let text = std::fs::read_to_string(&path).ok()?;
+    // Read as the editor reads a file: by its BOM, else UTF-8, else the system's 8-bit code page, as an older Visual
+    // Studio wrote a .sln.
+    let (text, _) = crate::encodings::decode(&std::fs::read(&path).ok()?, None);
     let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     let root = path.parent()?.to_path_buf();
     let entries = if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("slnx")) {

@@ -119,3 +119,12 @@ fn an_empty_folder_holds_nothing_that_follows_it() {
         "a project after an empty folder would go into it"
     );
 }
+
+#[test]
+fn a_windows_1252_sln_reads() {
+    let folder = folder("1252");
+    let path = folder.join("Shop.sln");
+    let text = "# Caf\u{e9}\r\nProject(\"{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}\") = \"App\", \"src\\App\\App.csproj\", \"{BBBBBBBB-0000-0000-0000-000000000001}\"\r\nEndProject\r\n";
+    std::fs::write(&path, encoding_rs::WINDOWS_1252.encode(text).0).unwrap();
+    assert_eq!(read(&path), ["Shop", "  App true"], "a .sln in the system's code page would not read");
+}

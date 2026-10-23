@@ -16,7 +16,7 @@ use crate::workspace::Workspace;
 use futures::StreamExt;
 use gpui::{
     App, ClickEvent, Context, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement, MouseButton,
-    MouseDownEvent, PathPromptOptions, Pixels, Point, SharedString, Task, Window, actions, div, prelude::*, px,
+    MouseDownEvent, PathPromptOptions, Pixels, Point, SharedString, Task, Window, actions, div, point, prelude::*, px,
     uniform_list,
 };
 use rsharp_lsp::{LanguageServer, ServerEvent, start_roslyn};
@@ -56,6 +56,12 @@ actions!(
         ExplorerExpand,
         ExplorerCollapse,
         ExplorerOpen,
+        SolutionNew,
+        SolutionRename,
+        SolutionDelete,
+        SolutionCut,
+        SolutionCopy,
+        SolutionPaste,
         Back,
         Forward,
         LastEditLocation,
@@ -69,6 +75,10 @@ actions!(
         ReplaceInFiles
     ]
 );
+
+mod solution_actions;
+
+use solution_actions::{NameFor, SolutionMenu};
 
 const TOOLBAR_HEIGHT: f32 = 40.;
 const STRIPE_WIDTH: f32 = 40.;
@@ -128,6 +138,10 @@ pub struct MainWindow {
     rows: Vec<TreeRow>,
     /// The solution as the Solution view shows it; none for a folder without one, which shows its files.
     tree: Option<SolutionTree>,
+    /// The Solution view's row menu, the name popup asking for New or Rename, and the last question asked.
+    solution_menu_open: Option<SolutionMenu>,
+    name_popup: Option<(Entity<crate::solution_menu::NamePopup>, NameFor)>,
+    asked: Option<String>,
     selected: Option<usize>,
     dock: DockLayout,
     /// Where a floating window was taken, from its top left (the header) or bottom right (the corner), so it
@@ -202,6 +216,9 @@ impl MainWindow {
             expanded: HashSet::new(),
             rows: Vec::new(),
             tree: None,
+            solution_menu_open: None,
+            name_popup: None,
+            asked: None,
             selected: None,
             dock: store(cx).read::<DockLayout>().complete().clamped(),
             float_grab: Point::default(),
@@ -1781,6 +1798,17 @@ impl Render for MainWindow {
                         .child(popup),
                 )
             }))
+            .children(self.solution_menu_view(cx))
+            .children(self.name_popup.as_ref().map(|(popup, _)| {
+                div()
+                    .absolute()
+                    .top(px(TOOLBAR_HEIGHT + 60.))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(popup.clone())
+            }))
             .children(self.find_action.clone().map(|popup| {
                 div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(
                     div()
@@ -2178,6 +2206,16 @@ impl MainWindow {
                     w.activate_row(s, window, cx)
                 }
             }))
+            .on_action(cx.listener(|w, _: &SolutionNew, _, cx| w.open_new_menu(cx)))
+            .on_action(cx.listener(|w, _: &SolutionRename, window, cx| w.run_row_item(&["Rename..."], window, cx)))
+            .on_action(
+                cx.listener(|w, _: &SolutionDelete, window, cx| {
+                    w.run_row_item(&["Delete...", "Remove..."], window, cx)
+                }),
+            )
+            .on_action(cx.listener(|w, _: &SolutionCut, window, cx| w.run_row_item(&["Cut"], window, cx)))
+            .on_action(cx.listener(|w, _: &SolutionCopy, window, cx| w.run_row_item(&["Copy"], window, cx)))
+            .on_action(cx.listener(|w, _: &SolutionPaste, window, cx| w.run_row_item(&["Paste"], window, cx)))
             .child(
                 uniform_list(
                     "solution-rows",
@@ -2449,6 +2487,13 @@ impl MainWindow {
                 d.child(div().flex_none().text_color(theme::text_secondary()).child(detail))
             })
             .when_some(tip, |d, tip| d.tooltip(move |_, cx| cx.new(|_| Tip(tip.clone().into())).into()))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |w, event: &MouseDownEvent, window, cx| {
+                    window.focus(&w.explorer_focus);
+                    w.open_row_menu(index, event.position, cx);
+                }),
+            )
             .on_click(cx.listener(move |w, event: &ClickEvent, window, cx| {
                 w.selected = Some(index);
                 window.focus(&w.explorer_focus);
