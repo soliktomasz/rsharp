@@ -2,8 +2,10 @@
 //! language server it runs for C#. No UI: events come on the reader's thread, and a request's answer is waited
 //! for off the UI thread.
 
+mod protocol;
 mod roslyn;
 
+pub use protocol::*;
 pub use roslyn::*;
 
 use rsharp_core::process::{self, Child};
@@ -48,6 +50,8 @@ pub struct LanguageServer {
     input: Arc<Mutex<ChildStdin>>,
     pending: Pending,
     next_id: AtomicI64,
+    /// What the server said it can do, answering `initialize`.
+    pub capabilities: Value,
     _child: Child,
 }
 
@@ -72,7 +76,7 @@ impl LanguageServer {
         std::thread::Builder::new()
             .name("lsp-reader".into())
             .spawn(move || read(BufReader::new(output), &reader_input, &reader_pending, &*events))?;
-        Ok(Self { input, pending, next_id: AtomicI64::new(1), _child: child })
+        Ok(Self { input, pending, next_id: AtomicI64::new(1), capabilities: Value::Null, _child: child })
     }
 
     /// Sends a request; the answer arrives on the returned channel.

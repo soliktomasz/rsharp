@@ -38,7 +38,7 @@ pub fn start_roslyn(
     if let Some(dotnet) = programs::dotnet().and_then(|d| d.parent().map(Path::to_path_buf)) {
         command.env("DOTNET_ROOT", dotnet);
     }
-    let server =
+    let mut server =
         LanguageServer::start(command, events).map_err(|e| ServerFailed(format!("Roslyn did not start: {e}")))?;
 
     let root = paths::to_uri(folder);
@@ -51,8 +51,9 @@ pub fn start_roslyn(
         }))
         .recv_timeout(Duration::from_secs(120))
         .map_err(|_| ServerFailed("Roslyn did not answer initialize".into()))??;
-    if answer.get("capabilities").is_none() {
-        return Err(ServerFailed("Roslyn's answer to initialize named no capabilities".into()));
+    match answer.get("capabilities") {
+        Some(capabilities) => server.capabilities = capabilities.clone(),
+        None => return Err(ServerFailed("Roslyn's answer to initialize named no capabilities".into())),
     }
     server.notify("initialized", json!({}));
     if let Some(solution) = solution {
@@ -61,15 +62,79 @@ pub fn start_roslyn(
     Ok(server)
 }
 
+/// What RSharp tells Roslyn it can do, as Passenger tells it: completion and code actions with resolve, rename,
+/// semantic tokens over ranges, inlay hints, and UTF-16 positions, which are what the editor's columns already are.
 fn client_capabilities() -> Value {
     json!({
+        "general": { "positionEncodings": ["utf-16"] },
         "window": { "workDoneProgress": true },
-        "workspace": { "configuration": true, "workspaceFolders": true },
+        "workspace": {
+            "configuration": true,
+            "workspaceFolders": true,
+            "workspaceEdit": { "documentChanges": true, "resourceOperations": ["create", "rename", "delete"] },
+            "didChangeWatchedFiles": { "dynamicRegistration": false },
+            "symbol": {},
+        },
         "textDocument": {
             "synchronization": { "didSave": true },
-            "publishDiagnostics": {},
-            "diagnostic": {},
+            "completion": {
+                "completionItem": {
+                    "snippetSupport": false,
+                    "documentationFormat": ["markdown", "plaintext"],
+                    "labelDetailsSupport": true,
+                    "resolveSupport": { "properties": ["documentation", "detail", "additionalTextEdits"] },
+                },
+                "completionList": { "itemDefaults": ["commitCharacters", "editRange", "data"] },
+                "contextSupport": true,
+            },
             "hover": { "contentFormat": ["markdown", "plaintext"] },
+            "signatureHelp": {
+                "signatureInformation": {
+                    "documentationFormat": ["markdown", "plaintext"],
+                    "parameterInformation": { "labelOffsetSupport": true },
+                    "activeParameterSupport": true,
+                },
+                "contextSupport": true,
+            },
+            "definition": { "linkSupport": true },
+            "typeDefinition": { "linkSupport": true },
+            "implementation": { "linkSupport": true },
+            "references": {},
+            "documentHighlight": {},
+            "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
+            "codeAction": {
+                "codeActionLiteralSupport": { "codeActionKind": { "valueSet": [
+                    "", "quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.rewrite", "source",
+                    "source.organizeImports",
+                ] } },
+                "isPreferredSupport": true,
+                "dataSupport": true,
+                "resolveSupport": { "properties": ["edit"] },
+            },
+            "formatting": {},
+            "rangeFormatting": {},
+            "rename": { "prepareSupport": true },
+            "semanticTokens": {
+                "requests": { "range": true, "full": { "delta": false } },
+                "tokenTypes": [],
+                "tokenModifiers": [],
+                "formats": ["relative"],
+                "multilineTokenSupport": false,
+                "overlappingTokenSupport": false,
+            },
+            "inlayHint": {},
+            "diagnostic": {},
+            "publishDiagnostics": {},
         },
     })
+}
+
+/// The kinds Roslyn names its semantic tokens by, in its legend's order.
+pub fn token_legend(server: &LanguageServer) -> Vec<String> {
+    server.capabilities["semanticTokensProvider"]["legend"]["tokenTypes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t.as_str().map(str::to_string))
+        .collect()
 }
