@@ -10,6 +10,7 @@ pub mod paths;
 pub mod process;
 pub mod programs;
 pub mod project;
+pub mod project_edits;
 pub mod solution;
 pub mod solution_edits;
 pub mod state;

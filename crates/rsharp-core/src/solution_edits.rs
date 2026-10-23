@@ -81,7 +81,7 @@ fn file_name(path: &Path) -> String {
 }
 
 /// A path as the solution names it: relative to its folder, `..` where it lies outside, with '/'.
-fn relative(root: &Path, path: &Path) -> String {
+pub(crate) fn relative(root: &Path, path: &Path) -> String {
     let (from, to): (Vec<Component>, Vec<Component>) = (root.components().collect(), path.components().collect());
     let common = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
     let mut parts: Vec<String> = from[common..].iter().map(|_| "..".to_string()).collect();
