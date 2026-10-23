@@ -307,3 +307,134 @@ fn a_file_renamed_after_its_type_offers_to_rename_the_type(cx: &mut TestAppConte
     assert!(text.contains("public class Purchase"), "the type's declaration would keep its old name: {text}");
     assert!(run.folder.join("Shop.App/Purchase.cs").is_file() && !run.folder.join("Shop.App/Order.cs").exists());
 }
+
+fn two_projects() -> Vec<(&'static str, &'static str)> {
+    let mut files = files();
+    files[0] = (
+        "Shop.slnx",
+        "<Solution>\n  <Project Path=\"Shop.App/Shop.App.csproj\" />\n  <Project Path=\"Shop.Core/Shop.Core.csproj\" />\n</Solution>\n",
+    );
+    files.extend([("Shop.Core/Shop.Core.csproj", PROJECT), ("Shop.Core/Catalog/Item.cs", "class Item { }\n")]);
+    files
+}
+
+fn open_both<'a>(run: &Run, cx: &'a mut TestAppContext) -> (Entity<MainWindow>, &'a mut VisualTestContext) {
+    let (main, cx) = open(run, cx);
+    for name in ["Shop.Core", "Catalog"] {
+        let at = row(&main, cx, name);
+        main.update(cx, |main, cx| main.toggle_row(at, cx));
+    }
+    (main, cx)
+}
+
+#[gpui::test]
+fn a_file_cut_and_pasted_into_another_projects_folder_moves_there_with_its_open_tab_and_its_unsaved_edit(
+    cx: &mut TestAppContext,
+) {
+    let run = Run::new("sf-cut", &two_projects());
+    let order = run.folder.join("Shop.App/Models/Order.cs");
+    let (main, cx) = open_both(&run, cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&order, Some((4, 21)), window, cx));
+    cx.simulate_input(" // the sum");
+    choose(&main, cx, "Order.cs", "Edit > Cut");
+    choose(&main, cx, "Catalog", "Edit > Paste");
+    let moved = run.folder.join("Shop.Core/Catalog/Order.cs");
+    assert!(!order.exists() && moved.is_file(), "the file would not move");
+    let shown = main.read_with(cx, |m, cx| m.editor().map(|e| e.read(cx).path.clone()));
+    assert_eq!(shown, Some(rsharp_core::paths::canonical(&moved)), "the tab would not follow the file");
+    assert!(text(&main, cx).contains("// the sum"), "the unsaved edit would be lost");
+    assert!(
+        rows(&main, cx).contains(&"      Order.cs".to_string()),
+        "the file would not show in its new folder: {:?}",
+        rows(&main, cx)
+    );
+}
+
+#[gpui::test]
+fn a_folder_copied_and_pasted_copies_all_it_holds_and_a_copy_into_its_own_folder_asks_its_name(
+    cx: &mut TestAppContext,
+) {
+    let run = Run::new("sf-copy", &two_projects());
+    let (main, cx) = open_both(&run, cx);
+    choose(&main, cx, "Models", "Edit > Copy");
+    choose(&main, cx, "Shop.Core", "Edit > Paste");
+    assert!(run.folder.join("Shop.Core/Models/Order.cs").is_file(), "the folder's file would not be copied");
+    assert!(run.folder.join("Shop.App/Models/Order.cs").is_file(), "the copy would take the original");
+    choose(&main, cx, "Shop.App", "Edit > Paste");
+    let popup = main.read_with(cx, |m, _| m.name_popup()).expect("a copy into its own folder would not ask its name");
+    assert_eq!(popup.read_with(cx, |p, cx| p.text(cx)), "Models");
+    answer(&main, cx, "Models2");
+    assert!(run.folder.join("Shop.App/Models2/Order.cs").is_file(), "the duplicate would not be made under its name");
+}
+
+#[gpui::test]
+fn a_file_dragged_onto_another_folder_moves_and_with_the_copy_key_held_is_copied(cx: &mut TestAppContext) {
+    let run = Run::new("sf-drag", &two_projects());
+    let order = run.folder.join("Shop.App/Models/Order.cs");
+    let (_main, cx) = open_both(&run, cx);
+    let drag = |cx: &mut VisualTestContext, from: &str, to: &str, modifiers: gpui::Modifiers| {
+        cx.run_until_parked();
+        let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+        let start = cx
+            .debug_bounds(leak(format!("solution row: {from}")))
+            .unwrap_or_else(|| panic!("no row {from} on screen"))
+            .center();
+        let end = cx
+            .debug_bounds(leak(format!("solution row: {to}")))
+            .unwrap_or_else(|| panic!("no row {to} on screen"))
+            .center();
+        cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::default());
+        for step in 1..=8 {
+            cx.simulate_mouse_move(
+                start + (end - start) * (step as f32 / 8.),
+                Some(gpui::MouseButton::Left),
+                modifiers,
+            );
+        }
+        cx.simulate_mouse_up(end, gpui::MouseButton::Left, modifiers);
+        cx.run_until_parked();
+    };
+    drag(cx, "Order.cs", "Catalog", gpui::Modifiers::default());
+    let moved = run.folder.join("Shop.Core/Catalog/Order.cs");
+    assert!(!order.exists() && moved.is_file(), "a file dragged onto a folder would not move there");
+    let copy = if cfg!(target_os = "macos") { gpui::Modifiers::alt() } else { gpui::Modifiers::control() };
+    drag(cx, "Item.cs", "Shop.App", copy);
+    assert!(run.folder.join("Shop.App/Item.cs").is_file(), "a file dragged with the copy key would not be copied");
+    assert!(run.folder.join("Shop.Core/Catalog/Item.cs").is_file(), "a copy by drag would take the original");
+}
+
+#[gpui::test]
+fn a_parent_moved_takes_its_dependents_and_its_projects_dependent_upon_follows(cx: &mut TestAppContext) {
+    let mut files = two_projects();
+    files[1] = (
+        "Shop.App/Shop.App.csproj",
+        "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <Compile Update=\"Form.Designer.cs\">\n      <DependentUpon>Form.cs</DependentUpon>\n    </Compile>\n  </ItemGroup>\n</Project>\n",
+    );
+    files.extend([
+        ("Shop.App/Form.cs", "partial class Form { }\n"),
+        ("Shop.App/Form.Designer.cs", "partial class Form { }\n"),
+    ]);
+    let run = Run::new("sf-dependents", &files);
+    let (main, cx) = open_both(&run, cx);
+    choose(&main, cx, "Form.cs", "Edit > Cut");
+    choose(&main, cx, "Models", "Edit > Paste");
+    assert!(run.folder.join("Shop.App/Models/Form.Designer.cs").is_file(), "a file's dependent would not go with it");
+    let project = std::fs::read_to_string(run.folder.join("Shop.App/Shop.App.csproj")).unwrap();
+    assert!(
+        project.contains("<Compile Update=\"Models/Form.Designer.cs\">"),
+        "the project would lose its item:\n{project}"
+    );
+}
+
+#[gpui::test]
+fn a_folder_pasted_into_itself_is_refused(cx: &mut TestAppContext) {
+    let run = Run::new("sf-into-itself", &two_projects());
+    let (main, cx) = open_both(&run, cx);
+    choose(&main, cx, "Models", "Edit > Copy");
+    choose(&main, cx, "Models", "Edit > Paste");
+    assert!(
+        main.read_with(cx, |m, _| m.said().is_some_and(|s| s.contains("inside itself"))),
+        "the refusal would not be said"
+    );
+    assert!(!run.folder.join("Shop.App/Models/Models").exists(), "a folder would be copied into itself");
+}

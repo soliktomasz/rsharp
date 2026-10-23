@@ -104,6 +104,10 @@ impl MainWindow {
     ) -> bool {
         let into = Self::place_of(row);
         match (title, into) {
+            ("Cut" | "Copy", _) if matches!(row.kind, NodeKind::File | NodeKind::Folder) => {
+                self.hold(row, title == "Cut", cx)
+            }
+            ("Paste", _) => self.paste(row, window, cx),
             ("New File...", Some(into)) => {
                 self.ask_name("New File", "", Vec::new(), NameFor::NewFile { into }, window, cx)
             }

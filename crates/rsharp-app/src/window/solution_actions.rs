@@ -24,6 +24,7 @@ pub(super) enum NameFor {
     NewFolder { into: PathBuf },
     NewType { into: PathBuf },
     Rename { path: PathBuf },
+    Duplicate { from: PathBuf, into: PathBuf },
 }
 
 /// Names in a sentence, as Rider's questions list them: "a", "a and b", "a, b and c".
@@ -213,6 +214,7 @@ impl MainWindow {
             NameFor::NewFolder { into } => return self.make(&into, &name, None, true, window, cx),
             NameFor::NewType { into } => return self.make(&into, &name, kind, false, window, cx),
             NameFor::Rename { path } => return self.rename_path(&path, &name, window, cx),
+            NameFor::Duplicate { from, into } => return self.duplicate(&from, &into, &name, cx),
             NameFor::NewSolutionFolder { parent } => {
                 let edit = SolutionEdit::AddFolder { parent: parent.as_deref(), name: &name };
                 self.write_edited(&solution, |text| solution_edits::edit(&solution, text, edit), cx)?;

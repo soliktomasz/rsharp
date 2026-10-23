@@ -76,6 +76,7 @@ actions!(
     ]
 );
 
+mod file_moves;
 mod file_ops;
 mod solution_actions;
 
@@ -144,6 +145,8 @@ pub struct MainWindow {
     name_popup: Option<(Entity<crate::solution_menu::NamePopup>, NameFor)>,
     asked: Option<String>,
     reference_dialog: Option<(Entity<crate::reference_dialog::ReferenceDialog>, PathBuf)>,
+    /// What Cut or Copy last put on the clipboard: its paths, whether cut, and the clipboard's text then.
+    held: Option<(Vec<PathBuf>, bool, String)>,
     selected: Option<usize>,
     dock: DockLayout,
     /// Where a floating window was taken, from its top left (the header) or bottom right (the corner), so it
@@ -222,6 +225,7 @@ impl MainWindow {
             name_popup: None,
             asked: None,
             reference_dialog: None,
+            held: None,
             selected: None,
             dock: store(cx).read::<DockLayout>().complete().clamped(),
             float_grab: Point::default(),
@@ -838,6 +842,7 @@ impl MainWindow {
         }
         self.rebuild_rows();
         self.save_state(cx);
+        cx.notify();
     }
 
     /// What a double-click or Enter on a row does: a file opens, anything else opens or closes.
@@ -2471,6 +2476,10 @@ impl MainWindow {
         let tip = row.tip.clone();
         div()
             .id(("row", index))
+            .debug_selector({
+                let name = row.name.clone();
+                move || format!("solution row: {name}")
+            })
             .h(px(ROW_HEIGHT))
             .w_full()
             .rounded(px(4.))
@@ -2500,6 +2509,11 @@ impl MainWindow {
                 d.child(div().flex_none().text_color(theme::text_secondary()).child(detail))
             })
             .when_some(tip, |d, tip| d.tooltip(move |_, cx| cx.new(|_| Tip(tip.clone().into())).into()))
+            .when_some(row.path.clone().filter(|_| matches!(row.kind, NodeKind::File | NodeKind::Folder)), |d, path| {
+                let drag = file_moves::RowDrag { paths: vec![path], name: row.name.clone().into() };
+                d.on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
+            })
+            .on_drop(cx.listener(move |w, drag: &file_moves::RowDrag, window, cx| w.dropped(drag, index, window, cx)))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |w, event: &MouseDownEvent, window, cx| {
