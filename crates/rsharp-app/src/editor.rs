@@ -1,22 +1,18 @@
-//! The code editor: one open file's document, drawn line by line for only the lines on screen, coloured from
+//! The code editor: a view of one open file's buffer, drawn line by line for only the lines on screen, coloured from
 //! its syntax tree (parsed again off the UI thread after each edit) and kept in step with Roslyn.
 
+use crate::buffer::{Buffer, BufferEvent};
 use crate::theme;
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, FocusHandle, Focusable, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId,
-    MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, ScrollWheelEvent, ShapedLine, Style, Task, TextRun,
-    UTF16Selection, UnderlineStyle, Window, actions, div, fill, font, point, prelude::*, px, relative, size,
+    MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, ScrollWheelEvent, ShapedLine, Style, Subscription,
+    TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill, font, point, prelude::*, px, relative, size,
 };
-use rsharp_languages::{Highlight, edit as edit_tree, highlights, parse};
-use rsharp_lsp::LanguageServer;
+use rsharp_languages::{FoldRegion, Highlight, folds, folds_in, highlights, matching_bracket};
 use rsharp_text::*;
-use serde_json::json;
 use std::ops::Range;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-use tree_sitter::Tree;
 
 actions!(
     editor,
@@ -54,10 +50,32 @@ actions!(
         Cut,
         Paste,
         Save,
+        SelectNextOccurrence,
+        UnselectOccurrence,
+        SelectAllOccurrences,
+        CloneCaretAbove,
+        CloneCaretBelow,
+        CaretPerLine,
+        ToggleColumnMode,
+        Escape,
+        MatchBrace,
+        ToggleFold,
+        ExpandRegion,
+        CollapseRegion,
+        ExpandAll,
+        CollapseAll,
+        ToggleSoftWrap,
+        ToggleWhitespace,
+        IncreaseFontSize,
+        DecreaseFontSize,
+        ResetFontSize,
     ]
 );
 
 const TEXT_PAD: f32 = 16.;
+
+/// A line and a character column, which may lie past the line's end.
+type Place = (usize, usize);
 
 /// A problem the server found, where it is now.
 #[derive(Clone)]
@@ -68,208 +86,293 @@ pub struct Diagnostic {
 }
 
 pub struct CodeEditor {
+    pub buffer: Entity<Buffer>,
+    /// The file, as its buffer has it.
     pub path: PathBuf,
-    pub document: Document,
-    pub diagnostics: Vec<Diagnostic>,
+    /// The buffer's text as of its last change, a snapshot as cheap as a pointer, so the carets' moves need no
+    /// trip to the buffer.
+    text: Rope,
+    version: u64,
+    /// This editor's carets, the last the primary; another editor of the same file has its own.
+    carets: Vec<Selection>,
+    /// The find bar's matches, sorted, drawn behind the text while it is open.
+    pub search_matches: Vec<Range<usize>>,
     focus: FocusHandle,
-    is_csharp: bool,
-    tree: Option<Tree>,
-    parsing: Option<Task<()>>,
-    server: Option<(Arc<LanguageServer>, String)>,
-    checking: Option<Task<()>>,
     scroll_y: Pixels,
     autoscroll: bool,
-    goal_column: Option<usize>,
+    /// Each caret's column for a run of Up and Down, so a short line on the way doesn't pull it in.
+    goal_columns: Option<Vec<usize>>,
     marked: Option<Range<usize>>,
     selecting: bool,
+    /// Where a column drag began, while it lasts.
+    column_drag: Option<Place>,
+    /// The column selection last made, from its start to its head, and the carets it made: Shift and the arrows
+    /// go on with it while those carets are untouched.
+    block: Option<(Place, Place, Vec<Selection>)>,
+    /// Column Selection Mode: a drag and Shift with the arrows select a column.
+    pub column_mode: bool,
+    /// The regions folded here, sorted, kept in step with every edit; the others are found in the tree as the lines
+    /// on screen or a fold action need them.
+    pub folded: Vec<FoldRegion>,
+    /// Lines wider than the view go on in rows below (View | Active Editor | Soft-Wrap).
+    pub soft_wrap: bool,
+    rows: Rows,
+    /// What the rows were made from: the text's version, the folds' generation and the wrap width.
+    rows_key: Option<(u64, u64, Option<usize>)>,
+    fold_generation: u64,
+    /// How many characters fit across the view, as the last frame measured it, for soft wrap.
+    columns: Option<usize>,
+    /// The pointer is over the gutter, which shows the chevrons of what is not folded.
+    gutter_hovered: bool,
     layout: Option<Layout>,
     /// The line height in force, from the settings, as the last frame used it.
     line_height: Pixels,
+    _buffer_events: Subscription,
+    /// An edit a read-only file refused, made once its read-only status is cleared if the text is as it was then.
+    pending: Option<(EditPlan, u64)>,
+}
+
+/// An edit refused because the file is read-only: the window asks to clear that.
+pub struct ReadOnlyEdit;
+
+impl gpui::EventEmitter<ReadOnlyEdit> for CodeEditor {}
+
+/// What follows a read-only file's status being cleared.
+#[derive(Clone, Copy, PartialEq)]
+pub enum AfterClearing {
+    Edit,
+    Save,
+}
+
+/// Rider's Clear Read-Only Status, asked of a read-only file's first edit or save: on yes the file is made
+/// writable and the edit made, or the file saved; a failure is logged.
+pub fn ask_clear_read_only(editor: Entity<CodeEditor>, then: AfterClearing, window: &mut Window, cx: &mut App) {
+    let name = editor.read(cx).path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let answer = window.prompt(
+        gpui::PromptLevel::Warning,
+        &format!("{name} is read-only"),
+        Some("Clear its read-only status to change it?"),
+        &["Clear Read-Only Status", "Cancel"],
+        cx,
+    );
+    cx.spawn(async move |cx| {
+        if answer.await != Ok(0) {
+            return;
+        }
+        let _ = editor.update(cx, |e, cx| {
+            let buffer = e.buffer.clone();
+            if let Err(error) = buffer.update(cx, |b, cx| b.clear_read_only(cx)) {
+                log::warn!("Could not clear the read-only status of {}: {error}", e.path.display());
+                return;
+            }
+            match then {
+                AfterClearing::Edit => {
+                    if let Some((plan, _)) = e.pending.take().filter(|(_, v)| *v == e.version) {
+                        e.apply(plan, cx);
+                    }
+                }
+                AfterClearing::Save => {
+                    if let Err(error) = e.save(cx) {
+                        log::warn!("Could not save {}: {error}", e.path.display());
+                    }
+                }
+            }
+        });
+    })
+    .detach();
 }
 
 /// Where the last frame put things, for the mouse and the input method to find their way back.
 struct Layout {
     text_origin: Point<Pixels>,
+    char_width: Pixels,
     viewport: Bounds<Pixels>,
-    first_line: usize,
+    first_row: usize,
     lines: Vec<ShapedLine>,
+    /// The gutter's chevrons and the folded regions' placeholders, each with the fold it stands for.
+    chevrons: Vec<(Bounds<Pixels>, FoldRegion)>,
+    placeholders: Vec<(Bounds<Pixels>, FoldRegion)>,
 }
 
 impl CodeEditor {
-    pub fn new(path: PathBuf, bytes: &[u8], cx: &mut Context<Self>) -> Self {
-        // shortcut: bytes that are not UTF-8 are read lossily; Passenger reads them in the file's 8-bit charset.
-        let document = Document::new(&String::from_utf8_lossy(bytes));
-        let is_csharp = path.extension().is_some_and(|e| e == "cs" || e == "csx");
-        let mut editor = Self {
-            path,
-            document,
-            diagnostics: Vec::new(),
+    /// An editor of a file: of its buffer if it is open already, else of one read from `bytes`.
+    pub fn new(buffer: Entity<Buffer>, cx: &mut Context<Self>) -> Self {
+        let subscription = cx.subscribe(&buffer, |editor, buffer, event: &BufferEvent, cx| {
+            match event {
+                BufferEvent::Edited { changes, by } => {
+                    let before = editor.version;
+                    editor.sync(&buffer, cx);
+                    // The editor that made the change has its carets from it already.
+                    if *by != cx.entity_id() {
+                        let carets = editor
+                            .carets
+                            .iter()
+                            .map(|s| Selection {
+                                anchor: changes.iter().fold(s.anchor, |o, c| map_through(o, c)),
+                                head: changes.iter().fold(s.head, |o, c| map_through(o, c)),
+                            })
+                            .collect();
+                        editor.set_selections(carets);
+                        editor.map_folds(changes);
+                        editor.rows_after(before, changes);
+                    }
+                }
+                BufferEvent::Parsed => {}
+            }
+            cx.notify();
+        });
+        cx.observe_global::<crate::settings::Settings>(|_, cx| cx.notify()).detach();
+        cx.observe(&buffer, |_, _, cx| cx.notify()).detach();
+        let read = buffer.read(cx);
+        Self {
+            path: read.path.clone(),
+            text: read.document.text().clone(),
+            version: read.document.version(),
+            carets: vec![Selection::default()],
+            buffer: buffer.clone(),
+            search_matches: Vec::new(),
             focus: cx.focus_handle(),
-            is_csharp,
-            tree: None,
-            parsing: None,
-            server: None,
-            checking: None,
             scroll_y: px(0.),
             autoscroll: false,
-            goal_column: None,
+            goal_columns: None,
             marked: None,
             selecting: false,
+            column_drag: None,
+            block: None,
+            column_mode: false,
+            folded: Vec::new(),
+            soft_wrap: false,
+            rows: Rows::Lines,
+            rows_key: None,
+            fold_generation: 0,
+            columns: None,
+            gutter_hovered: false,
             layout: None,
             line_height: px(crate::settings::settings(cx).line_height()),
-        };
-        cx.observe_global::<crate::settings::Settings>(|_, cx| cx.notify()).detach();
-        editor.reparse(cx);
-        editor
-    }
-
-    pub fn caret(&self) -> Position {
-        self.document.position(self.primary().head)
-    }
-
-    pub fn place_caret(&mut self, line: usize, column: usize, cx: &mut Context<Self>) {
-        let offset = offset_at(self.document.text(), line, column);
-        self.document.set_selections(vec![Selection::caret(offset)]);
-        self.autoscroll = true;
-        cx.notify();
-    }
-
-    fn primary(&self) -> Selection {
-        *self.document.selections().last().expect("a document always has a caret")
-    }
-
-    /// Opens the file in the server and keeps it there, edit by edit.
-    pub fn attach_server(&mut self, server: Arc<LanguageServer>, cx: &mut Context<Self>) {
-        let uri = rsharp_core::paths::to_uri(&self.path);
-        server.notify("textDocument/didOpen", json!({ "textDocument": {
-            "uri": uri, "languageId": "csharp", "version": self.document.version(), "text": self.document.text().to_string(),
-        }}));
-        self.server = Some((server, uri));
-        self.check(Duration::ZERO, cx);
-    }
-
-    pub fn detach_server(&mut self) {
-        if let Some((server, uri)) = self.server.take() {
-            server.notify("textDocument/didClose", json!({ "textDocument": { "uri": uri } }));
+            _buffer_events: subscription,
+            pending: None,
         }
     }
 
-    /// Asks the server for the file's problems once typing has paused.
-    pub fn check(&mut self, after: Duration, cx: &mut Context<Self>) {
-        let Some((server, uri)) = self.server.clone() else { return };
-        let version = self.document.version();
-        self.checking = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(after).await;
-            let answer = server.request("textDocument/diagnostic", json!({ "textDocument": { "uri": uri } }));
-            let Ok(Ok(report)) = cx.background_executor().spawn(async move { answer.recv() }).await else { return };
-            let _ = this.update(cx, |editor, cx| {
-                if editor.document.version() != version {
-                    return;
-                }
-                let at = |p: &serde_json::Value| {
-                    editor.document.offset_of_utf16(
-                        p["line"].as_u64().unwrap_or(0) as usize,
-                        p["character"].as_u64().unwrap_or(0) as usize,
-                    )
-                };
-                editor.diagnostics = report["items"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|d| d["severity"].as_u64().is_some_and(|s| s <= 2))
-                    .map(|d| Diagnostic {
-                        range: at(&d["range"]["start"])..at(&d["range"]["end"]),
-                        error: d["severity"] == 1,
-                        message: d["message"].as_str().unwrap_or_default().to_string(),
-                    })
-                    .collect();
-                cx.notify();
-            });
-        }));
+    /// The text and its version as the buffer has them now.
+    fn sync(&mut self, buffer: &Entity<Buffer>, cx: &App) {
+        let read = buffer.read(cx);
+        self.text = read.document.text().clone();
+        self.version = read.document.version();
+    }
+
+    fn map_folds(&mut self, changes: &[Change]) {
+        for fold in &mut self.folded {
+            for change in changes {
+                fold.range = map_through(fold.range.start, change)..map_through(fold.range.end, change);
+            }
+        }
+    }
+
+    pub fn text(&self) -> &Rope {
+        &self.text
+    }
+
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    pub fn selections(&self) -> &[Selection] {
+        &self.carets
+    }
+
+    pub fn is_modified(&self, cx: &App) -> bool {
+        self.buffer.read(cx).is_modified()
     }
 
     pub fn save(&mut self, cx: &mut Context<Self>) -> std::io::Result<()> {
-        rsharp_core::files::write(&self.path, self.document.contents().as_bytes())?;
-        self.document.mark_saved();
-        if let Some((server, uri)) = &self.server {
-            server.notify("textDocument/didSave", json!({ "textDocument": { "uri": uri } }));
+        self.buffer.update(cx, |b, cx| b.save(cx))
+    }
+
+    /// The carets, kept inside the text.
+    fn set_selections(&mut self, selections: Vec<Selection>) {
+        let len = self.text.len_bytes();
+        self.carets =
+            selections.into_iter().map(|s| Selection { anchor: s.anchor.min(len), head: s.head.min(len) }).collect();
+        if self.carets.is_empty() {
+            self.carets.push(Selection::default());
         }
+    }
+
+    pub fn caret(&self) -> Position {
+        position(&self.text, self.primary().head)
+    }
+
+    pub fn place_caret(&mut self, line: usize, column: usize, cx: &mut Context<Self>) {
+        let offset = offset_at(&self.text, line, column);
+        self.set_selections(vec![Selection::caret(offset)]);
+        self.autoscroll = true;
         cx.notify();
-        Ok(())
+    }
+
+    /// Selects a range, as the find bar shows a match, and brings it into view.
+    pub fn select_range(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
+        self.set_carets(vec![Selection { anchor: range.start, head: range.end }], cx);
+    }
+
+    /// Applies an edit made from outside the editor (the find bar's replace) as one undo step.
+    pub fn apply_plan(&mut self, plan: EditPlan, cx: &mut Context<Self>) {
+        self.apply(plan, cx);
+    }
+
+    pub fn primary(&self) -> Selection {
+        *self.carets.last().expect("an editor always has a caret")
     }
 
     fn apply(&mut self, plan: EditPlan, cx: &mut Context<Self>) {
-        let changes = self.document.apply(plan);
-        self.changed(changes, cx);
+        if self.buffer.read(cx).read_only {
+            self.pending = Some((plan, self.version));
+            cx.emit(ReadOnlyEdit);
+            return;
+        }
+        let (carets, me) = (self.carets.clone(), cx.entity_id());
+        let (after, changes) = self.buffer.update(cx, |b, cx| b.edit(carets, plan, me, cx));
+        self.edited(after, &changes, cx);
     }
 
-    /// What every change goes through: the tree told, the server told, a parse and a check asked for.
-    fn changed(&mut self, changes: Vec<Change>, cx: &mut Context<Self>) {
-        self.goal_column = None;
-        self.autoscroll = true;
-        if !changes.is_empty() {
-            if let Some(tree) = &mut self.tree {
-                for change in &changes {
-                    edit_tree(tree, change);
-                }
-            }
-            self.diagnostics.retain(|d| changes.iter().all(|c| d.range.end <= c.start.offset));
-            if let Some((server, uri)) = &self.server {
-                let content: Vec<_> = changes
-                    .iter()
-                    .map(|c| {
-                        json!({
-                            "range": {
-                                "start": { "line": c.start.line, "character": c.start.utf16_column },
-                                "end": { "line": c.old_end.line, "character": c.old_end.utf16_column },
-                            },
-                            "text": c.text,
-                        })
-                    })
-                    .collect();
-                server.notify(
-                    "textDocument/didChange",
-                    json!({
-                        "textDocument": { "uri": uri, "version": self.document.version() }, "contentChanges": content,
-                    }),
-                );
-            }
-            self.reparse(cx);
-            self.check(Duration::from_millis(400), cx);
+    fn undo(&mut self, redo: bool, cx: &mut Context<Self>) {
+        if self.buffer.read(cx).read_only {
+            // Undo is not kept to make once cleared, and an edit refused before it must not be made in its place.
+            self.pending = None;
+            cx.emit(ReadOnlyEdit);
+            return;
         }
+        let me = cx.entity_id();
+        if let Some((after, changes)) = self.buffer.update(cx, |b, cx| b.undo(redo, me, cx)) {
+            self.edited(after, &changes, cx);
+        }
+    }
+
+    /// After this editor's own change: the text taken from the buffer, the folds carried through what changed (the
+    /// buffer's event comes after, too late for a key that follows).
+    fn edited(&mut self, carets: Vec<Selection>, changes: &[Change], cx: &mut Context<Self>) {
+        let buffer = self.buffer.clone();
+        let before = self.version;
+        self.sync(&buffer, cx);
+        self.map_folds(changes);
+        self.rows_after(before, changes);
+        self.set_selections(carets);
+        self.goal_columns = None;
+        self.autoscroll = true;
         cx.notify();
     }
 
-    fn reparse(&mut self, cx: &mut Context<Self>) {
-        if !self.is_csharp {
-            return;
-        }
-        let text = self.document.text().clone();
-        let old = self.tree.clone();
-        let version = self.document.version();
-        self.parsing = Some(cx.spawn(async move |this, cx| {
-            let tree = cx.background_executor().spawn(async move { parse(&text, old.as_ref()) }).await;
-            let _ = this.update(cx, |editor, cx| {
-                if editor.document.version() == version {
-                    editor.tree = Some(tree);
-                    cx.notify();
-                }
-            });
-        }));
-    }
-
-    fn move_carets(&mut self, extend: bool, cx: &mut Context<Self>, to: impl Fn(&Rope, &Selection) -> usize) {
-        let text = self.document.text().clone();
-        let moved = self
-            .document
-            .selections()
+    fn move_carets(&mut self, extend: bool, cx: &mut Context<Self>, mut to: impl FnMut(&Rope, &Selection) -> usize) {
+        let text = self.text.clone();
+        let moved: Vec<Selection> = self
+            .carets
             .iter()
             .map(|s| {
                 let head = to(&text, s);
                 Selection { anchor: if extend { s.anchor } else { head }, head }
             })
             .collect();
-        self.document.set_selections(moved);
+        self.set_selections(merge_overlapping(moved));
         self.autoscroll = true;
         cx.notify();
     }
@@ -281,7 +384,7 @@ impl CodeEditor {
         to: fn(&Rope, usize) -> usize,
         collapse_to_start: bool,
     ) {
-        self.goal_column = None;
+        self.goal_columns = None;
         self.move_carets(extend, cx, |text, s| match (extend || s.is_empty(), collapse_to_start) {
             (true, _) => to(text, s.head),
             (false, true) => s.start(),
@@ -289,13 +392,217 @@ impl CodeEditor {
         });
     }
 
-    fn vertical(&mut self, lines: isize, extend: bool, cx: &mut Context<Self>) {
-        let goal = match self.goal_column {
-            Some(goal) => goal,
-            None => column_of(self.document.text(), self.primary().head),
+    fn vertical(&mut self, rows: isize, extend: bool, cx: &mut Context<Self>) {
+        self.ensure_rows();
+        let text = self.text.clone();
+        let goals = match self.goal_columns.take() {
+            Some(goals) if goals.len() == self.carets.as_slice().len() => goals,
+            _ => self.carets.as_slice().iter().map(|s| self.column_in_row(&text, s.head)).collect(),
         };
-        self.goal_column = Some(goal);
-        self.move_carets(extend, cx, |text, s| vertical(text, s.head, goal, lines));
+        let targets: Vec<usize> =
+            self.carets.iter().zip(&goals).map(|(s, goal)| self.row_offset(&text, s.head, *goal, rows)).collect();
+        let mut index = 0;
+        self.move_carets(extend, cx, |_, _| {
+            index += 1;
+            targets[index - 1]
+        });
+        // The move puts the carets in the text's order: each keeps the goal of the caret that went where it is. Carets
+        // that met are one now, and their goals no longer line up with them.
+        let kept: Option<Vec<usize>> =
+            self.carets.iter().map(|c| targets.iter().position(|t| *t == c.head).map(|i| goals[i])).collect();
+        self.goal_columns = kept.filter(|g| g.len() == goals.len());
+    }
+
+    /// Makes the rows again if the text, the folds or the wrap width changed since they were made.
+    fn ensure_rows(&mut self) {
+        let wrap = self.columns.filter(|_| self.soft_wrap);
+        let key = (self.version, self.fold_generation, wrap);
+        if self.rows_key != Some(key) {
+            self.rows = Rows::build(&self.text, &self.hidden_lines(), wrap);
+            self.rows_key = Some(key);
+        }
+    }
+
+    /// After a change, the rows of only the lines it touched made again, where the rows were made for the text
+    /// just before it; anything else (several changes, a fold beside it) leaves them to be made whole.
+    fn rows_after(&mut self, before: u64, changes: &[Change]) {
+        let wrap = self.columns.filter(|_| self.soft_wrap);
+        let made_for = Some((before, self.fold_generation, wrap));
+        if let ([change], true) = (changes, self.rows_key == made_for)
+            && self.rows.apply_change(&self.text, change, &self.hidden_lines(), wrap)
+        {
+            self.rows_key = Some((self.version, self.fold_generation, wrap));
+        }
+    }
+
+    /// The lines folded regions hide, every one after a region's first through its last, sorted and merged.
+    fn hidden_lines(&self) -> Vec<Range<usize>> {
+        let text = &self.text;
+        let len = text.len_bytes();
+        let mut hidden: Vec<Range<usize>> = Vec::new();
+        for fold in &self.folded {
+            let first = text.byte_to_line(fold.range.start.min(len));
+            let last = text.byte_to_line(fold.range.end.min(len));
+            if last <= first {
+                continue;
+            }
+            match hidden.last_mut() {
+                Some(h) if first < h.end => h.end = h.end.max(last + 1),
+                _ => hidden.push(first + 1..last + 1),
+            }
+        }
+        hidden
+    }
+
+    /// A caret's column in its row, in characters.
+    fn column_in_row(&self, text: &Rope, offset: usize) -> usize {
+        let row = self.rows.row(text, self.rows.row_of(text, offset));
+        text.byte_slice(row.start..offset.max(row.start)).chars().count()
+    }
+
+    /// The offset `rows` rows from `offset` at `goal` column, or the text's start or end past its first or last row.
+    fn row_offset(&self, text: &Rope, offset: usize, goal: usize, rows: isize) -> usize {
+        let target = self.rows.row_of(text, offset) as isize + rows;
+        if target < 0 {
+            return 0;
+        }
+        if target as usize >= self.rows.len(text) {
+            return text.len_bytes();
+        }
+        let row = self.rows.row(text, target as usize);
+        let chars = text.byte_slice(row.start..row.end).chars().count();
+        // A wrapped row's end is where the next row starts, so a caret stops a character short of it.
+        let goal = if row.last { goal.min(chars) } else { goal.min(chars.saturating_sub(1)) };
+        text.char_to_byte(text.byte_to_char(row.start) + goal)
+    }
+
+    /// Changes what is folded, the carets kept on rows that show.
+    fn set_folded(&mut self, change: impl FnOnce(&mut Vec<FoldRegion>), cx: &mut Context<Self>) {
+        change(&mut self.folded);
+        self.folded.sort_by_key(|f| (f.range.start, std::cmp::Reverse(f.range.end)));
+        self.folded.dedup();
+        self.fold_generation += 1;
+        // A caret in what folded goes to the end of the fold's first line, as Rider moves it.
+        let text = self.text.clone();
+        let hidden = self.hidden_lines();
+        let carets: Vec<Selection> = self
+            .carets
+            .iter()
+            .map(|s| {
+                let line = text.byte_to_line(s.head);
+                match hidden.iter().find(|h| h.contains(&line)) {
+                    Some(h) => Selection::caret(line_end(&text, h.start - 1)),
+                    None => *s,
+                }
+            })
+            .collect();
+        self.set_selections(merge_overlapping(carets));
+        self.autoscroll = true;
+        cx.notify();
+    }
+
+    fn toggle_fold(&mut self, region: FoldRegion, cx: &mut Context<Self>) {
+        self.set_folded(
+            |folded| match folded.iter().position(|f| *f == region) {
+                Some(at) => drop(folded.remove(at)),
+                None => folded.push(region),
+            },
+            cx,
+        );
+    }
+
+    /// The widest region starting on the caret's line, else the innermost holding it, folded here or not as `folded`
+    /// asks (either, for none).
+    fn fold_at_caret(&self, folded: Option<bool>, cx: &App) -> Option<FoldRegion> {
+        let text = &self.text;
+        let len = text.len_bytes();
+        let line = text.byte_to_line(self.primary().head);
+        let tree = self.buffer.read(cx).tree.as_ref()?;
+        let around = text.line_to_byte(line)..line_end(text, line);
+        let lines =
+            |f: &FoldRegion| text.byte_to_line(f.range.start.min(len))..=text.byte_to_line(f.range.end.min(len));
+        let wanted = |f: &FoldRegion| folded.is_none_or(|want| self.folded.contains(f) == want);
+        let regions = folds_in(tree, text, around);
+        let starts = regions.iter().find(|f| *lines(f).start() == line && *lines(f).end() > line && wanted(f));
+        starts.or_else(|| regions.iter().rev().find(|f| lines(f).contains(&line) && wanted(f))).cloned()
+    }
+
+    /// Unfolds what hides a caret, as Rider does when a caret lands in folded lines (Undo, Find, a jump).
+    fn reveal_carets(&mut self) {
+        let text = &self.text;
+        let len = text.len_bytes();
+        let mut opened = false;
+        for s in self.carets.as_slice() {
+            let line = text.byte_to_line(s.head);
+            self.folded.retain(|fold| {
+                let first = text.byte_to_line(fold.range.start.min(len));
+                let last = text.byte_to_line(fold.range.end.min(len));
+                let hides = line > first && line <= last;
+                opened |= hides;
+                !hides
+            });
+        }
+        if opened {
+            self.fold_generation += 1;
+        }
+    }
+
+    fn match_brace(&mut self, cx: &mut Context<Self>) {
+        let buffer = self.buffer.read(cx);
+        let Some(tree) = buffer.tree.as_ref().filter(|_| buffer.tree_version == self.version) else { return };
+        let carets: Vec<Selection> = self
+            .carets
+            .iter()
+            .map(|s| matching_bracket(tree, s.head).map_or(*s, |(_, pair)| Selection::caret(pair.start)))
+            .collect();
+        self.set_carets(carets, cx);
+    }
+
+    fn zoom(&mut self, size: impl Fn(f32) -> f32, cx: &mut Context<Self>) {
+        let mut settings = crate::settings::settings(cx).clone();
+        settings.editor_font_size = size(settings.editor_font_size);
+        crate::settings::apply(settings, cx);
+    }
+
+    fn place_of(&self, offset: usize) -> Place {
+        let text = &self.text;
+        (text.byte_to_line(offset), column_of(text, offset))
+    }
+
+    fn set_block(&mut self, start: Place, head: Place, cx: &mut Context<Self>) {
+        let carets = column_selection(&self.text, start, head);
+        self.set_carets(carets.clone(), cx);
+        self.block = Some((start, head, carets));
+    }
+
+    /// Shift and an arrow in Column Selection Mode: the column selection's head a line or a column further.
+    fn extend_block(&mut self, lines: isize, columns: isize, cx: &mut Context<Self>) {
+        let (start, head) = match &self.block {
+            Some((start, head, carets)) if carets.as_slice() == self.carets.as_slice() => (*start, *head),
+            _ => (self.place_of(self.primary().anchor), self.place_of(self.primary().head)),
+        };
+        let last = self.text.len_lines() as isize - 1;
+        let head = ((head.0 as isize + lines).clamp(0, last) as usize, (head.1 as isize + columns).max(0) as usize);
+        self.set_block(start, head, cx);
+    }
+
+    fn set_carets(&mut self, selections: Vec<Selection>, cx: &mut Context<Self>) {
+        self.set_selections(selections);
+        self.goal_columns = None;
+        self.autoscroll = true;
+        cx.notify();
+    }
+
+    /// Escape: the extra carets go, then the selection; with neither, the key is the window's.
+    fn escape(&mut self, _: &Escape, _: &mut Window, cx: &mut Context<Self>) {
+        let primary = self.primary();
+        if self.carets.as_slice().len() > 1 {
+            self.set_carets(vec![primary], cx);
+        } else if !primary.is_empty() {
+            self.set_carets(vec![Selection::caret(primary.head)], cx);
+        } else {
+            cx.propagate();
+        }
     }
 
     fn page(&self) -> isize {
@@ -303,9 +610,10 @@ impl CodeEditor {
     }
 
     fn selected_text(&self) -> String {
-        let text = self.document.text();
-        self.document
-            .selections()
+        let text = &self.text;
+        let mut selections = self.carets.as_slice().to_vec();
+        selections.sort_by_key(Selection::start);
+        selections
             .iter()
             .filter(|s| !s.is_empty())
             .map(|s| text.byte_slice(s.range()).to_string())
@@ -313,24 +621,83 @@ impl CodeEditor {
             .join("\n")
     }
 
-    fn offset_for_point(&self, position: Point<Pixels>) -> usize {
+    fn row_for_point(&self, position: Point<Pixels>) -> Option<usize> {
+        let layout = self.layout.as_ref()?;
+        Some(((position.y - layout.text_origin.y) / self.line_height).floor().max(0.) as usize)
+    }
+
+    fn offset_for_point(&mut self, position: Point<Pixels>) -> usize {
+        self.ensure_rows();
+        let Some(row) = self.row_for_point(position) else { return 0 };
         let Some(layout) = &self.layout else { return 0 };
-        let text = self.document.text();
-        let line = ((position.y - layout.text_origin.y) / self.line_height).floor().max(0.) as usize;
-        if line >= text.len_lines() {
+        let text = &self.text;
+        if row >= self.rows.len(text) {
             return text.len_bytes();
         }
-        let start = text.line_to_byte(line);
-        match layout.lines.get(line.wrapping_sub(layout.first_line)) {
-            Some(shaped) => start + shaped.closest_index_for_x(position.x - layout.text_origin.x),
-            None => start,
+        let span = self.rows.row(text, row);
+        match layout.lines.get(row.wrapping_sub(layout.first_row)) {
+            Some(shaped) => {
+                let x = position.x - layout.text_origin.x - layout.char_width * span.indent as f32;
+                (span.start + shaped.closest_index_for_x(x)).min(span.end)
+            }
+            None => span.start,
         }
+    }
+
+    /// The line and character column under the pointer, past the line's end as far as the pointer is.
+    fn place_for_point(&mut self, position: Point<Pixels>) -> (usize, usize) {
+        self.ensure_rows();
+        let (Some(row), Some(layout)) = (self.row_for_point(position), self.layout.as_ref()) else { return (0, 0) };
+        let text = &self.text;
+        let span = self.rows.row(text, row);
+        let column = ((position.x - layout.text_origin.x) / layout.char_width).round().max(0.) as usize;
+        (span.line, column_of(text, span.start) + column)
     }
 
     fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus);
+        let hit = |marks: &[(Bounds<Pixels>, FoldRegion)]| {
+            marks.iter().find(|(b, _)| b.contains(&event.position)).map(|(_, fold)| fold.clone())
+        };
+        if let Some(layout) = &self.layout
+            && let Some(fold) = hit(&layout.chevrons).or_else(|| hit(&layout.placeholders))
+        {
+            self.toggle_fold(fold, cx);
+            return;
+        }
         let offset = self.offset_for_point(event.position);
-        let text = self.document.text().clone();
+        let text = self.text.clone();
+        let m = event.modifiers;
+        // Rider's macOS keymap adds a caret with Alt+Shift+click, its Visual Studio keymap with Ctrl+Alt+click.
+        let adds_caret = if cfg!(target_os = "macos") { m.alt && m.shift } else { m.control && m.alt };
+        if adds_caret {
+            let mut carets = self.carets.as_slice().to_vec();
+            match carets.iter().position(|s| s.range().contains(&offset) || s.head == offset) {
+                Some(at) if carets.len() > 1 => drop(carets.remove(at)),
+                Some(_) => {}
+                None if carets.len() < MAX_CARETS => carets.push(Selection::caret(offset)),
+                None => {}
+            }
+            self.set_selections(carets);
+            self.goal_columns = None;
+            cx.notify();
+            return;
+        }
+        let place = self.place_for_point(event.position);
+        // Shift+Alt+click, the Visual Studio keymap's, selects a column from the caret to the click.
+        if m.alt && m.shift {
+            let start = self.place_of(self.primary().anchor);
+            self.column_drag = Some(start);
+            self.set_block(start, place, cx);
+            self.selecting = true;
+            return;
+        }
+        if m.alt || (self.column_mode && event.click_count == 1 && !m.shift) {
+            self.column_drag = Some(place);
+            self.set_block(place, place, cx);
+            self.selecting = true;
+            return;
+        }
         let selection = match event.click_count {
             2 => Selection { anchor: word_left(&text, next_char(&text, offset)), head: word_right(&text, offset) },
             n if n >= 3 => {
@@ -341,16 +708,30 @@ impl CodeEditor {
             _ if event.modifiers.shift => Selection { anchor: self.primary().anchor, head: offset },
             _ => Selection::caret(offset),
         };
-        self.document.set_selections(vec![selection]);
-        self.goal_column = None;
+        self.set_selections(vec![selection]);
+        self.goal_columns = None;
         self.selecting = true;
         cx.notify();
     }
 
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.selecting && event.pressed_button == Some(MouseButton::Left) {
+        let over_gutter = self
+            .layout
+            .as_ref()
+            .is_some_and(|l| l.viewport.contains(&event.position) && event.position.x < l.text_origin.x);
+        if over_gutter != self.gutter_hovered {
+            self.gutter_hovered = over_gutter;
+            cx.notify();
+        }
+        if let (true, Some(start)) = (self.selecting, self.column_drag)
+            && event.pressed_button == Some(MouseButton::Left)
+        {
+            let head = self.place_for_point(event.position);
+            self.set_block(start, head, cx);
+        } else if self.selecting && event.pressed_button == Some(MouseButton::Left) {
             let anchor = self.primary().anchor;
-            self.document.set_selections(vec![Selection { anchor, head: self.offset_for_point(event.position) }]);
+            let head = self.offset_for_point(event.position);
+            self.set_selections(vec![Selection { anchor, head }]);
             self.autoscroll = true;
             cx.notify();
         }
@@ -363,18 +744,18 @@ impl CodeEditor {
     }
 
     fn max_scroll(&self) -> Pixels {
-        let content = self.line_height * self.document.text().len_lines() as f32;
+        let content = self.line_height * self.rows.len(&self.text) as f32;
         let viewport = self.layout.as_ref().map_or(px(0.), |l| l.viewport.size.height);
         (content - viewport + self.line_height * 4.).max(px(0.))
     }
 
     fn utf16_to_offset(&self, utf16: usize) -> usize {
-        let text = self.document.text();
+        let text = &self.text;
         text.char_to_byte(text.utf16_cu_to_char(utf16.min(text.len_utf16_cu())))
     }
 
     fn offset_to_utf16(&self, offset: usize) -> usize {
-        let text = self.document.text();
+        let text = &self.text;
         text.char_to_utf16_cu(text.byte_to_char(offset))
     }
 
@@ -395,8 +776,8 @@ macro_rules! moves {
 moves! {
     Left => |e, cx| e.horizontal(false, cx, previous_char, true);
     Right => |e, cx| e.horizontal(false, cx, next_char, false);
-    SelectLeft => |e, cx| e.horizontal(true, cx, previous_char, true);
-    SelectRight => |e, cx| e.horizontal(true, cx, next_char, false);
+    SelectLeft => |e, cx| if e.column_mode { e.extend_block(0, -1, cx) } else { e.horizontal(true, cx, previous_char, true) };
+    SelectRight => |e, cx| if e.column_mode { e.extend_block(0, 1, cx) } else { e.horizontal(true, cx, next_char, false) };
     WordLeft => |e, cx| e.horizontal(false, cx, word_left, true);
     WordRight => |e, cx| e.horizontal(false, cx, word_right, false);
     SelectWordLeft => |e, cx| e.horizontal(true, cx, word_left, true);
@@ -411,32 +792,71 @@ moves! {
     SelectDocumentEnd => |e, cx| e.horizontal(true, cx, |t, _| t.len_bytes(), false);
     Up => |e, cx| e.vertical(-1, false, cx);
     Down => |e, cx| e.vertical(1, false, cx);
-    SelectUp => |e, cx| e.vertical(-1, true, cx);
-    SelectDown => |e, cx| e.vertical(1, true, cx);
+    SelectUp => |e, cx| if e.column_mode { e.extend_block(-1, 0, cx) } else { e.vertical(-1, true, cx) };
+    SelectDown => |e, cx| if e.column_mode { e.extend_block(1, 0, cx) } else { e.vertical(1, true, cx) };
     PageUp => |e, cx| { let p = e.page(); e.vertical(-p, false, cx) };
     PageDown => |e, cx| { let p = e.page(); e.vertical(p, false, cx) };
-    SelectAll => |e, cx| { let len = e.document.text().len_bytes(); e.document.set_selections(vec![Selection { anchor: 0, head: len }]); cx.notify() };
-    Backspace => |e, cx| { let plan = backspace(e.document.text(), e.document.selections()); e.apply(plan, cx) };
-    Delete => |e, cx| { let plan = delete(e.document.text(), e.document.selections()); e.apply(plan, cx) };
-    Newline => |e, cx| { let plan = newline(e.document.text(), e.document.selections()); e.apply(plan, cx) };
-    Tab => |e, cx| { let plan = tab(e.document.text(), e.document.selections()); e.apply(plan, cx) };
-    Undo => |e, cx| { if let Some(changes) = e.document.undo() { e.changed(changes, cx) } };
-    Redo => |e, cx| { if let Some(changes) = e.document.redo() { e.changed(changes, cx) } };
+    SelectAll => |e, cx| { let len = e.text.len_bytes(); e.set_selections(vec![Selection { anchor: 0, head: len }]); cx.notify() };
+    Backspace => |e, cx| { let plan = backspace(&e.text, e.carets.as_slice()); e.apply(plan, cx) };
+    Delete => |e, cx| { let plan = delete(&e.text, e.carets.as_slice()); e.apply(plan, cx) };
+    Newline => |e, cx| { let indent = e.buffer.read(cx).indent; let plan = newline(&e.text, e.carets.as_slice(), &indent); e.apply(plan, cx) };
+    Tab => |e, cx| { let indent = e.buffer.read(cx).indent; let plan = tab(&e.text, e.carets.as_slice(), &indent); e.apply(plan, cx) };
+    Undo => |e, cx| e.undo(false, cx);
+    Redo => |e, cx| e.undo(true, cx);
     Copy => |e, cx| { let text = e.selected_text(); if !text.is_empty() { cx.write_to_clipboard(ClipboardItem::new_string(text)) } };
     Cut => |e, cx| {
         let text = e.selected_text();
         if !text.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
-            let plan = insert(e.document.text(), e.document.selections(), "");
+            let plan = insert(&e.text, e.carets.as_slice(), "");
             e.apply(plan, cx);
         }
     };
     Paste => |e, cx| {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            let plan = insert(e.document.text(), e.document.selections(), &text.replace("\r\n", "\n"));
+            let text = text.replace("\r\n", "\n");
+            let lines: Vec<&str> = text.split('\n').collect();
+            let carets = e.carets.as_slice();
+            let plan = if carets.len() > 1 && lines.len() == carets.len() {
+                insert_each(carets, &lines)
+            } else {
+                insert(&e.text, carets, &text)
+            };
             e.apply(plan, cx);
         }
     };
+    SelectNextOccurrence => |e, cx| { let next = select_next_occurrence(&e.text, e.carets.as_slice()); e.set_carets(next, cx) };
+    UnselectOccurrence => |e, cx| { let next = unselect_last(e.carets.as_slice()); e.set_carets(next, cx) };
+    SelectAllOccurrences => |e, cx| { let next = select_all_occurrences(&e.text, e.carets.as_slice()); e.set_carets(next, cx) };
+    CloneCaretAbove => |e, cx| { let next = clone_caret(&e.text, e.carets.as_slice(), -1); e.set_carets(next, cx) };
+    CaretPerLine => |e, cx| { let next = caret_per_line(&e.text, e.carets.as_slice()); e.set_carets(next, cx) };
+    ToggleColumnMode => |e, cx| { e.column_mode = !e.column_mode; cx.notify() };
+    CloneCaretBelow => |e, cx| { let next = clone_caret(&e.text, e.carets.as_slice(), 1); e.set_carets(next, cx) };
+    MatchBrace => |e, cx| e.match_brace(cx);
+    ToggleFold => |e, cx| { if let Some(region) = e.fold_at_caret(None, cx) { e.toggle_fold(region, cx) } };
+    ExpandRegion => |e, cx| { if let Some(region) = e.fold_at_caret(Some(true), cx) { e.toggle_fold(region, cx) } };
+    CollapseRegion => |e, cx| { if let Some(region) = e.fold_at_caret(Some(false), cx) { e.toggle_fold(region, cx) } };
+    ExpandAll => |e, cx| e.set_folded(Vec::clear, cx);
+    CollapseAll => |e, cx| {
+        let all = e.buffer.read(cx).tree.as_ref().map(|tree| folds(tree, &e.text)).unwrap_or_default();
+        e.set_folded(|folded| *folded = all, cx)
+    };
+    ToggleSoftWrap => |e, cx| { e.soft_wrap = !e.soft_wrap; e.autoscroll = true; cx.notify() };
+    ToggleWhitespace => |_, cx| { let mut s = crate::settings::settings(cx).clone(); s.show_whitespace = !s.show_whitespace; crate::settings::apply(s, cx) };
+    IncreaseFontSize => |e, cx| e.zoom(|size| size + 1., cx);
+    DecreaseFontSize => |e, cx| e.zoom(|size| size - 1., cx);
+    ResetFontSize => |e, cx| e.zoom(|_| crate::settings::AppSettings::default().editor_font_size, cx);
+}
+
+/// An offset carried through a change: before it, kept; after it, moved by what it added; inside it, to its end.
+fn map_through(offset: usize, change: &Change) -> usize {
+    if offset <= change.start.offset {
+        offset
+    } else if offset >= change.old_end.offset {
+        offset - change.old_end.offset + change.new_end.offset
+    } else {
+        change.new_end.offset
+    }
 }
 
 impl Focusable for CodeEditor {
@@ -455,10 +875,22 @@ impl Render for CodeEditor {
             .cursor(CursorStyle::IBeam)
             .bg(theme::island())
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
-            .on_mouse_up(MouseButton::Left, cx.listener(|e, _, _, _| e.selecting = false))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|e, _, _, _| {
+                    e.selecting = false;
+                    e.column_drag = None;
+                }),
+            )
             .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .on_hover(cx.listener(|e, hovered: &bool, _, cx| {
+                if !hovered && e.gutter_hovered {
+                    e.gutter_hovered = false;
+                    cx.notify();
+                }
+            }))
             .on_scroll_wheel(cx.listener(Self::on_scroll));
-        bind_moves(element, cx).child(EditorElement { editor: cx.entity() })
+        bind_moves(element, cx).on_action(cx.listener(Self::escape)).child(EditorElement { editor: cx.entity() })
     }
 }
 
@@ -472,7 +904,7 @@ impl EntityInputHandler for CodeEditor {
     ) -> Option<String> {
         let range = self.range_from_utf16(&range);
         actual.replace(self.offset_to_utf16(range.start)..self.offset_to_utf16(range.end));
-        Some(self.document.text().byte_slice(range).to_string())
+        Some(self.text.byte_slice(range).to_string())
     }
 
     fn selected_text_range(&mut self, _: bool, _: &mut Window, _: &mut Context<Self>) -> Option<UTF16Selection> {
@@ -505,9 +937,13 @@ impl EntityInputHandler for CodeEditor {
                 EditPlan {
                     edits: vec![Edit { range, text: text.to_string() }],
                     selections: vec![Selection::caret(caret)],
+                    ..Default::default()
                 }
             }
-            None => insert(self.document.text(), self.document.selections(), text),
+            None => {
+                let plan = insert(&self.text, self.carets.as_slice(), text);
+                EditPlan { kind: EditKind::Typing, ..plan }
+            }
         };
         self.apply(plan, cx);
     }
@@ -528,7 +964,11 @@ impl EntityInputHandler for CodeEditor {
             None => start + text.len(),
         };
         self.apply(
-            EditPlan { edits: vec![Edit { range, text: text.to_string() }], selections: vec![Selection::caret(caret)] },
+            EditPlan {
+                edits: vec![Edit { range, text: text.to_string() }],
+                selections: vec![Selection::caret(caret)],
+                ..Default::default()
+            },
             cx,
         );
         self.marked = (!text.is_empty()).then_some(start..start + text.len());
@@ -541,13 +981,15 @@ impl EntityInputHandler for CodeEditor {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        let layout = self.layout.as_ref()?;
         let offset = self.utf16_to_offset(range.start);
-        let text = self.document.text();
-        let line = text.byte_to_line(offset);
-        let shaped = layout.lines.get(line.checked_sub(layout.first_line)?)?;
-        let x = shaped.x_for_index(offset - text.line_to_byte(line));
-        let top = layout.text_origin.y + self.line_height * line as f32;
+        self.ensure_rows();
+        let layout = self.layout.as_ref()?;
+        let text = &self.text;
+        let row = self.rows.row_of(text, offset);
+        let shaped = layout.lines.get(row.checked_sub(layout.first_row)?)?;
+        let span = self.rows.row(text, row);
+        let x = shaped.x_for_index(offset - span.start) + layout.char_width * span.indent as f32;
+        let top = layout.text_origin.y + self.line_height * row as f32;
         Some(Bounds::new(point(layout.text_origin.x + x, top), size(px(2.), self.line_height)))
     }
 
@@ -557,7 +999,8 @@ impl EntityInputHandler for CodeEditor {
         _: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<usize> {
-        Some(self.offset_to_utf16(self.offset_for_point(point)))
+        let offset = self.offset_for_point(point);
+        Some(self.offset_to_utf16(offset))
     }
 }
 
@@ -567,12 +1010,21 @@ struct EditorElement {
 
 struct Prepainted {
     lines: Vec<ShapedLine>,
-    first_line: usize,
+    rows: Vec<Row>,
+    first_row: usize,
     text_origin: Point<Pixels>,
     gutter_width: Pixels,
-    caret_line: usize,
-    line_numbers: Vec<ShapedLine>,
+    /// The rows with an empty caret, for the current row's band.
+    caret_rows: Vec<usize>,
+    line_numbers: Vec<Option<ShapedLine>>,
     line_height: Pixels,
+    char_width: Pixels,
+    /// Each shown row's fold, if a region starts on its line: the fold and whether it is folded.
+    fold_marks: Vec<Option<(FoldRegion, bool)>>,
+    placeholder: ShapedLine,
+    /// The bracket by the caret and its pair, in a tree that is current.
+    braces: Vec<Range<usize>>,
+    show_whitespace: bool,
 }
 
 impl IntoElement for EditorElement {
@@ -621,21 +1073,33 @@ impl Element for EditorElement {
         let font_size = px(settings.editor_font_size);
         // Rider draws code without ligatures until a person turns them on.
         let code_font = gpui::Font { features: gpui::FontFeatures::disable_ligatures(), ..font(theme::CODE_FONT) };
-        self.editor.update(cx, |editor, _| {
+        self.editor.update(cx, |editor, cx| {
             editor.line_height = line_height;
-            let text = editor.document.text();
-            let digits = text.len_lines().to_string().len().max(3);
+            let digits = editor.text.len_lines().to_string().len().max(3);
             let char_width = window
                 .text_system()
                 .shape_line("0".into(), font_size, &[run(1, theme::editor::text().into(), &code_font)], None)
                 .width;
-            let gutter_width = if settings.show_line_numbers { char_width * digits as f32 + px(32.) } else { px(16.) };
-            let caret = editor.primary().head;
-            let caret_line = text.byte_to_line(caret);
+            // The numbers, then the folding column against the code.
+            let gutter_width = if settings.show_line_numbers { char_width * digits as f32 + px(32.) } else { px(24.) };
+            let text_left = bounds.origin.x + gutter_width + px(TEXT_PAD) - px(16.);
+            editor.columns = Some(((bounds.right() - text_left - px(TEXT_PAD)) / char_width).floor().max(8.) as usize);
+            editor.reveal_carets();
+            editor.ensure_rows();
+            let text = &editor.text;
+            let rows = &editor.rows;
+            let caret_row = rows.row_of(text, editor.primary().head);
+            let mut caret_rows: Vec<usize> =
+                editor.carets.iter().filter(|s| s.is_empty()).map(|s| rows.row_of(text, s.head)).collect();
+            caret_rows.sort_unstable();
+            caret_rows.dedup();
+            let mut caret_lines: Vec<usize> =
+                editor.carets.as_slice().iter().map(|s| text.byte_to_line(s.head)).collect();
+            caret_lines.sort_unstable();
 
             if editor.autoscroll {
                 editor.autoscroll = false;
-                let caret_top = line_height * caret_line as f32;
+                let caret_top = line_height * caret_row as f32;
                 let margin = line_height * 2.;
                 if caret_top - margin < editor.scroll_y {
                     editor.scroll_y = (caret_top - margin).max(px(0.));
@@ -644,39 +1108,77 @@ impl Element for EditorElement {
                 }
             }
 
-            let first_line = (editor.scroll_y / line_height).floor() as usize;
+            let first_row = (editor.scroll_y / line_height).floor() as usize;
             let visible = (bounds.size.height / line_height).ceil() as usize + 1;
-            let last_line = (first_line + visible).min(text.len_lines());
-            let byte_range = text.line_to_byte(first_line.min(text.len_lines()))..text.line_to_byte(last_line);
+            let last_row = (first_row + visible).min(rows.len(text));
+            let shown: Vec<Row> = (first_row..last_row).map(|i| rows.row(text, i)).collect();
+            let byte_range = shown.first().map_or(0, |r| r.start)..shown.last().map_or(0, |r| r.end);
+            let buffer = editor.buffer.clone();
+            let buffer = buffer.read(cx);
             let colours: Vec<Highlight> =
-                editor.tree.as_ref().map(|tree| highlights(tree, text, byte_range)).unwrap_or_default();
+                buffer.tree.as_ref().map(|tree| highlights(tree, text, byte_range.clone())).unwrap_or_default();
 
-            let mut lines = Vec::with_capacity(last_line.saturating_sub(first_line));
-            let mut line_numbers = Vec::with_capacity(lines.capacity());
-            for line in first_line..last_line {
-                let start = text.line_to_byte(line);
-                let content: String = text.byte_slice(start..line_end(text, line)).to_string();
-                let runs = runs_for(&content, start, &colours, &code_font);
+            let len = text.len_bytes();
+            let line_of = |byte: usize| text.byte_to_line(byte.min(len));
+            let mut lines = Vec::with_capacity(shown.len());
+            let mut line_numbers = Vec::with_capacity(shown.len());
+            let mut fold_marks = Vec::with_capacity(shown.len());
+            // The regions on screen, found in the tree; a folded one is among them, its first line being shown.
+            let regions = buffer.tree.as_ref().map(|tree| folds_in(tree, text, byte_range.clone())).unwrap_or_default();
+            for row in &shown {
+                let content: String = text.byte_slice(row.start..row.end).to_string();
+                let runs = runs_for(&content, row.start, &colours, &code_font);
                 lines.push(window.text_system().shape_line(content.into(), font_size, &runs, None));
-                let number = (line + 1).to_string();
-                let colour = if line == caret_line {
-                    theme::editor::line_number_current()
-                } else {
-                    theme::editor::line_number()
-                };
-                line_numbers.push(window.text_system().shape_line(
-                    number.clone().into(),
-                    font_size,
-                    &[run(number.len(), colour.into(), &code_font)],
-                    None,
-                ));
+                let number = (row.first && settings.show_line_numbers).then(|| {
+                    let number = (row.line + 1).to_string();
+                    let colour = if caret_lines.binary_search(&row.line).is_ok() {
+                        theme::editor::line_number_current()
+                    } else {
+                        theme::editor::line_number()
+                    };
+                    window.text_system().shape_line(
+                        number.clone().into(),
+                        font_size,
+                        &[run(number.len(), colour.into(), &code_font)],
+                        None,
+                    )
+                });
+                line_numbers.push(number);
+                // The widest region starting on the line, which comes first among those starting there.
+                let from = regions.partition_point(|f| line_of(f.range.start) < row.line);
+                let mark = regions[from..]
+                    .iter()
+                    .take_while(|f| line_of(f.range.start) == row.line)
+                    .find(|f| line_of(f.range.end) > row.line)
+                    .map(|f| (f.clone(), editor.folded.contains(f)));
+                fold_marks.push(mark);
             }
-            let text_origin =
-                point(bounds.origin.x + gutter_width + px(TEXT_PAD) - px(16.), bounds.origin.y - editor.scroll_y);
-            if !settings.show_line_numbers {
-                line_numbers.clear();
+            let placeholder = window.text_system().shape_line(
+                "...".into(),
+                font_size,
+                &[run(3, theme::editor::folded_text().into(), &code_font)],
+                None,
+            );
+            let primary = editor.primary();
+            let braces = match (&buffer.tree, primary.is_empty() && buffer.tree_version == editor.version) {
+                (Some(tree), true) => matching_bracket(tree, primary.head).map(|(a, b)| vec![a, b]).unwrap_or_default(),
+                _ => Vec::new(),
+            };
+            Prepainted {
+                lines,
+                rows: shown,
+                first_row,
+                text_origin: point(text_left, bounds.origin.y - editor.scroll_y),
+                gutter_width,
+                caret_rows,
+                line_numbers,
+                line_height,
+                char_width,
+                fold_marks,
+                placeholder,
+                braces,
+                show_whitespace: settings.show_whitespace,
             }
-            Prepainted { lines, first_line, text_origin, gutter_width, caret_line, line_numbers, line_height }
         })
     }
 
@@ -695,65 +1197,130 @@ impl Element for EditorElement {
         window.handle_input(&focus, ElementInputHandler::new(bounds, self.editor.clone()), cx);
         let focused = focus.is_focused(window);
         let editor = self.editor.read(cx);
-        let text = editor.document.text().clone();
-        let selections = editor.document.selections().to_vec();
-        let diagnostics = editor.diagnostics.clone();
-        let top_of = |line: usize| state.text_origin.y + line_height * line as f32;
+        let text = editor.text.clone();
+        let selections = editor.carets.as_slice().to_vec();
+        let diagnostics = editor.buffer.read(cx).diagnostics.clone();
+        let gutter_hovered = editor.gutter_hovered;
+        let shown_bytes = state.rows.first().map_or(0, |r| r.start)..state.rows.last().map_or(0, |r| r.end);
+        let from = editor.search_matches.partition_point(|m| m.end < shown_bytes.start);
+        let to = editor.search_matches.partition_point(|m| m.start <= shown_bytes.end);
+        let matches = editor.search_matches[from..to.max(from)].to_vec();
+        let caret_rows: Vec<usize> = selections.iter().map(|s| editor.rows.row_of(&text, s.head)).collect();
+        let top_of = |row: usize| state.text_origin.y + line_height * row as f32;
+        let mut chevrons = Vec::new();
+        let mut placeholders = Vec::new();
 
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
-            if selections.iter().all(Selection::is_empty) {
+            let shown = state.first_row..state.first_row + state.lines.len();
+            for &row in state.caret_rows.iter().filter(|r| shown.contains(r)) {
                 window.paint_quad(fill(
-                    Bounds::new(point(bounds.origin.x, top_of(state.caret_line)), size(bounds.size.width, line_height)),
+                    Bounds::new(point(bounds.origin.x, top_of(row)), size(bounds.size.width, line_height)),
                     theme::editor::current_line(),
                 ));
             }
             for (i, shaped) in state.lines.iter().enumerate() {
-                let line = state.first_line + i;
-                let start = text.line_to_byte(line);
-                let end = line_end(&text, line);
+                let row = state.first_row + i;
+                let span = state.rows[i];
+                let (start, end) = (span.start, span.end);
+                let top = top_of(row);
+                let left = state.text_origin.x + state.char_width * span.indent as f32;
+                let band = |window: &mut Window, x0: Pixels, x1: Pixels, colour: gpui::Rgba| {
+                    window.paint_quad(fill(
+                        Bounds::from_corners(point(left + x0, top), point(left + x1, top + line_height)),
+                        colour,
+                    ));
+                };
+                for m in matches.iter().filter(|m| m.start <= end && m.end >= start && !m.is_empty()) {
+                    let (x0, x1) =
+                        (shaped.x_for_index(m.start.max(start) - start), shaped.x_for_index(m.end.min(end) - start));
+                    band(window, x0, x1, theme::editor::search_result());
+                }
+                for brace in state.braces.iter().filter(|b| b.start >= start && b.end <= end) {
+                    let (x0, x1) = (shaped.x_for_index(brace.start - start), shaped.x_for_index(brace.end - start));
+                    band(window, x0, x1, theme::editor::matched_brace());
+                }
+                // A selection past a line's end shows its break as a space's width; a wrapped row has none.
+                let past = if span.last { end + 1 } else { end };
                 for selection in selections.iter().filter(|s| !s.is_empty()) {
-                    let (from, to) = (selection.start().max(start), selection.end().min(end + 1));
-                    if from > to || (from == to && selection.end() <= end) {
+                    let (from, to) = (selection.start().max(start), selection.end().min(past));
+                    if from > to || (from == to && (selection.end() <= end || !span.last)) {
                         continue;
                     }
                     let x0 = shaped.x_for_index(from - start);
-                    // A selection that goes on past the line's end shows its line break as a space's width.
-                    let x1 = if selection.end() > end { shaped.width + px(7.) } else { shaped.x_for_index(to - start) };
-                    window.paint_quad(fill(
-                        Bounds::from_corners(
-                            point(state.text_origin.x + x0, top_of(line)),
-                            point(state.text_origin.x + x1, top_of(line) + line_height),
-                        ),
-                        theme::editor::selection(),
-                    ));
+                    let x1 = match (selection.end() > end, span.last) {
+                        (true, true) => shaped.width + px(7.),
+                        (true, false) => shaped.width,
+                        _ => shaped.x_for_index(to - start),
+                    };
+                    band(window, x0, x1, theme::editor::selection());
                 }
-                if let Some(number) = state.line_numbers.get(i) {
+                if let Some(Some(number)) = state.line_numbers.get(i) {
                     let _ = number.paint(
-                        point(bounds.origin.x + state.gutter_width - number.width - px(20.), top_of(line)),
+                        point(bounds.origin.x + state.gutter_width - number.width - px(20.), top),
                         line_height,
                         window,
                         cx,
                     );
                 }
-                let _ = shaped.paint(point(state.text_origin.x, top_of(line)), line_height, window, cx);
+                if let Some(Some((fold, folded))) = state.fold_marks.get(i).filter(|_| span.first) {
+                    let fold = fold.clone();
+                    if *folded || gutter_hovered {
+                        let at = Bounds::new(
+                            point(bounds.origin.x + state.gutter_width - px(16.), top + (line_height - px(14.)) / 2.),
+                            size(px(14.), px(14.)),
+                        );
+                        let icon = if *folded { "icons/chevron-right.svg" } else { "icons/chevron-down.svg" };
+                        let colour: Hsla = theme::editor::line_number_current().into();
+                        let _ = window.paint_svg(at, icon.into(), Default::default(), colour, cx);
+                    }
+                    chevrons.push((
+                        Bounds::new(
+                            point(bounds.origin.x + state.gutter_width - px(18.), top),
+                            size(px(18.), line_height),
+                        ),
+                        fold,
+                    ));
+                }
+                let _ = shaped.paint(point(left, top), line_height, window, cx);
+                if let Some(Some((fold, true))) = state.fold_marks.get(i).filter(|_| span.last) {
+                    let x = left + shaped.width + state.char_width;
+                    let chip = Bounds::new(
+                        point(x, top + px(2.)),
+                        size(state.placeholder.width + state.char_width, line_height - px(4.)),
+                    );
+                    window.paint_quad(fill(chip, theme::editor::folded_background()).corner_radii(px(3.)));
+                    let _ = state.placeholder.paint(point(x + state.char_width / 2., top), line_height, window, cx);
+                    placeholders.push((chip, fold.clone()));
+                }
+                if state.show_whitespace {
+                    let content = text.byte_slice(start..end).to_string();
+                    for (at, c) in content.char_indices().filter(|(_, c)| *c == ' ' || *c == '\t') {
+                        let (x0, x1) = (shaped.x_for_index(at), shaped.x_for_index(at + 1));
+                        let mid = left + (x0 + x1) / 2.;
+                        let y = top + line_height / 2.;
+                        let mark = if c == ' ' {
+                            Bounds::new(point(mid - px(1.), y - px(1.)), size(px(2.), px(2.)))
+                        } else {
+                            Bounds::new(point(left + x0 + px(2.), y), size(x1 - x0 - px(4.), px(1.)))
+                        };
+                        window.paint_quad(fill(mark, theme::editor::whitespace()));
+                    }
+                }
                 for diagnostic in diagnostics.iter().filter(|d| d.range.start <= end && d.range.end >= start) {
                     let x0 = shaped.x_for_index(diagnostic.range.start.max(start) - start);
                     let x1 = shaped.x_for_index(diagnostic.range.end.min(end) - start).max(x0 + px(6.));
                     let colour: Hsla = if diagnostic.error { theme::error().into() } else { theme::warning().into() };
                     window.paint_underline(
-                        point(state.text_origin.x + x0, top_of(line) + line_height - px(3.)),
+                        point(left + x0, top + line_height - px(3.)),
                         x1 - x0,
                         &UnderlineStyle { color: Some(colour), thickness: px(1.), wavy: true },
                     );
                 }
                 if focused {
-                    for selection in selections.iter().filter(|s| text.byte_to_line(s.head) == line) {
-                        let x = shaped.x_for_index(selection.head - start);
+                    for (selection, _) in selections.iter().zip(&caret_rows).filter(|(_, r)| **r == row) {
+                        let x = shaped.x_for_index(selection.head.clamp(start, end) - start);
                         window.paint_quad(fill(
-                            Bounds::new(
-                                point(state.text_origin.x + x, top_of(line) + px(2.)),
-                                size(px(2.), line_height - px(4.)),
-                            ),
+                            Bounds::new(point(left + x, top + px(2.)), size(px(2.), line_height - px(4.))),
                             theme::editor::caret(),
                         ));
                     }
@@ -762,9 +1329,11 @@ impl Element for EditorElement {
         });
 
         let lines = std::mem::take(&mut state.lines);
-        let (first_line, text_origin) = (state.first_line, state.text_origin);
-        self.editor
-            .update(cx, |editor, _| editor.layout = Some(Layout { text_origin, viewport: bounds, first_line, lines }));
+        let (first_row, text_origin, char_width) = (state.first_row, state.text_origin, state.char_width);
+        self.editor.update(cx, |editor, _| {
+            editor.layout =
+                Some(Layout { text_origin, char_width, viewport: bounds, first_row, lines, chevrons, placeholders })
+        });
     }
 }
 

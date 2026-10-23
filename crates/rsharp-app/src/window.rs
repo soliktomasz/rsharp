@@ -3,16 +3,20 @@
 
 use crate::actions::ALL;
 use crate::assets::{file_icon, icon};
+use crate::buffer::Buffer;
 use crate::dock::{DockLayout, Place, Rect, Tool};
 use crate::editor::{self, CodeEditor};
+use crate::editor_area::{EditorArea, Split};
 use crate::find_action::{Ended, FindActionPopup};
+use crate::find_bar::{self, FindBar};
 use crate::state::{FolderState, KeptTab, RecentSolutions, store};
 use crate::theme;
 use crate::workspace::{Entry, Workspace};
 use futures::StreamExt;
 use gpui::{
-    App, ClickEvent, Context, Entity, FocusHandle, Focusable, FontWeight, MouseButton, MouseDownEvent,
-    PathPromptOptions, Pixels, Point, SharedString, Task, Window, actions, div, prelude::*, px, uniform_list,
+    App, ClickEvent, Context, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement, MouseButton,
+    MouseDownEvent, PathPromptOptions, Pixels, Point, SharedString, Task, Window, actions, div, prelude::*, px,
+    uniform_list,
 };
 use rsharp_lsp::{LanguageServer, ServerEvent, start_roslyn};
 use std::collections::HashSet;
@@ -31,6 +35,21 @@ actions!(
         HideToolWindow,
         FloatToolWindow,
         RestoreDefaultLayout,
+        SplitRight,
+        SplitDown,
+        Unsplit,
+        UnsplitAll,
+        PinTab,
+        CloseOtherTabs,
+        CloseAllTabs,
+        CloseAllButPinned,
+        CloseTabsToLeft,
+        CloseTabsToRight,
+        ReopenClosedTab,
+        OpenTabInNewWindow,
+        FileEncoding,
+        LineSeparators,
+        ShowHistory,
         ExplorerUp,
         ExplorerDown,
         ExplorerExpand,
@@ -76,8 +95,13 @@ pub struct MainWindow {
     /// The window's own focus, where keys go when no view has them (the Welcome screen), so window-wide keys
     /// always reach the window.
     root_focus: FocusHandle,
-    tabs: Vec<Entity<CodeEditor>>,
-    active: Option<usize>,
+    area: EditorArea,
+    /// A tab's menu while open, where it was asked for.
+    tab_menu: Option<Point<Pixels>>,
+    /// The status bar's line separator or encoding menu while open.
+    status_menu: Option<StatusMenu>,
+    /// A tab being dragged, and whether the pointer is outside the window, where letting go opens it in a window.
+    tab_drag: Option<(TabDrag, bool)>,
     server: Option<Arc<LanguageServer>>,
     server_state: ServerState,
     /// Roslyn's work under way, by its progress token, with its title.
@@ -85,6 +109,8 @@ pub struct MainWindow {
     projects_loaded: bool,
     said: Option<SharedString>,
     find_action: Option<Entity<FindActionPopup>>,
+    /// The find bar over the editor while open, on the active tab's file.
+    find_bar: Option<Entity<FindBar>>,
     /// The main menu's dropdown while open (Windows and Linux, which have no menu bar): each action's
     /// availability and keys where the person was, and what had the keys.
     main_menu: Option<(Vec<bool>, Vec<Option<SharedString>>, Option<FocusHandle>)>,
@@ -107,14 +133,17 @@ impl MainWindow {
             opened_as: None,
             explorer_focus: cx.focus_handle(),
             problems_focus: cx.focus_handle(),
-            tabs: Vec::new(),
-            active: None,
+            area: EditorArea::default(),
+            tab_menu: None,
+            tab_drag: None,
+            status_menu: None,
             server: None,
             server_state: ServerState::None,
             progress: Vec::new(),
             projects_loaded: false,
             said: None,
             find_action: None,
+            find_bar: None,
             main_menu: None,
             _server_task: None,
         }
@@ -122,10 +151,7 @@ impl MainWindow {
 
     pub fn open_workspace(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
         self.save_state(cx);
-        for tab in self.tabs.drain(..) {
-            tab.update(cx, |e, _| e.detach_server());
-        }
-        self.active = None;
+        self.leave_editors();
         let path = rsharp_core::paths::canonical(path);
         let workspace = Workspace::open(&path);
         window.set_window_title(&workspace.name());
@@ -149,10 +175,15 @@ impl MainWindow {
             let file = folder.join(&tab.path);
             if file.is_file() {
                 self.open_file(&file, Some((tab.line, tab.column)), window, cx);
+                if tab.pinned
+                    && let Some(at) = self.area.tab_of(0, &rsharp_core::paths::canonical(&file), cx)
+                {
+                    self.area.pin(0, at, true);
+                }
             }
         }
-        if let Some(active) = kept.active.filter(|a| *a < self.tabs.len()) {
-            self.show_tab(active, window, cx);
+        if let Some(active) = kept.active.filter(|a| *a < self.area.group().tabs.len()) {
+            self.show_tab(0, active, window, cx);
         }
         cx.notify();
     }
@@ -162,26 +193,33 @@ impl MainWindow {
         let Some(workspace) = &self.workspace else { return };
         let folder = &workspace.folder;
         let relative = |p: &Path| p.strip_prefix(folder).ok().map(Path::to_path_buf);
-        let tabs = self
-            .tabs
-            .iter()
-            .filter_map(|tab| {
-                let editor = tab.read(cx);
-                let caret = editor.caret();
-                Some(KeptTab { path: relative(&editor.path)?, line: caret.line, column: caret.utf16_column })
-            })
-            .collect();
+        // shortcut: the splits' tabs are kept as one group's; keep the layout too once a person misses it.
+        let mut tabs: Vec<KeptTab> = Vec::new();
+        for tab in self.area.groups.iter().flat_map(|g| &g.tabs) {
+            let editor = tab.editor.read(cx);
+            let caret = editor.caret();
+            if let Some(path) = relative(&editor.path).filter(|p| tabs.iter().all(|t| t.path != *p)) {
+                tabs.push(KeptTab { path, line: caret.line, column: caret.utf16_column, pinned: tab.pinned });
+            }
+        }
+        let active = self
+            .area
+            .active_editor()
+            .and_then(|e| relative(&e.read(cx).path))
+            .and_then(|p| tabs.iter().position(|t| t.path == p));
         let mut expanded: Vec<PathBuf> =
             self.expanded.iter().filter_map(|p| relative(p)).filter(|p| !p.as_os_str().is_empty()).collect();
         expanded.sort();
         let store = store(cx);
-        store.write_for(folder, &FolderState { tabs, active: self.active, expanded, dock: Some(self.dock.clone()) });
+        store.write_for(folder, &FolderState { tabs, active, expanded, dock: Some(self.dock.clone()) });
         store.write(&self.dock);
     }
 
-    fn show_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.active = Some(index);
-        window.focus(&self.tabs[index].focus_handle(cx));
+    fn show_tab(&mut self, group: usize, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.area.current = group;
+        self.area.groups[group].active = Some(index);
+        window.focus(&self.area.groups[group].tabs[index].editor.focus_handle(cx));
+        self.follow_find_bar(cx);
         self.save_state(cx);
         cx.notify();
     }
@@ -232,9 +270,10 @@ impl MainWindow {
             let _ = this.update(cx, |w, cx| {
                 w.server = Some(server.clone());
                 w.server_state = ServerState::Loading("Loading solution".into());
-                for tab in &w.tabs {
-                    if is_csharp(&tab.read(cx).path) {
-                        tab.update(cx, |e, cx| e.attach_server(server.clone(), cx));
+                let editors: Vec<_> = w.area.editors().cloned().collect();
+                for editor in editors {
+                    if is_csharp(&editor.read(cx).path) {
+                        editor.read(cx).buffer.clone().update(cx, |b, cx| b.attach_server(server.clone(), cx));
                     }
                 }
                 cx.notify();
@@ -293,8 +332,9 @@ impl MainWindow {
                     if self.progress.is_empty() {
                         self.server_state = ServerState::Ready;
                     }
-                    for tab in &self.tabs {
-                        tab.update(cx, |e, cx| e.check(std::time::Duration::ZERO, cx));
+                    let editors: Vec<_> = self.area.editors().cloned().collect();
+                    for editor in editors {
+                        editor.read(cx).buffer.clone().update(cx, |b, cx| b.check(std::time::Duration::ZERO, cx));
                     }
                 }
                 "window/logMessage" if params["type"].as_u64().is_some_and(|t| t <= 2) => {
@@ -386,55 +426,181 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         let path = rsharp_core::paths::canonical(path);
-        let index = match self.tabs.iter().position(|t| t.read(cx).path == path) {
+        let group = self.area.current;
+        let index = match self.area.tab_of(group, &path, cx) {
             Some(index) => index,
             None => {
-                let bytes = match std::fs::read(&path) {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        log::warn!("Could not open {}: {error}", path.display());
-                        self.said = Some(format!("Could not open {}: {error}", path.display()).into());
-                        cx.notify();
-                        return;
+                let buffer = match crate::buffer::find(&path, cx) {
+                    Some(buffer) => {
+                        buffer.update(cx, |b, cx| b.refresh_from_disk(cx));
+                        buffer
                     }
+                    None => match crate::buffer::open(path.clone(), cx) {
+                        Ok(buffer) => buffer,
+                        Err(error) => {
+                            log::warn!("Could not open {}: {error}", path.display());
+                            self.said = Some(format!("Could not open {}: {error}", path.display()).into());
+                            cx.notify();
+                            return;
+                        }
+                    },
                 };
-                let editor = cx.new(|cx| CodeEditor::new(path.clone(), &bytes, cx));
-                cx.observe(&editor, |w, _, cx| {
-                    w.save_state(cx);
-                    cx.notify()
-                })
-                .detach();
                 if let Some(server) = self.server.clone().filter(|_| is_csharp(&path)) {
-                    editor.update(cx, |e, cx| e.attach_server(server, cx));
+                    buffer.update(cx, |b, cx| b.attach_server(server, cx));
                 }
-                self.tabs.push(editor);
-                self.tabs.len() - 1
+                let editor = self.new_editor(buffer, window, cx);
+                self.area.add(editor, false)
             }
         };
         if let Some((line, column)) = caret {
-            self.tabs[index].update(cx, |e, cx| e.place_caret(line, column, cx));
+            self.area.groups[group].tabs[index].editor.update(cx, |e, cx| e.place_caret(line, column, cx));
         }
-        self.show_tab(index, window, cx);
+        self.show_tab(group, index, window, cx);
     }
 
-    fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if index >= self.tabs.len() {
-            return;
-        }
-        let tab = self.tabs.remove(index);
-        tab.update(cx, |e, _| e.detach_server());
-        self.active = match self.active {
-            _ if self.tabs.is_empty() => None,
-            Some(active) if active > index || active == self.tabs.len() => Some(active.saturating_sub(1)),
-            other => other,
-        };
-        match self.active {
-            Some(active) => window.focus(&self.tabs[active].focus_handle(cx)),
+    /// An editor of a buffer, whose every change the window keeps for the folder.
+    fn new_editor(
+        &mut self,
+        buffer: Entity<Buffer>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<CodeEditor> {
+        let editor = cx.new(|cx| CodeEditor::new(buffer, cx));
+        cx.subscribe_in(&editor, window, |_, editor, _: &editor::ReadOnlyEdit, window, cx| {
+            editor::ask_clear_read_only(editor.clone(), editor::AfterClearing::Edit, window, cx)
+        })
+        .detach();
+        cx.observe(&editor, |w, _, cx| {
+            w.save_state(cx);
+            cx.notify()
+        })
+        .detach();
+        editor
+    }
+
+    /// Every editor closed, as a folder closing or another opening does; a file no other window shows leaves the
+    /// server as its buffer goes.
+    fn leave_editors(&mut self) {
+        self.area = EditorArea::default();
+        self.find_bar = None;
+        self.tab_menu = None;
+    }
+
+    /// The keys back with the current group's editor, else the Solution view, else the window.
+    fn focus_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.area.active_editor() {
+            Some(editor) => window.focus(&editor.focus_handle(cx)),
             None if self.dock.is_open(Tool::Solution) => window.focus(&self.explorer_focus),
             None => window.focus(&self.root_focus),
         }
+        self.follow_find_bar(cx);
         self.save_state(cx);
         cx.notify();
+    }
+
+    /// Closes the current group's unpinned tabs that `which` picks by index.
+    fn close_tabs(&mut self, which: impl Fn(usize) -> bool, window: &mut Window, cx: &mut Context<Self>) {
+        let group = self.area.current;
+        for index in self.area.unpinned(group, which) {
+            self.area.close(group, index, cx);
+        }
+        self.focus_editor(window, cx);
+    }
+
+    /// Split Right or Down: the file the current group shows, in a new group beside it, at the same caret.
+    fn split(&mut self, right: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(shown) = self.area.active_editor().cloned() else { return };
+        let (buffer, caret) = {
+            let read = shown.read(cx);
+            (read.buffer.clone(), read.caret())
+        };
+        let editor = self.new_editor(buffer, window, cx);
+        editor.update(cx, |e, cx| e.place_caret(caret.line, caret.column, cx));
+        self.area.split(right, editor);
+        self.focus_editor(window, cx);
+    }
+
+    /// Open Tab in New Window, or a tab let go outside the window: the tab moves to a window of its own at `at` on
+    /// the screen, an editor of the same buffer.
+    fn move_to_new_window(
+        &mut self,
+        group: usize,
+        index: usize,
+        at: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self.area.groups.get(group).and_then(|g| g.tabs.get(index)) else { return };
+        let (buffer, caret) = {
+            let read = tab.editor.read(cx);
+            (read.buffer.clone(), read.caret())
+        };
+        let editor = cx.new(|cx| CodeEditor::new(buffer, cx));
+        editor.update(cx, |e, cx| e.place_caret(caret.line, caret.column, cx));
+        self.close_tab(group, index, window, cx);
+        let editor = editor.clone();
+        cx.defer(move |cx| {
+            crate::editor_window::open(editor, at, cx);
+        });
+    }
+
+    fn reopen_closed_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(closed) = self.area.closed.pop() else { return };
+        if !closed.path.is_file() {
+            self.said = Some(format!("{} is no longer there", closed.path.display()).into());
+            cx.notify();
+            return;
+        }
+        self.open_file(&closed.path, Some(closed.caret), window, cx);
+        let group = self.area.current;
+        if closed.pinned
+            && let Some(at) = self.area.tab_of(group, &closed.path, cx)
+        {
+            self.area.pin(group, at, true);
+            self.show_tab(group, self.area.tab_of(group, &closed.path, cx).unwrap_or(at), window, cx);
+        }
+    }
+
+    fn close_tab(&mut self, group: usize, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.area.close(group, index, cx);
+        self.focus_editor(window, cx);
+    }
+
+    /// The find bar on the active tab's file, or gone with the last tab.
+    fn follow_find_bar(&mut self, cx: &mut Context<Self>) {
+        let Some(bar) = self.find_bar.clone() else { return };
+        match self.active_editor().cloned() {
+            Some(editor) => bar.update(cx, |b, cx| b.attach(editor, cx)),
+            None => self.find_bar = None,
+        }
+    }
+
+    /// Find (with the replace row, Replace): the bar opened, or brought back, on the active tab's file.
+    fn open_find_bar(&mut self, replacing: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.active_editor().cloned() else { return };
+        let bar = match &self.find_bar {
+            Some(bar) => bar.clone(),
+            None => {
+                let bar = cx.new(|cx| FindBar::new(editor, cx));
+                cx.subscribe_in(&bar, window, |w, _, _: &find_bar::Closed, window, cx| {
+                    w.find_bar = None;
+                    if let Some(editor) = w.active_editor() {
+                        window.focus(&editor.focus_handle(cx));
+                    }
+                    cx.notify();
+                })
+                .detach();
+                self.find_bar = Some(bar.clone());
+                bar
+            }
+        };
+        bar.update(cx, |b, cx| b.open(replacing, window, cx));
+        cx.notify();
+    }
+
+    /// What the find bar's count says while it is open.
+    pub fn find_count(&self, cx: &App) -> Option<String> {
+        self.find_bar.as_ref().map(|b| b.read(cx).count().to_string())
     }
 
     fn choose_folder(&mut self, _: &OpenFolder, window: &mut Window, cx: &mut Context<Self>) {
@@ -460,10 +626,12 @@ impl MainWindow {
 
     /// Each tab's file name and caret (line and column from 0), as the tab strip and status bar show them.
     pub fn tab_carets(&self, cx: &App) -> Vec<(String, (usize, usize))> {
-        self.tabs
+        self.area
+            .group()
+            .tabs
             .iter()
             .map(|t| {
-                let editor = t.read(cx);
+                let editor = t.editor.read(cx);
                 let caret = editor.caret();
                 (
                     editor.path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
@@ -480,10 +648,7 @@ impl MainWindow {
     /// Back to the Welcome screen, the folder's state kept, as Rider's File | Close Solution.
     pub fn close_solution(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.save_state(cx);
-        for tab in self.tabs.drain(..) {
-            tab.update(cx, |e, _| e.detach_server());
-        }
-        self.active = None;
+        self.leave_editors();
         self.workspace = None;
         self.opened_as = None;
         self.rows.clear();
@@ -659,7 +824,30 @@ impl MainWindow {
     }
 
     fn active_editor(&self) -> Option<&Entity<CodeEditor>> {
-        self.active.and_then(|i| self.tabs.get(i))
+        self.area.active_editor()
+    }
+
+    /// Each group's tabs by file name, a pinned one marked with a leading "*", as a person reads the tab strips.
+    pub fn groups(&self, cx: &App) -> Vec<Vec<String>> {
+        self.area
+            .groups
+            .iter()
+            .map(|g| {
+                g.tabs
+                    .iter()
+                    .map(|t| {
+                        let name =
+                            t.editor.read(cx).path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                        if t.pinned { format!("*{name}") } else { name }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The current group's index, the one keys go to.
+    pub fn current_group(&self) -> usize {
+        self.area.current
     }
 }
 
@@ -690,6 +878,21 @@ impl Render for MainWindow {
             .text_size(px(13.))
             .relative()
             .track_focus(&self.root_focus)
+            // A tab dragged out past the window's edge and let go there opens in a window of its own.
+            .on_drag_move(cx.listener(|w, event: &gpui::DragMoveEvent<TabDrag>, _, cx| {
+                let outside = !event.bounds.contains(&event.event.position);
+                w.tab_drag = Some((event.drag(cx).clone(), outside));
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|w, _, _, _| w.tab_drag = None))
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|w, event: &gpui::MouseUpEvent, window, cx| {
+                    if let Some((drag, true)) = w.tab_drag.take() {
+                        let at = window.bounds().origin + event.position;
+                        w.move_to_new_window(drag.group, drag.index, at, window, cx);
+                    }
+                }),
+            )
             .on_action(cx.listener(Self::choose_folder))
             .on_action(cx.listener(|w, _: &FindAction, window, cx| w.find_action(window, cx)))
             // Each acts only while it has something to act on, so menus and Find Action grey it otherwise.
@@ -731,14 +934,34 @@ impl Render for MainWindow {
                         cx.notify();
                     }))
             })
-            .when(self.active.is_some(), |d| {
+            .when(self.area.active_editor().is_some(), |d| {
+                d.on_action(cx.listener(|w, _: &find_bar::Find, window, cx| w.open_find_bar(false, window, cx)))
+                    .on_action(cx.listener(|w, _: &find_bar::Replace, window, cx| w.open_find_bar(true, window, cx)))
+            })
+            .when_some(self.find_bar.clone(), |d, bar| {
+                let (next, previous, close) = (bar.clone(), bar.clone(), bar);
+                d.on_action(
+                    cx.listener(move |_, _: &find_bar::FindNext, _, cx| next.update(cx, |b, cx| b.find_next(true, cx))),
+                )
+                .on_action(cx.listener(move |_, _: &find_bar::FindPrevious, _, cx| {
+                    previous.update(cx, |b, cx| b.find_next(false, cx))
+                }))
+                // Escape in the editor, once it has no carets or selection to drop, closes the bar.
+                .on_action(cx.listener(move |_, _: &editor::Escape, _, cx| close.update(cx, |b, cx| b.close(cx))))
+            })
+            .map(|d| self.tab_actions(d, cx))
+            .when(self.area.active_editor().is_some(), |d| {
                 d.on_action(cx.listener(|w, _: &CloseTab, window, cx| {
-                    if let Some(active) = w.active {
-                        w.close_tab(active, window, cx)
+                    if let Some(active) = w.area.group().active {
+                        w.close_tab(w.area.current, active, window, cx)
                     }
                 }))
-                .on_action(cx.listener(|w, _: &editor::Save, _, cx| {
+                .on_action(cx.listener(|w, _: &editor::Save, window, cx| {
                     if let Some(editor) = w.active_editor().cloned() {
+                        if editor.read(cx).buffer.read(cx).read_only {
+                            editor::ask_clear_read_only(editor, editor::AfterClearing::Save, window, cx);
+                            return;
+                        }
                         w.said =
                             editor.update(cx, |e, cx| e.save(cx)).err().map(|e| format!("Could not save: {e}").into());
                         cx.notify();
@@ -753,6 +976,8 @@ impl Render for MainWindow {
             .child(self.status_bar(cx))
             .children(floating)
             .children(self.main_menu.as_ref().map(|(available, keys, _)| self.main_menu_dropdown(available, keys, cx)))
+            .children(self.tab_menu.map(|at| self.tab_menu_view(at, window, cx)))
+            .children(self.status_menu.map(|kind| self.status_menu_view(kind, cx)))
             .children(self.find_action.clone().map(|popup| {
                 div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(
                     div()
@@ -1166,7 +1391,7 @@ impl MainWindow {
         let Some(editor) = self.active_editor().cloned() else {
             return empty_text("Open a file to see its problems.").track_focus(&self.problems_focus).into_any_element();
         };
-        let read = editor.read(cx);
+        let read = editor.read(cx).buffer.read(cx);
         let rows: Vec<(bool, String, usize, usize, usize)> = read
             .diagnostics
             .iter()
@@ -1257,46 +1482,102 @@ impl MainWindow {
     }
 
     fn editor_island(&self, cx: &mut Context<Self>) -> gpui::Div {
-        island()
+        let open = self.area.groups.iter().any(|g| !g.tabs.is_empty());
+        island().min_w_0().child(if open {
+            self.split_view(&self.area.layout.clone(), cx)
+        } else {
+            empty_editor().into_any_element()
+        })
+    }
+
+    /// The groups as laid out: side by side or one above another, a line of the frame between them.
+    fn split_view(&self, split: &Split, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let (children, row) = match split {
+            Split::Group(group) => return self.group_view(*group, cx).into_any_element(),
+            Split::Row(children) => (children, true),
+            Split::Column(children) => (children, false),
+        };
+        // shortcut: the groups share the room equally; let the line between them be dragged once a person asks.
+        div()
+            .flex()
+            .when(row, |d| d.flex_row())
+            .when(!row, |d| d.flex_col())
+            .flex_1()
             .min_w_0()
-            .when(!self.tabs.is_empty(), |d| {
-                d.child(
-                    div()
-                        .id("tabs")
-                        .h(px(40.))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .gap(px(2.))
-                        .px(px(6.))
-                        .border_b_1()
-                        .border_color(theme::frame())
-                        .overflow_x_scroll()
-                        .children({
-                            let tabs: Vec<_> = self.tabs.clone();
-                            let mut out = Vec::with_capacity(tabs.len());
-                            for (i, tab) in tabs.iter().enumerate() {
-                                out.push(self.tab(i, tab, cx));
-                            }
-                            out
-                        }),
-                )
-            })
-            .child(match self.active_editor() {
+            .min_h_0()
+            .children(children.iter().enumerate().map(|(i, child)| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .when(i > 0 && row, |d| d.border_l_1().border_color(theme::frame()))
+                    .when(i > 0 && !row, |d| d.border_t_1().border_color(theme::frame()))
+                    .child(self.split_view(child, cx))
+            }))
+            .into_any_element()
+    }
+
+    fn group_view(&self, group: usize, cx: &mut Context<Self>) -> gpui::Div {
+        let g = &self.area.groups[group];
+        let tabs: Vec<_> = (0..g.tabs.len()).map(|i| self.tab(group, i, cx)).collect();
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .debug_selector(move || format!("group {group}"))
+            // A press anywhere in a group makes it the one keys and the IDE's actions go to.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |w, _, _, cx| {
+                    if w.area.current != group {
+                        w.area.current = group;
+                        w.follow_find_bar(cx);
+                        cx.notify();
+                    }
+                }),
+            )
+            .child(
+                div()
+                    .id(("tabs", group))
+                    .h(px(40.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .px(px(6.))
+                    .border_b_1()
+                    .border_color(theme::frame())
+                    .overflow_x_scroll()
+                    .children(tabs),
+            )
+            .when(group == self.area.current, |d| d.children(self.find_bar.clone()))
+            .child(match g.active_editor() {
                 Some(editor) => div().flex_1().min_h_0().child(editor.clone()).into_any_element(),
                 None => empty_editor().into_any_element(),
             })
     }
 
-    fn tab(&self, index: usize, tab: &Entity<CodeEditor>, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let editor = tab.read(cx);
+    fn tab(&self, group: usize, index: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let tab = &self.area.groups[group].tabs[index];
+        let pinned = tab.pinned;
+        let editor = tab.editor.read(cx);
         let name = editor.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let selected = self.active == Some(index);
-        let modified = editor.document.is_modified();
-        let group = SharedString::from(format!("tab-{index}"));
+        let name_for_drag = name.clone();
+        let selected = self.area.groups[group].active == Some(index);
+        let current = group == self.area.current;
+        let modified = editor.is_modified(cx);
+        let read_only = editor.buffer.read(cx).read_only;
+        let hover = SharedString::from(format!("tab-{group}-{index}"));
+        let id = |kind: &str| gpui::ElementId::NamedInteger(format!("{kind}-{group}").into(), index as u64);
+        let selector = format!("tab {group} {name}");
         div()
-            .id(("tab", index))
-            .group(group.clone())
+            .id(id("tab"))
+            .debug_selector(move || selector.clone())
+            .group(hover.clone())
             .h(px(28.))
             .flex_none()
             .flex()
@@ -1306,7 +1587,10 @@ impl MainWindow {
             .pr(px(4.))
             .rounded(px(6.))
             .border_1()
-            .when(selected, |d| d.bg(theme::tab_selected()).border_color(theme::tab_selected_border()))
+            .when(selected && current, |d| d.bg(theme::tab_selected()).border_color(theme::tab_selected_border()))
+            .when(selected && !current, |d| {
+                d.bg(theme::tab_selected_inactive()).border_color(gpui::transparent_black())
+            })
             .when(!selected, |d| {
                 d.border_color(gpui::transparent_black())
                     .text_color(theme::text_muted())
@@ -1314,9 +1598,10 @@ impl MainWindow {
             })
             .child(icon(file_icon(&name), 16.))
             .child(name)
+            .when(read_only, |d| d.child(icon("locked", 14.)))
             .child(
                 div()
-                    .id(("close", index))
+                    .id(id("close"))
                     .size(px(16.))
                     .rounded(px(3.))
                     .flex()
@@ -1324,22 +1609,265 @@ impl MainWindow {
                     .justify_center()
                     .hover(|d| d.bg(theme::button_hover()))
                     .active(|d| d.bg(theme::button_pressed()))
-                    .child(if modified {
+                    .child(if pinned {
+                        icon("pin", 16.).into_any_element()
+                    } else if modified {
                         div().size(px(7.)).rounded_full().bg(theme::modified()).into_any_element()
                     } else {
                         icon("close", 16.)
                             .invisible()
-                            .group_hover(group, |s| s.visible())
+                            .group_hover(hover, |s| s.visible())
                             .when(selected, |i| i.visible())
                             .into_any_element()
                     })
+                    // A pinned tab's pin unpins it, as Rider's does; anything else's button closes it.
                     .on_click(cx.listener(move |w, _: &ClickEvent, window, cx| {
                         cx.stop_propagation();
-                        w.close_tab(index, window, cx)
+                        if pinned {
+                            w.area.pin(group, index, false);
+                            w.save_state(cx);
+                            cx.notify();
+                        } else {
+                            w.close_tab(group, index, window, cx)
+                        }
                     })),
             )
-            .on_click(cx.listener(move |w, _: &ClickEvent, window, cx| w.show_tab(index, window, cx)))
+            .on_click(cx.listener(move |w, _: &ClickEvent, window, cx| w.show_tab(group, index, window, cx)))
+            .on_drag(TabDrag { group, index, name: SharedString::from(name_for_drag) }, |drag, _, _, cx| {
+                cx.new(|_| drag.clone())
+            })
+            // shortcut: the menu acts on the tab it opened on by showing it first; Rider leaves the tab shown as it was.
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |w, event: &MouseDownEvent, window, cx| {
+                    w.show_tab(group, index, window, cx);
+                    w.tab_menu = Some(event.position);
+                    cx.notify();
+                }),
+            )
             .into_any_element()
+    }
+
+    /// The tab actions, each registered only while it has something to act on.
+    fn tab_actions<T: InteractiveElement + FluentBuilder>(&self, d: T, cx: &mut Context<Self>) -> T {
+        let group = self.area.current;
+        let active = self.area.group().active;
+        let some = |which: &dyn Fn(usize) -> bool| !self.area.unpinned(group, which).is_empty();
+        let others = active.is_some_and(|a| some(&|i| i != a));
+        let left = active.is_some_and(|a| some(&|i| i < a));
+        let right = active.is_some_and(|a| some(&|i| i > a));
+        let any = some(&|_| true);
+        let split = self.area.is_split();
+        let closed = !self.area.closed.is_empty();
+        d.when(active.is_some(), |d| {
+            d.on_action(cx.listener(|w, _: &ShowHistory, _, cx| {
+                if let Some(editor) = w.active_editor() {
+                    let buffer = editor.read(cx).buffer.clone();
+                    cx.defer(move |cx| {
+                        crate::history_window::open(buffer, cx);
+                    });
+                }
+            }))
+            .on_action(cx.listener(|w, _: &FileEncoding, _, cx| {
+                w.status_menu = Some(StatusMenu::Encodings);
+                cx.notify()
+            }))
+            .on_action(cx.listener(|w, _: &LineSeparators, _, cx| {
+                w.status_menu = Some(StatusMenu::LineSeparators);
+                cx.notify()
+            }))
+            .on_action(cx.listener(|w, _: &OpenTabInNewWindow, window, cx| {
+                let (group, index) = (w.area.current, w.area.group().active.unwrap_or(0));
+                let at = window.bounds().origin + gpui::point(px(80.), px(80.));
+                w.move_to_new_window(group, index, at, window, cx)
+            }))
+            .on_action(cx.listener(|w, _: &SplitRight, window, cx| w.split(true, window, cx)))
+            .on_action(cx.listener(|w, _: &SplitDown, window, cx| w.split(false, window, cx)))
+            .on_action(cx.listener(|w, _: &PinTab, _, cx| {
+                let group = w.area.current;
+                if let Some(at) = w.area.group().active {
+                    let pinned = w.area.group().tabs[at].pinned;
+                    w.area.pin(group, at, !pinned);
+                    w.save_state(cx);
+                    cx.notify();
+                }
+            }))
+        })
+        .when(others, |d| {
+            d.on_action(cx.listener(move |w, _: &CloseOtherTabs, window, cx| {
+                let keep = w.area.group().active;
+                w.close_tabs(|i| Some(i) != keep, window, cx)
+            }))
+        })
+        .when(left, |d| {
+            d.on_action(cx.listener(|w, _: &CloseTabsToLeft, window, cx| {
+                let at = w.area.group().active.unwrap_or(0);
+                w.close_tabs(|i| i < at, window, cx)
+            }))
+        })
+        .when(right, |d| {
+            d.on_action(cx.listener(|w, _: &CloseTabsToRight, window, cx| {
+                let at = w.area.group().active.unwrap_or(0);
+                w.close_tabs(|i| i > at, window, cx)
+            }))
+        })
+        .when(any, |d| d.on_action(cx.listener(|w, _: &CloseAllTabs, window, cx| w.close_tabs(|_| true, window, cx))))
+        .when(self.area.groups.iter().any(|g| g.tabs.iter().any(|t| !t.pinned)), |d| {
+            d.on_action(cx.listener(|w, _: &CloseAllButPinned, window, cx| {
+                // From the last group, so one closing as it empties leaves the earlier ones' indices standing.
+                for group in (0..w.area.groups.len()).rev() {
+                    for index in w.area.unpinned(group, |_| true) {
+                        w.area.close(group, index, cx);
+                    }
+                }
+                w.focus_editor(window, cx)
+            }))
+        })
+        .when(split, |d| {
+            d.on_action(cx.listener(|w, _: &Unsplit, window, cx| {
+                w.area.unsplit(false, cx);
+                w.focus_editor(window, cx)
+            }))
+            .on_action(cx.listener(|w, _: &UnsplitAll, window, cx| {
+                w.area.unsplit(true, cx);
+                w.focus_editor(window, cx)
+            }))
+        })
+        .when(closed, |d| {
+            d.on_action(cx.listener(|w, _: &ReopenClosedTab, window, cx| w.reopen_closed_tab(window, cx)))
+        })
+    }
+
+    /// The status bar's Line Separators or encoding menu, the file's own checked; a choice is how it is written
+    /// from its next save.
+    fn status_menu_view(&self, kind: StatusMenu, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(buffer) = self.active_editor().map(|e| e.read(cx).buffer.clone()) else { return div() };
+        let read = buffer.read(cx);
+        let items: Vec<(String, bool)> = match kind {
+            StatusMenu::LineSeparators => rsharp_text::LineEnding::ALL
+                .iter()
+                .map(|e| (e.title().to_string(), *e == read.document.line_ending))
+                .collect(),
+            StatusMenu::Encodings => {
+                rsharp_core::encodings::LISTED.iter().map(|c| (c.name().to_string(), *c == read.charset)).collect()
+            }
+        };
+        let rows: Vec<_> = items
+            .into_iter()
+            .enumerate()
+            .map(|(i, (title, checked))| {
+                let buffer = buffer.clone();
+                let selector = format!("status menu: {title}");
+                div()
+                    .id(("status-menu", i))
+                    .debug_selector(move || selector.clone())
+                    .h(px(24.))
+                    .mx(px(6.))
+                    .px(px(8.))
+                    .rounded(px(4.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .hover(|d| d.bg(theme::selection()))
+                    .child(div().size(px(14.)).when(checked, |d| d.child(icon("check", 14.))))
+                    .child(title)
+                    .on_click(cx.listener(move |w, _: &ClickEvent, _, cx| {
+                        w.status_menu = None;
+                        buffer.update(cx, |b, cx| match kind {
+                            StatusMenu::LineSeparators => b.set_line_ending(rsharp_text::LineEnding::ALL[i], cx),
+                            StatusMenu::Encodings => b.set_charset(rsharp_core::encodings::LISTED[i], cx),
+                        });
+                        cx.notify();
+                    }))
+            })
+            .collect();
+        div().absolute().bottom(px(32.)).right(px(10.)).child(
+            div()
+                .id("status-menu")
+                .w(px(260.))
+                .max_h(px(420.))
+                .overflow_y_scroll()
+                .py(px(6.))
+                .rounded(px(8.))
+                .bg(theme::popup())
+                .border_1()
+                .border_color(theme::popup_border())
+                .shadow_lg()
+                .on_mouse_down_out(cx.listener(|w, _, _, cx| {
+                    w.status_menu = None;
+                    cx.notify();
+                }))
+                .children(rows),
+        )
+    }
+
+    /// A tab's menu, Rider's items in its order, each greyed where it cannot run.
+    fn tab_menu_view(&self, at: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        const ITEMS: &[&str] = &[
+            "Close Tab",
+            "Close Other Tabs",
+            "Close All Tabs",
+            "Close All but Pinned",
+            "Close Tabs to the Left",
+            "Close Tabs to the Right",
+            "",
+            "Split Right",
+            "Split Down",
+            "Unsplit",
+            "Unsplit All",
+            "",
+            "Pin Tab",
+            "Open Tab in New Window",
+            "",
+            "Reopen Closed Tab",
+        ];
+        let pinned = self.area.group().active.is_some_and(|a| self.area.group().tabs[a].pinned);
+        let rows: Vec<gpui::AnyElement> = ITEMS
+            .iter()
+            .map(|title| {
+                let Some(i) = ALL.iter().position(|a| a.title == *title) else {
+                    return div().h(px(1.)).my(px(4.)).mx(px(8.)).bg(theme::popup_border()).into_any_element();
+                };
+                let enabled = window.is_action_available(&*(ALL[i].action)(), cx);
+                let shown = if *title == "Pin Tab" && pinned { "Unpin Tab" } else { title };
+                div()
+                    .id(("tab-menu", i))
+                    .debug_selector(move || format!("tab menu: {}", ALL[i].title))
+                    .h(px(24.))
+                    .mx(px(6.))
+                    .px(px(8.))
+                    .rounded(px(4.))
+                    .flex()
+                    .items_center()
+                    .when(enabled, |d| d.hover(|d| d.bg(theme::selection())))
+                    .when(!enabled, |d| d.text_color(theme::text_secondary()))
+                    .child(shown)
+                    .on_click(cx.listener(move |w, _: &ClickEvent, window, cx| {
+                        w.tab_menu = None;
+                        if enabled {
+                            window.dispatch_action((ALL[i].action)(), cx);
+                        }
+                        cx.notify();
+                    }))
+                    .into_any_element()
+            })
+            .collect();
+        div().absolute().top(at.y).left(at.x).child(
+            div()
+                .id("tab-menu")
+                .w(px(240.))
+                .py(px(6.))
+                .rounded(px(8.))
+                .bg(theme::popup())
+                .border_1()
+                .border_color(theme::popup_border())
+                .shadow_lg()
+                .on_mouse_down_out(cx.listener(|w, _, _, cx| {
+                    w.tab_menu = None;
+                    cx.notify();
+                }))
+                .children(rows),
+        )
     }
 
     fn welcome(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1413,7 +1941,8 @@ impl MainWindow {
         }
         let (problems, server) = (
             editor.map(|e| {
-                (e.diagnostics.iter().filter(|d| d.error).count(), e.diagnostics.iter().filter(|d| !d.error).count())
+                let found = &e.buffer.read(cx).diagnostics;
+                (found.iter().filter(|d| d.error).count(), found.iter().filter(|d| !d.error).count())
             }),
             match &self.server_state {
                 ServerState::None => None,
@@ -1447,22 +1976,66 @@ impl MainWindow {
                     .text_color(if errors > 0 { theme::error() } else { theme::warning() })
             }))
             .children(server.map(|(text, colour)| status_widget(text).text_color(colour)))
-            .children(
-                editor
-                    .map(|e| {
-                        let caret = e.caret();
-                        [
-                            status_widget(format!("{}:{}", caret.line + 1, caret.utf16_column + 1)),
-                            status_widget(match e.document.line_ending {
-                                rsharp_text::LineEnding::Lf => "LF".into(),
-                                rsharp_text::LineEnding::CrLf => "CRLF".into(),
-                            }),
-                            status_widget("UTF-8".into()),
-                        ]
+            .children(editor.map(|e| {
+                let caret = e.caret();
+                let buffer = e.buffer.clone();
+                let read = buffer.read(cx);
+                let (ending, charset, indent, read_only) =
+                    (read.document.line_ending, read.charset, read.indent, read.read_only);
+                let indent_tip = match &read.indent_source {
+                    crate::buffer::IndentSource::EditorConfig(from) => format!("from {}", from.display()),
+                    crate::buffer::IndentSource::Detected => "detected from the file's own lines".into(),
+                    crate::buffer::IndentSource::Default => "C#'s default".into(),
+                };
+                let menu = |kind: StatusMenu| {
+                    cx.listener(move |w, _: &ClickEvent, _, cx| {
+                        w.status_menu = if w.status_menu == Some(kind) { None } else { Some(kind) };
+                        cx.notify();
                     })
-                    .into_iter()
-                    .flatten(),
-            )
+                };
+                div()
+                    .flex()
+                    .items_center()
+                    .child(status_widget(format!("{}:{}", caret.line + 1, caret.utf16_column + 1)))
+                    .child(
+                        status_widget(ending.name().into())
+                            .id("line-separator")
+                            .debug_selector(|| "status: line separator".into())
+                            .hover(|d| d.bg(theme::button_hover()))
+                            .on_click(menu(StatusMenu::LineSeparators)),
+                    )
+                    .child(
+                        status_widget(charset.name().into())
+                            .id("encoding")
+                            .debug_selector(|| "status: encoding".into())
+                            .hover(|d| d.bg(theme::button_hover()))
+                            .on_click(menu(StatusMenu::Encodings)),
+                    )
+                    .child(
+                        status_widget(indent.name())
+                            .id("indent")
+                            .tooltip(move |_, cx| cx.new(|_| Tip(format!("Indent: {indent_tip}").into())).into()),
+                    )
+                    .when(read_only, |d| {
+                        d.child(
+                            div()
+                                .id("read-only")
+                                .debug_selector(|| "status: read-only".into())
+                                .h(px(22.))
+                                .px(px(6.))
+                                .flex()
+                                .items_center()
+                                .rounded(px(4.))
+                                .hover(|d| d.bg(theme::button_hover()))
+                                .child(icon("locked", 14.))
+                                .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                                    if let Err(error) = buffer.update(cx, |b, cx| b.clear_read_only(cx)) {
+                                        log::warn!("Could not clear the read-only status: {error}");
+                                    }
+                                })),
+                        )
+                    })
+            }))
     }
 }
 
@@ -1586,6 +2159,59 @@ impl Render for FloatDrag {
 }
 
 /// A tool window's stripe button, carried in a drag, drawn as a chip of its title.
+/// A tooltip: a line of text on a popup, as Rider's.
+struct Tip(SharedString);
+
+impl Render for Tip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(8.))
+            .py(px(4.))
+            .rounded(px(6.))
+            .bg(theme::popup())
+            .border_1()
+            .border_color(theme::popup_border())
+            .text_color(theme::text())
+            .font_family(theme::UI_FONT)
+            .text_size(px(13.))
+            .child(self.0.clone())
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum StatusMenu {
+    LineSeparators,
+    Encodings,
+}
+
+/// A tab on its way somewhere: its group and index, and its name for the preview under the pointer.
+#[derive(Clone)]
+pub struct TabDrag {
+    group: usize,
+    index: usize,
+    name: SharedString,
+}
+
+impl Render for TabDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(10.))
+            .h(px(28.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .rounded(px(6.))
+            .bg(theme::tab_selected())
+            .border_1()
+            .border_color(theme::tab_selected_border())
+            .text_color(theme::text())
+            .font_family(theme::UI_FONT)
+            .text_size(px(13.))
+            .child(icon(file_icon(&self.name), 16.))
+            .child(self.name.clone())
+    }
+}
+
 #[derive(Clone)]
 struct DraggedTool(Tool);
 

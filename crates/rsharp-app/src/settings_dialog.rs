@@ -41,11 +41,14 @@ static PAGES: &[Page] = &[
     Page {
         group: "Editor",
         name: "General",
-        options: &[Opt::Check {
-            label: "Show line numbers",
-            get: |s| s.show_line_numbers,
-            set: |s, v| s.show_line_numbers = v,
-        }],
+        options: &[
+            Opt::Check {
+                label: "Show line numbers",
+                get: |s| s.show_line_numbers,
+                set: |s, v| s.show_line_numbers = v,
+            },
+            Opt::Check { label: "Show whitespaces", get: |s| s.show_whitespace, set: |s, v| s.show_whitespace = v },
+        ],
     },
     Page {
         group: "Editor",

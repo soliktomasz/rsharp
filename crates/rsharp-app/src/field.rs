@@ -52,9 +52,17 @@ impl TextField {
             EditPlan {
                 edits: vec![Edit { range: 0..len, text: text.to_string() }],
                 selections: vec![Selection::caret(text.len())],
+                ..Default::default()
             },
             cx,
         );
+    }
+
+    /// Selects the whole text, as a field opened again with its last query does, so typing replaces it.
+    pub fn select_all(&mut self, cx: &mut Context<Self>) {
+        let len = self.document.text().len_bytes();
+        self.document.set_selections(vec![Selection { anchor: 0, head: len }]);
+        cx.notify();
     }
 
     fn caret(&self) -> Selection {
@@ -225,7 +233,11 @@ impl EntityInputHandler for TextField {
             .unwrap_or(self.caret().range());
         let caret = range.start + text.len();
         self.apply(
-            EditPlan { edits: vec![Edit { range, text: text.to_string() }], selections: vec![Selection::caret(caret)] },
+            EditPlan {
+                edits: vec![Edit { range, text: text.to_string() }],
+                selections: vec![Selection::caret(caret)],
+                ..Default::default()
+            },
             cx,
         );
     }

@@ -56,6 +56,10 @@ pub fn popup() -> Rgba {
 pub fn popup_border() -> Rgba {
     rgb(0x33353B)
 }
+/// Editor.SearchField.background (editor-bg-inline, gray-20): the find bar's ground; its border is the frame's.
+pub fn search_field() -> Rgba {
+    rgb(0x212326)
+}
 /// MainToolbar.separatorColor and ToolWindow.Stripe.separatorColor.
 pub fn separator() -> Rgba {
     rgba(0xFFFFFF21)
@@ -70,6 +74,10 @@ pub fn close_hover() -> Rgba {
 }
 pub fn tab_selected() -> Rgba {
     rgb(0x233558)
+}
+/// tab-selected-bg-inactive (gray-30): the tab a split shows while another split has the keys.
+pub fn tab_selected_inactive() -> Rgba {
+    rgb(0x26282C)
 }
 pub fn tab_selected_border() -> Rgba {
     rgb(0x2E4D89)
@@ -104,6 +112,32 @@ pub mod editor {
     }
     pub fn caret() -> Rgba {
         rgb(0xCED0D6)
+    }
+    /// MATCHED_BRACE_ATTRIBUTES' background (IslandSchemeDark.xml).
+    pub fn matched_brace() -> Rgba {
+        rgb(0x43454A)
+    }
+    /// FOLDED_TEXT_ATTRIBUTES: a folded region's placeholder.
+    pub fn folded_text() -> Rgba {
+        rgb(0x868991)
+    }
+    pub fn folded_background() -> Rgba {
+        rgb(0x393B40)
+    }
+    /// WHITESPACES: the dots and arrows Show Whitespaces draws.
+    pub fn whitespace() -> Rgba {
+        rgb(0x6F737A)
+    }
+    /// DIFF_INSERTED's and DIFF_DELETED's backgrounds (Darcula's, which Islands Dark inherits).
+    pub fn diff_inserted() -> Rgba {
+        rgb(0x294436)
+    }
+    pub fn diff_deleted() -> Rgba {
+        rgb(0x484A4A)
+    }
+    /// TEXT_SEARCH_RESULT_ATTRIBUTES' background (IslandSchemeDark.xml): a find bar's match.
+    pub fn search_result() -> Rgba {
+        rgb(0x114957)
     }
 }
 

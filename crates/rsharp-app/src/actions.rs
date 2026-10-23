@@ -2,8 +2,20 @@
 //! finds it by. The main menu and Find Action both read this list, and keys run the same gpui actions,
 //! so an action is one entry here, one binding in `keymap.rs` and one handler where it acts.
 
-use crate::editor::{Copy, Cut, Paste, Redo, Save, SelectAll, Undo};
+use crate::editor::{
+    CaretPerLine, CloneCaretAbove, CloneCaretBelow, Copy, Cut, Paste, Redo, Save, SelectAll, SelectAllOccurrences,
+    SelectNextOccurrence, ToggleColumnMode, Undo, UnselectOccurrence,
+};
+use crate::editor::{
+    CollapseAll, CollapseRegion, DecreaseFontSize, ExpandAll, ExpandRegion, IncreaseFontSize, MatchBrace,
+    ResetFontSize, ToggleFold, ToggleSoftWrap, ToggleWhitespace,
+};
+use crate::find_bar::{Find, FindNext, FindPrevious, Replace};
 use crate::keymap::{OpenSettings, Quit};
+use crate::window::{
+    CloseAllButPinned, CloseAllTabs, CloseOtherTabs, CloseTabsToLeft, CloseTabsToRight, FileEncoding, LineSeparators,
+    OpenTabInNewWindow, PinTab, ReopenClosedTab, ShowHistory, SplitDown, SplitRight, Unsplit, UnsplitAll,
+};
 use crate::window::{
     CloseSolution, CloseTab, FindAction, FloatToolWindow, HideToolWindow, OpenFolder, RestoreDefaultLayout,
     ToggleProblems, ToggleSolution,
@@ -29,7 +41,22 @@ pub static ALL: &[IdeAction] = &[
     ide!("Open…", "File", ["open folder", "open solution", "open project"], OpenFolder),
     ide!("Close Solution", "File", ["close project"], CloseSolution),
     ide!("Save", "File", ["save all"], Save),
+    ide!("Show Local History", "File", ["local history", "show history", "revisions"], ShowHistory),
+    ide!("File Encoding", "File", ["encoding", "charset", "file properties"], FileEncoding),
+    ide!("Line Separators", "File", ["line endings", "crlf", "lf", "file properties"], LineSeparators),
     ide!("Close Tab", "Window", ["close editor"], CloseTab),
+    ide!("Close Other Tabs", "Window", ["close others", "editor tabs"], CloseOtherTabs),
+    ide!("Close All Tabs", "Window", ["close all", "editor tabs"], CloseAllTabs),
+    ide!("Close All but Pinned", "Window", ["close unpinned", "editor tabs"], CloseAllButPinned),
+    ide!("Close Tabs to the Left", "Window", ["close left", "editor tabs"], CloseTabsToLeft),
+    ide!("Close Tabs to the Right", "Window", ["close right", "editor tabs"], CloseTabsToRight),
+    ide!("Reopen Closed Tab", "Window", ["undo close", "editor tabs"], ReopenClosedTab),
+    ide!("Pin Tab", "Window", ["unpin tab", "pin active tab", "editor tabs"], PinTab),
+    ide!("Split Right", "Window", ["split vertically", "editor tabs"], SplitRight),
+    ide!("Split Down", "Window", ["split horizontally", "editor tabs"], SplitDown),
+    ide!("Unsplit", "Window", ["editor tabs"], Unsplit),
+    ide!("Unsplit All", "Window", ["editor tabs"], UnsplitAll),
+    ide!("Open Tab in New Window", "Window", ["move to new window", "editor tabs"], OpenTabInNewWindow),
     ide!("Settings…", "File", ["preferences", "options"], OpenSettings),
     ide!("Undo", "Edit", [], Undo),
     ide!("Redo", "Edit", [], Redo),
@@ -37,6 +64,33 @@ pub static ALL: &[IdeAction] = &[
     ide!("Copy", "Edit", [], Copy),
     ide!("Paste", "Edit", [], Paste),
     ide!("Select All", "Edit", [], SelectAll),
+    ide!("Find…", "Edit", ["search", "find in file"], Find),
+    ide!("Replace…", "Edit", ["find and replace", "replace in file"], Replace),
+    ide!("Find Next", "Edit", ["next occurrence", "search"], FindNext),
+    ide!("Find Previous", "Edit", ["previous occurrence", "search"], FindPrevious),
+    ide!(
+        "Add Selection for Next Occurrence",
+        "Edit",
+        ["select next occurrence", "multiple carets"],
+        SelectNextOccurrence
+    ),
+    ide!("Unselect Occurrence", "Edit", ["multiple carets"], UnselectOccurrence),
+    ide!("Select All Occurrences", "Edit", ["multiple carets"], SelectAllOccurrences),
+    ide!("Clone Caret Above", "Edit", ["multiple carets", "add caret"], CloneCaretAbove),
+    ide!("Clone Caret Below", "Edit", ["multiple carets", "add caret"], CloneCaretBelow),
+    ide!("Add Carets to Ends of Selected Lines", "Edit", ["caret per line", "multiple carets"], CaretPerLine),
+    ide!("Column Selection Mode", "Edit", ["block selection", "rectangular selection"], ToggleColumnMode),
+    ide!("Move Caret to Matching Brace", "Navigate", ["brace", "bracket"], MatchBrace),
+    ide!("Expand", "Code", ["unfold", "folding"], ExpandRegion),
+    ide!("Collapse", "Code", ["fold", "folding"], CollapseRegion),
+    ide!("Expand All", "Code", ["unfold all", "folding"], ExpandAll),
+    ide!("Collapse All", "Code", ["fold all", "folding"], CollapseAll),
+    ide!("Toggle Folding", "Code", ["expand collapse", "fold", "unfold"], ToggleFold),
+    ide!("Soft-Wrap", "View", ["soft wrap", "word wrap", "active editor"], ToggleSoftWrap),
+    ide!("Show Whitespaces", "View", ["whitespace", "spaces", "active editor"], ToggleWhitespace),
+    ide!("Increase Font Size in All Editors", "View", ["zoom in", "bigger"], IncreaseFontSize),
+    ide!("Decrease Font Size in All Editors", "View", ["zoom out", "smaller"], DecreaseFontSize),
+    ide!("Reset Font Size", "View", ["zoom", "default size"], ResetFontSize),
     ide!("Solution", "View", ["project", "explorer", "tool window"], ToggleSolution),
     ide!("Problems", "View", ["errors", "warnings", "tool window"], ToggleProblems),
     ide!("Hide Active Tool Window", "Window", ["close tool window"], HideToolWindow),

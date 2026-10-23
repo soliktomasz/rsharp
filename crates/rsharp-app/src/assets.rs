@@ -15,6 +15,7 @@ static FILES: &[(&str, &[u8])] = carried![
     "icons/chevron-down.svg",
     "icons/chevron-right.svg",
     "icons/close.svg",
+    "icons/down.svg",
     "icons/error.svg",
     "icons/file-any.svg",
     "icons/file-config.svg",
@@ -24,12 +25,18 @@ static FILES: &[(&str, &[u8])] = carried![
     "icons/file-xml.svg",
     "icons/folder.svg",
     "icons/hide.svg",
+    "icons/locked.svg",
     "icons/main-menu.svg",
+    "icons/match-case.svg",
+    "icons/pin.svg",
     "icons/project.svg",
+    "icons/regex.svg",
     "icons/search.svg",
     "icons/tw-problems.svg",
     "icons/tw-project.svg",
+    "icons/up.svg",
     "icons/warning.svg",
+    "icons/words.svg",
 ];
 
 static FONTS: &[&[u8]] = &[

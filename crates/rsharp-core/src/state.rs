@@ -186,7 +186,8 @@ fn write_merged(path: &Path, value: Value) {
 }
 
 /// FNV-1a: a stable hash, so a folder keeps its place across versions.
-fn fnv(bytes: &[u8]) -> u64 {
+/// FNV-1a: a hash that stays the same from one build to the next, for names kept on disk.
+pub fn fnv(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf29ce484222325, |hash, b| (hash ^ *b as u64).wrapping_mul(0x100000001b3))
 }
 

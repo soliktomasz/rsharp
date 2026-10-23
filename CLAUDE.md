@@ -43,16 +43,26 @@ terminal and takes focus for a moment.
   the IDE ended, SIGKILL included (Roslyn's BuildHost ignores SIGTERM and outlived Roslyn before it).
   `paths::canonical` drops Windows' `\\?\` and URIs are `file:///C:/…`, as Roslyn reports them. `paths` (canonical
   paths, `file://` URIs), `programs` (finds `dotnet` as a login shell would), `files::write` (every save:
-  temporary file and rename), `state` (the one `StateStore`: `RSHARP_STATE` or the local app data; app documents
+  temporary file and rename, a read-only file refused), `encodings` (a file's bytes as its text: BOM, else UTF-8,
+  else its .editorconfig's 8-bit charset, else windows-1252; a character the encoding cannot hold refused at save),
+  `editorconfig` (the .editorconfig files over a file, its own parser and globs), `history` (Local History: each version
+  of a file under `localHistory/`, content once by hash in `blobs/`, a JSON line per version in `changes.log`), `state` (the one `StateStore`: `RSHARP_STATE` or the local app data; app documents
   at its root, each folder's under `workspaces/<name>-<hash>/`; writes debounced on its own thread, merged over
   the file key by key, read back from memory until written; an unreadable file set aside as `.bad` and said
   once), `logs` (`logs/rsharp.log` under the state root, rotated; gpui's warnings land there too).
 - `crates/rsharp-text`: no UI. `Document` (Ropey's rope, whose clone is a snapshot another thread may read; undo;
   `Change`s in application order with byte, line and UTF-16 places), `Selection`s, and every editing command as
-  a pure function to an `EditPlan`. Offsets are UTF-8 bytes. A file's CRLF is held as `\n` and written back.
+  a pure function to an `EditPlan`. Offsets are UTF-8 bytes. A file's CRLF is held as `\n` and written back. Undo
+  joins a run of one `EditKind` (typing a word at a time); `carets` is what changes only the carets (occurrences,
+  clones, columns; the last caret is the primary, the one added last); `search` is the find bar's matching; `rows` is
+  lines as shown, folded lines left out and long ones wrapped, built only while something folds or wraps, and after
+  one change only that change's lines made again.
 - `crates/rsharp-languages`: colour before any server answers: tree-sitter-c-sharp parsed incrementally (`edit`
   then `parse` with the old tree) and coloured by the grammar's own highlights query over the visible bytes
-  only, its captures mapped to Rider's kinds (`Kind`).
+  only, its captures mapped to Rider's kinds (`Kind`); the regions that fold (`folds_in`, only those near a range,
+  through a tree cursor: a node's own sibling steps find its parent from the root) and the bracket pairs come from
+  the same tree. tree-sitter's incremental parse grows with the members of one class, so a file over 4 MB is parsed
+  once typing pauses; `tests/budget.rs` holds the UI thread's work per key flat on a file ten times larger.
 - `crates/rsharp-lsp`: the LSP client (JSON-RPC over stdio, a reader thread, `ServerFailed` the one failure) and
   `start_roslyn`, which runs the person's `roslyn-language-server` dotnet tool with `--clientProcessId`, so it
   ends with the IDE even after a crash, and opens the solution (`solution/open`) or lets it find the projects.
@@ -70,7 +80,13 @@ terminal and takes focus for a moment.
   `find_action.rs`; `field.rs` the single-line text field, its editing `rsharp-text`'s commands under the
   editor's own actions; `fuzzy.rs` how a query matches a name. `settings.rs` is `AppSettings` (`settings.json`),
   a gpui global that editors observe; `settings_dialog.rs` Rider's searchable Settings window (a new setting is
-  a field, an `Opt` on a page, and what follows it). `editor.rs` is the code editor (a gpui `Element` that shapes
+  a field, an `Opt` on a page, and what follows it). `find_bar.rs` is find and replace over the editor, one
+  per window, following the active tab. `buffer.rs` is an open file's text, undo, tree, problems and server, shared by
+  every editor of it, and how it is stored (encoding, line separator, indent from .editorconfig, the file's own lines
+  or C#'s, read-only, the .editorconfig's save-time rules); `editor_area.rs` the groups of tabs, split right and down, pinned tabs and the tabs closed;
+  `editor_window.rs` a tab dragged out into a window of its own; `history_window.rs` Local History's window and what
+  it records (a file as opened, an External change seen then, each save). Every buffer in the process is found by its file
+  (`buffer::find`), so a file in two windows is one text; the last editor of a file gone, the server is told. `editor.rs` is the code editor (a gpui `Element` that shapes
   only the lines on screen; the parse runs on the background executor; Roslyn told every change and asked for
   diagnostics once typing pauses), `theme.rs` every colour, `assets.rs` the carried fonts and icons,
   `keymap.rs` Rider's keys, `launch.rs` the command line, `workspace.rs` the folder and its solution, `bench.rs`
