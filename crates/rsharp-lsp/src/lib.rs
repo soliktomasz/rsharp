@@ -196,10 +196,10 @@ mod tests {
         let mut said = Vec::new();
         let loaded =
             std::iter::from_fn(|| events.recv_timeout(std::time::Duration::from_secs(180)).ok()).any(|event| {
+                if says_projects_loaded(&event) {
+                    return true;
+                }
                 match event {
-                    ServerEvent::Notification { method, .. } if method == "workspace/projectInitializationComplete" => {
-                        return true;
-                    }
                     // Every message, information included: where a stalled load stopped is only said at that level.
                     ServerEvent::Notification { method, params } => {
                         let text = params["message"].as_str().or(params["value"]["message"].as_str());

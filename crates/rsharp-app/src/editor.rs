@@ -14,6 +14,10 @@ use rsharp_text::*;
 use std::ops::Range;
 use std::path::PathBuf;
 
+#[path = "editor_assist.rs"]
+mod assist;
+pub use assist::{Navigate, Said};
+
 actions!(
     editor,
     [
@@ -69,6 +73,16 @@ actions!(
         IncreaseFontSize,
         DecreaseFontSize,
         ResetFontSize,
+        Complete,
+        ParameterInfo,
+        QuickDocumentation,
+        ShowContextActions,
+        Rename,
+        Reformat,
+        GoToDeclaration,
+        GoToImplementation,
+        GoToTypeDeclaration,
+        FindUsages,
     ]
 );
 
@@ -130,6 +144,8 @@ pub struct CodeEditor {
     _buffer_events: Subscription,
     /// An edit a read-only file refused, made once its read-only status is cleared if the text is as it was then.
     pending: Option<(EditPlan, u64)>,
+    /// What Roslyn says about the file as it is worked on: popups, usages, colours.
+    assist: assist::Assist,
 }
 
 /// An edit refused because the file is read-only: the window asks to clear that.
@@ -214,6 +230,7 @@ impl CodeEditor {
                             .collect();
                         editor.set_selections(carets);
                         editor.map_folds(changes);
+                        editor.assist.map_through(changes);
                         editor.rows_after(before, changes);
                     }
                 }
@@ -251,6 +268,7 @@ impl CodeEditor {
             line_height: px(crate::settings::settings(cx).line_height()),
             _buffer_events: subscription,
             pending: None,
+            assist: assist::Assist::default(),
         }
     }
 
@@ -355,6 +373,7 @@ impl CodeEditor {
         let before = self.version;
         self.sync(&buffer, cx);
         self.map_folds(changes);
+        self.assist.map_through(changes);
         self.rows_after(before, changes);
         self.set_selections(carets);
         self.goal_columns = None;
@@ -374,6 +393,7 @@ impl CodeEditor {
             .collect();
         self.set_selections(merge_overlapping(moved));
         self.autoscroll = true;
+        self.close_popup(cx);
         cx.notify();
     }
 
@@ -596,7 +616,9 @@ impl CodeEditor {
     /// Escape: the extra carets go, then the selection; with neither, the key is the window's.
     fn escape(&mut self, _: &Escape, _: &mut Window, cx: &mut Context<Self>) {
         let primary = self.primary();
-        if self.carets.as_slice().len() > 1 {
+        if self.assist.popup.is_some() {
+            self.close_popup(cx);
+        } else if self.carets.as_slice().len() > 1 {
             self.set_carets(vec![primary], cx);
         } else if !primary.is_empty() {
             self.set_carets(vec![Selection::caret(primary.head)], cx);
@@ -644,6 +666,20 @@ impl CodeEditor {
         }
     }
 
+    /// The character under the pointer, if it is over the text rather than past a line's end or in the gutter.
+    fn text_under(&mut self, position: Point<Pixels>) -> Option<usize> {
+        self.ensure_rows();
+        let row = self.row_for_point(position)?;
+        let layout = self.layout.as_ref()?;
+        let shaped = layout.lines.get(row.checked_sub(layout.first_row)?)?;
+        let span = self.rows.row(&self.text, row);
+        let x = position.x - layout.text_origin.x - layout.char_width * span.indent as f32;
+        if x < px(0.) || x >= shaped.width {
+            return None;
+        }
+        Some((span.start + shaped.index_for_x(x).unwrap_or(0)).min(span.end))
+    }
+
     /// The line and character column under the pointer, past the line's end as far as the pointer is.
     fn place_for_point(&mut self, position: Point<Pixels>) -> (usize, usize) {
         self.ensure_rows();
@@ -656,6 +692,7 @@ impl CodeEditor {
 
     fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus);
+        self.close_popup(cx);
         let hit = |marks: &[(Bounds<Pixels>, FoldRegion)]| {
             marks.iter().find(|(b, _)| b.contains(&event.position)).map(|(_, fold)| fold.clone())
         };
@@ -698,6 +735,12 @@ impl CodeEditor {
             self.selecting = true;
             return;
         }
+        // Cmd+click (Ctrl+click elsewhere) goes to the declaration of what was clicked, as Rider's does.
+        if m.secondary() && !m.shift && !m.alt && event.click_count == 1 {
+            self.set_selections(vec![Selection::caret(offset)]);
+            self.go_to("textDocument/definition", "Declaration", cx);
+            return;
+        }
         let selection = match event.click_count {
             2 => Selection { anchor: word_left(&text, next_char(&text, offset)), head: word_right(&text, offset) },
             n if n >= 3 => {
@@ -722,6 +765,10 @@ impl CodeEditor {
         if over_gutter != self.gutter_hovered {
             self.gutter_hovered = over_gutter;
             cx.notify();
+        }
+        if event.pressed_button.is_none() {
+            let at = self.text_under(event.position);
+            self.pointer_at(at, cx);
         }
         if let (true, Some(start)) = (self.selecting, self.column_drag)
             && event.pressed_button == Some(MouseButton::Left)
@@ -790,17 +837,17 @@ moves! {
     DocumentEnd => |e, cx| e.horizontal(false, cx, |t, _| t.len_bytes(), false);
     SelectDocumentStart => |e, cx| e.horizontal(true, cx, |_, _| 0, true);
     SelectDocumentEnd => |e, cx| e.horizontal(true, cx, |t, _| t.len_bytes(), false);
-    Up => |e, cx| e.vertical(-1, false, cx);
-    Down => |e, cx| e.vertical(1, false, cx);
+    Up => |e, cx| if !e.popup_step(-1, cx) { e.vertical(-1, false, cx) };
+    Down => |e, cx| if !e.popup_step(1, cx) { e.vertical(1, false, cx) };
     SelectUp => |e, cx| if e.column_mode { e.extend_block(-1, 0, cx) } else { e.vertical(-1, true, cx) };
     SelectDown => |e, cx| if e.column_mode { e.extend_block(1, 0, cx) } else { e.vertical(1, true, cx) };
     PageUp => |e, cx| { let p = e.page(); e.vertical(-p, false, cx) };
     PageDown => |e, cx| { let p = e.page(); e.vertical(p, false, cx) };
     SelectAll => |e, cx| { let len = e.text.len_bytes(); e.set_selections(vec![Selection { anchor: 0, head: len }]); cx.notify() };
-    Backspace => |e, cx| { let plan = backspace(&e.text, e.carets.as_slice()); e.apply(plan, cx) };
+    Backspace => |e, cx| { let plan = backspace(&e.text, e.carets.as_slice()); e.apply(plan, cx); e.backspaced(cx) };
     Delete => |e, cx| { let plan = delete(&e.text, e.carets.as_slice()); e.apply(plan, cx) };
-    Newline => |e, cx| { let indent = e.buffer.read(cx).indent; let plan = newline(&e.text, e.carets.as_slice(), &indent); e.apply(plan, cx) };
-    Tab => |e, cx| { let indent = e.buffer.read(cx).indent; let plan = tab(&e.text, e.carets.as_slice(), &indent); e.apply(plan, cx) };
+    Newline => |e, cx| { if e.popup_choose(cx) { return } let indent = e.buffer.read(cx).indent; let plan = newline(&e.text, e.carets.as_slice(), &indent); e.apply(plan, cx) };
+    Tab => |e, cx| { if e.popup_choose(cx) { return } let indent = e.buffer.read(cx).indent; let plan = tab(&e.text, e.carets.as_slice(), &indent); e.apply(plan, cx) };
     Undo => |e, cx| e.undo(false, cx);
     Redo => |e, cx| e.undo(true, cx);
     Copy => |e, cx| { let text = e.selected_text(); if !text.is_empty() { cx.write_to_clipboard(ClipboardItem::new_string(text)) } };
@@ -846,6 +893,15 @@ moves! {
     IncreaseFontSize => |e, cx| e.zoom(|size| size + 1., cx);
     DecreaseFontSize => |e, cx| e.zoom(|size| size - 1., cx);
     ResetFontSize => |e, cx| e.zoom(|_| crate::settings::AppSettings::default().editor_font_size, cx);
+    Complete => |e, cx| e.request_completion(None, true, cx);
+    ParameterInfo => |e, cx| e.request_signature(false, cx);
+    QuickDocumentation => |e, cx| { let head = e.primary().head; e.request_hover(head, false, cx) };
+    ShowContextActions => |e, cx| e.request_actions(cx);
+    Reformat => |e, cx| e.reformat(cx);
+    GoToDeclaration => |e, cx| e.go_to("textDocument/definition", "Declaration", cx);
+    GoToImplementation => |e, cx| e.go_to("textDocument/implementation", "Implementation", cx);
+    GoToTypeDeclaration => |e, cx| e.go_to("textDocument/typeDefinition", "Type Declaration", cx);
+    FindUsages => |e, cx| e.find_usages(cx);
 }
 
 /// An offset carried through a change: before it, kept; after it, moved by what it added; inside it, to its end.
@@ -867,11 +923,14 @@ impl Focusable for CodeEditor {
 
 impl Render for CodeEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.refresh_assist(cx);
+        let popup = self.popup_view(cx);
         let element = div()
             .id("code-editor")
             .key_context("CodeEditor")
             .track_focus(&self.focus)
             .size_full()
+            .relative()
             .cursor(CursorStyle::IBeam)
             .bg(theme::island())
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
@@ -888,9 +947,16 @@ impl Render for CodeEditor {
                     e.gutter_hovered = false;
                     cx.notify();
                 }
+                if !hovered {
+                    e.pointer_at(None, cx);
+                }
             }))
             .on_scroll_wheel(cx.listener(Self::on_scroll));
-        bind_moves(element, cx).on_action(cx.listener(Self::escape)).child(EditorElement { editor: cx.entity() })
+        bind_moves(element, cx)
+            .on_action(cx.listener(Self::escape))
+            .on_action(cx.listener(|e, _: &Rename, window, cx| e.start_rename(window, cx)))
+            .child(EditorElement { editor: cx.entity() })
+            .children(popup)
     }
 }
 
@@ -942,7 +1008,10 @@ impl EntityInputHandler for CodeEditor {
             }
             None => {
                 let plan = insert(&self.text, self.carets.as_slice(), text);
-                EditPlan { kind: EditKind::Typing, ..plan }
+                let plan = EditPlan { kind: EditKind::Typing, ..plan };
+                self.apply(plan, cx);
+                self.typed(text, cx);
+                return;
             }
         };
         self.apply(plan, cx);
@@ -1115,8 +1184,24 @@ impl Element for EditorElement {
             let byte_range = shown.first().map_or(0, |r| r.start)..shown.last().map_or(0, |r| r.end);
             let buffer = editor.buffer.clone();
             let buffer = buffer.read(cx);
-            let colours: Vec<Highlight> =
+            let syntax: Vec<Highlight> =
                 buffer.tree.as_ref().map(|tree| highlights(tree, text, byte_range.clone())).unwrap_or_default();
+            // Roslyn's colours win where it named a word; the syntax's fill the rest.
+            let tokens: Vec<(Range<usize>, Hsla)> = editor
+                .assist
+                .tokens
+                .iter()
+                .filter(|(r, _)| r.end > byte_range.start && r.start < byte_range.end)
+                .cloned()
+                .collect();
+            let mut colours: Vec<(Range<usize>, Hsla)> = syntax
+                .into_iter()
+                .filter(|h| !tokens.iter().any(|(r, _)| r.start < h.range.end && h.range.start < r.end))
+                .map(|h| (h.range, theme::syntax(h.kind)))
+                .collect();
+            colours.extend(tokens);
+            colours.sort_by_key(|(r, _)| r.start);
+            editor.assist.visible_lines = shown.first().map_or(0, |r| r.line)..shown.last().map_or(0, |r| r.line + 1);
 
             let len = text.len_bytes();
             let line_of = |byte: usize| text.byte_to_line(byte.min(len));
@@ -1205,6 +1290,7 @@ impl Element for EditorElement {
         let from = editor.search_matches.partition_point(|m| m.end < shown_bytes.start);
         let to = editor.search_matches.partition_point(|m| m.start <= shown_bytes.end);
         let matches = editor.search_matches[from..to.max(from)].to_vec();
+        let usages = editor.assist.usages.clone();
         let caret_rows: Vec<usize> = selections.iter().map(|s| editor.rows.row_of(&text, s.head)).collect();
         let top_of = |row: usize| state.text_origin.y + line_height * row as f32;
         let mut chevrons = Vec::new();
@@ -1234,6 +1320,18 @@ impl Element for EditorElement {
                     let (x0, x1) =
                         (shaped.x_for_index(m.start.max(start) - start), shaped.x_for_index(m.end.min(end) - start));
                     band(window, x0, x1, theme::editor::search_result());
+                }
+                for (usage, write) in usages.iter().filter(|(u, _)| u.start <= end && u.end >= start && !u.is_empty()) {
+                    let (x0, x1) = (
+                        shaped.x_for_index(usage.start.max(start) - start),
+                        shaped.x_for_index(usage.end.min(end) - start),
+                    );
+                    band(
+                        window,
+                        x0,
+                        x1,
+                        if *write { theme::editor::usage_write() } else { theme::editor::usage_read() },
+                    );
                 }
                 for brace in state.braces.iter().filter(|b| b.start >= start && b.end <= end) {
                     let (x0, x1) = (shaped.x_for_index(brace.start - start), shaped.x_for_index(brace.end - start));
@@ -1342,14 +1440,14 @@ fn run(len: usize, color: Hsla, font: &gpui::Font) -> TextRun {
 }
 
 /// A line's text runs: its coloured pieces, plain text between them.
-fn runs_for(content: &str, line_start: usize, colours: &[Highlight], font: &gpui::Font) -> Vec<TextRun> {
+fn runs_for(content: &str, line_start: usize, colours: &[(Range<usize>, Hsla)], font: &gpui::Font) -> Vec<TextRun> {
     let plain: Hsla = theme::editor::text().into();
     let mut runs = Vec::new();
     let mut at = 0;
     let line_end = line_start + content.len();
-    for h in colours.iter().filter(|h| h.range.end > line_start && h.range.start < line_end) {
-        let from = h.range.start.max(line_start) - line_start;
-        let to = h.range.end.min(line_end) - line_start;
+    for (range, colour) in colours.iter().filter(|(r, _)| r.end > line_start && r.start < line_end) {
+        let from = range.start.max(line_start) - line_start;
+        let to = range.end.min(line_end) - line_start;
         // A tree a parse has yet to catch up with may cut a character; its colour waits for the parse.
         if from < at || !content.is_char_boundary(from) || !content.is_char_boundary(to) {
             continue;
@@ -1357,7 +1455,7 @@ fn runs_for(content: &str, line_start: usize, colours: &[Highlight], font: &gpui
         if from > at {
             runs.push(run(from - at, plain, font));
         }
-        runs.push(run(to - from, theme::syntax(h.kind), font));
+        runs.push(run(to - from, *colour, font));
         at = to;
     }
     if at < content.len() || runs.is_empty() {

@@ -64,9 +64,8 @@ fn roslyn_answers_what_the_editor_asks_in_the_form_the_editor_reads() {
         let _ = sender.send(event);
     })
     .expect("Roslyn started");
-    let loaded = std::iter::from_fn(|| events.recv_timeout(Duration::from_secs(180)).ok()).any(|e| {
-        matches!(e, ServerEvent::Notification { ref method, .. } if method == "workspace/projectInitializationComplete")
-    });
+    let loaded =
+        std::iter::from_fn(|| events.recv_timeout(Duration::from_secs(180)).ok()).any(|e| says_projects_loaded(&e));
     assert!(loaded, "Roslyn never loaded the project");
     server.notify(
         "textDocument/didOpen",

@@ -10,6 +10,10 @@ use crate::editor::{
     CollapseAll, CollapseRegion, DecreaseFontSize, ExpandAll, ExpandRegion, IncreaseFontSize, MatchBrace,
     ResetFontSize, ToggleFold, ToggleSoftWrap, ToggleWhitespace,
 };
+use crate::editor::{
+    Complete, FindUsages, GoToDeclaration, GoToImplementation, GoToTypeDeclaration, ParameterInfo, QuickDocumentation,
+    Reformat, Rename, ShowContextActions,
+};
 use crate::find_bar::{Find, FindNext, FindPrevious, Replace};
 use crate::keymap::{OpenSettings, Quit};
 use crate::window::{
@@ -81,6 +85,16 @@ pub static ALL: &[IdeAction] = &[
     ide!("Add Carets to Ends of Selected Lines", "Edit", ["caret per line", "multiple carets"], CaretPerLine),
     ide!("Column Selection Mode", "Edit", ["block selection", "rectangular selection"], ToggleColumnMode),
     ide!("Move Caret to Matching Brace", "Navigate", ["brace", "bracket"], MatchBrace),
+    ide!("Declaration or Usages", "Navigate", ["go to declaration", "go to definition"], GoToDeclaration),
+    ide!("Implementation(s)", "Navigate", ["go to implementation", "derived symbols"], GoToImplementation),
+    ide!("Type Declaration", "Navigate", ["go to type declaration", "go to type definition"], GoToTypeDeclaration),
+    ide!("Find Usages", "Edit", ["references", "find references", "usages"], FindUsages),
+    ide!("Basic Completion", "Code", ["code completion", "intellisense", "complete"], Complete),
+    ide!("Parameter Info", "View", ["signature help", "parameters"], ParameterInfo),
+    ide!("Quick Documentation", "View", ["hover", "documentation", "quick info"], QuickDocumentation),
+    ide!("Show Context Actions", "Code", ["quick fix", "intentions", "alt enter", "code actions"], ShowContextActions),
+    ide!("Reformat Code", "Code", ["format", "format document", "reformat"], Reformat),
+    ide!("Rename…", "Refactor", ["rename symbol", "refactor"], Rename),
     ide!("Expand", "Code", ["unfold", "folding"], ExpandRegion),
     ide!("Collapse", "Code", ["fold", "folding"], CollapseRegion),
     ide!("Expand All", "Code", ["unfold all", "folding"], ExpandAll),
@@ -101,7 +115,7 @@ pub static ALL: &[IdeAction] = &[
 ];
 
 /// Rider's main menus in its order.
-pub const MENUS: &[&str] = &["File", "Edit", "View", "Navigate", "Code", "Window", "Help"];
+pub const MENUS: &[&str] = &["File", "Edit", "View", "Navigate", "Code", "Refactor", "Window", "Help"];
 
 /// The main menu: macOS's menu bar, the app menu first with Settings and Quit where a Mac keeps them.
 // shortcut: Windows and Linux get no in-window menu yet; Rider's is the toolbar's main menu button.

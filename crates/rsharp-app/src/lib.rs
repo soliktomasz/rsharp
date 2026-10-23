@@ -14,6 +14,7 @@ pub mod find_bar;
 pub mod fuzzy;
 pub mod history_window;
 pub mod keymap;
+pub mod language;
 pub mod launch;
 pub mod projects;
 pub mod settings;

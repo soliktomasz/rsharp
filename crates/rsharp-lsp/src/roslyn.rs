@@ -129,6 +129,20 @@ fn client_capabilities() -> Value {
     })
 }
 
+/// Whether Roslyn says the projects are loaded: by projectInitializationComplete, or by the end of its load's
+/// progress ("Loaded 1 project(s)"), which it at times sends without the other.
+pub fn says_projects_loaded(event: &ServerEvent) -> bool {
+    match event {
+        ServerEvent::Notification { method, params } => {
+            method == "workspace/projectInitializationComplete"
+                || (method == "$/progress"
+                    && params["value"]["kind"] == "end"
+                    && params["value"]["message"].as_str().is_some_and(|m| m.starts_with("Loaded ")))
+        }
+        _ => false,
+    }
+}
+
 /// The kinds Roslyn names its semantic tokens by, in its legend's order.
 pub fn token_legend(server: &LanguageServer) -> Vec<String> {
     server.capabilities["semanticTokensProvider"]["legend"]["tokenTypes"]

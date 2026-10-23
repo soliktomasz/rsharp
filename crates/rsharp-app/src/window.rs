@@ -73,6 +73,14 @@ enum ServerState {
     Failed(String),
 }
 
+/// A place in the Find window: its file, line and column (UTF-16, from 0), and its line's text.
+struct Found {
+    path: PathBuf,
+    line: usize,
+    column: usize,
+    text: String,
+}
+
 struct Row {
     entry: Entry,
     depth: usize,
@@ -92,6 +100,9 @@ pub struct MainWindow {
     opened_as: Option<PathBuf>,
     explorer_focus: FocusHandle,
     problems_focus: FocusHandle,
+    find_focus: FocusHandle,
+    /// The Find window's list: what was looked for, and each place found with its line's text.
+    found: Option<(String, Vec<Found>)>,
     /// The window's own focus, where keys go when no view has them (the Welcome screen), so window-wide keys
     /// always reach the window.
     root_focus: FocusHandle,
@@ -133,6 +144,8 @@ impl MainWindow {
             opened_as: None,
             explorer_focus: cx.focus_handle(),
             problems_focus: cx.focus_handle(),
+            find_focus: cx.focus_handle(),
+            found: None,
             area: EditorArea::default(),
             tab_menu: None,
             tab_drag: None,
@@ -291,6 +304,9 @@ impl MainWindow {
     }
 
     fn on_server_event(&mut self, event: ServerEvent, cx: &mut Context<Self>) {
+        if rsharp_lsp::says_projects_loaded(&event) && !self.projects_loaded {
+            self.projects_loaded(cx);
+        }
         match event {
             ServerEvent::Notification { method, params } => match method.as_str() {
                 // Followed by token: Roslyn's restore can begin after it said the projects loaded.
@@ -326,17 +342,6 @@ impl MainWindow {
                         (None, false) => ServerState::Loading("Loading solution".into()),
                     };
                 }
-                "workspace/projectInitializationComplete" => {
-                    log::info!(target: "roslyn", "projects loaded");
-                    self.projects_loaded = true;
-                    if self.progress.is_empty() {
-                        self.server_state = ServerState::Ready;
-                    }
-                    let editors: Vec<_> = self.area.editors().cloned().collect();
-                    for editor in editors {
-                        editor.read(cx).buffer.clone().update(cx, |b, cx| b.check(std::time::Duration::ZERO, cx));
-                    }
-                }
                 "window/logMessage" if params["type"].as_u64().is_some_and(|t| t <= 2) => {
                     log::warn!(target: "roslyn", "{}", params["message"].as_str().unwrap_or_default());
                 }
@@ -351,6 +356,20 @@ impl MainWindow {
                 self.server = None;
                 self.server_state = ServerState::Failed("Roslyn stopped".into());
             }
+        }
+    }
+
+    /// Roslyn has the projects: each open file's problems and colours asked again.
+    fn projects_loaded(&mut self, cx: &mut Context<Self>) {
+        log::info!(target: "roslyn", "projects loaded");
+        self.projects_loaded = true;
+        if self.progress.is_empty() {
+            self.server_state = ServerState::Ready;
+        }
+        let editors: Vec<_> = self.area.editors().cloned().collect();
+        for editor in editors {
+            editor.read(cx).buffer.clone().update(cx, |b, cx| b.check(std::time::Duration::ZERO, cx));
+            editor.update(cx, |e, cx| e.server_ready(cx));
         }
     }
 
@@ -458,6 +477,85 @@ impl MainWindow {
         self.show_tab(group, index, window, cx);
     }
 
+    /// Where Go to Declaration or Find Usages leads: the one place opened, or every place listed in the Find window.
+    fn navigate(&mut self, go: &editor::Navigate, window: &mut Window, cx: &mut Context<Self>) {
+        if let ([to], false) = (go.to.as_slice(), go.list) {
+            self.open_file(&to.path, Some((to.span.start.line, to.span.start.character)), window, cx);
+            return;
+        }
+        let found = go
+            .to
+            .iter()
+            .map(|to| {
+                let (line, column) = (to.span.start.line, to.span.start.character);
+                let text = match crate::buffer::find(&to.path, cx) {
+                    Some(buffer) => buffer.read(cx).document.text().line(line).to_string(),
+                    None => std::fs::read_to_string(&to.path)
+                        .ok()
+                        .and_then(|t| t.lines().nth(line).map(str::to_string))
+                        .unwrap_or_default(),
+                };
+                Found { path: to.path.clone(), line, column, text: text.trim().to_string() }
+            })
+            .collect();
+        self.found = Some((go.title.clone(), found));
+        if !self.dock.is_open(Tool::Find) {
+            self.toggle_tool(Tool::Find, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// The Find window's places, by file, each a row that goes there.
+    fn find_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some((_, found)) = &self.found else {
+            return empty_text("Find Usages lists the places here.").track_focus(&self.find_focus).into_any_element();
+        };
+        let folder = self.folder().map(Path::to_path_buf);
+        div()
+            .id("find-results")
+            .track_focus(&self.find_focus)
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .px(px(6.))
+            .children(found.iter().enumerate().map(|(i, place)| {
+                let (path, line, column) = (place.path.clone(), place.line, place.column);
+                let shown = folder
+                    .as_deref()
+                    .and_then(|f| path.strip_prefix(f).ok())
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .into_owned();
+                div()
+                    .id(("found", i))
+                    .debug_selector(move || format!("found: {i}"))
+                    .h(px(ROW_HEIGHT))
+                    .px(px(8.))
+                    .rounded(px(4.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .hover(|d| d.bg(theme::row_hover()))
+                    .child(icon(file_icon(&shown), 16.))
+                    .child(div().flex_none().text_color(theme::text_secondary()).child(format!("{shown}:{}", line + 1)))
+                    .child(div().truncate().font_family(theme::CODE_FONT).child(place.text.clone()))
+                    .on_click(cx.listener(move |w, _: &ClickEvent, window, cx| {
+                        w.open_file(&path, Some((line, column)), window, cx)
+                    }))
+            }))
+            .into_any_element()
+    }
+
+    /// The places the Find window lists, each as "file:line", as a person reads them.
+    pub fn found(&self) -> Option<Vec<String>> {
+        self.found.as_ref().map(|(_, found)| {
+            found
+                .iter()
+                .map(|f| format!("{}:{}", f.path.file_name().unwrap_or_default().to_string_lossy(), f.line + 1))
+                .collect()
+        })
+    }
+
     /// An editor of a buffer, whose every change the window keeps for the folder.
     fn new_editor(
         &mut self,
@@ -468,6 +566,12 @@ impl MainWindow {
         let editor = cx.new(|cx| CodeEditor::new(buffer, cx));
         cx.subscribe_in(&editor, window, |_, editor, _: &editor::ReadOnlyEdit, window, cx| {
             editor::ask_clear_read_only(editor.clone(), editor::AfterClearing::Edit, window, cx)
+        })
+        .detach();
+        cx.subscribe_in(&editor, window, |w, _, go: &editor::Navigate, window, cx| w.navigate(go, window, cx)).detach();
+        cx.subscribe(&editor, |w, _, said: &editor::Said, cx| {
+            w.said = Some(said.0.clone().into());
+            cx.notify()
         })
         .detach();
         cx.observe(&editor, |w, _, cx| {
@@ -805,6 +909,22 @@ impl MainWindow {
         matches!(self.server_state, ServerState::Ready)
     }
 
+    /// What the status bar says of Roslyn.
+    pub fn server_status(&self) -> Option<String> {
+        match &self.server_state {
+            ServerState::None => None,
+            ServerState::Starting => Some("Starting Roslyn…".into()),
+            ServerState::Loading(what) => Some(format!("{what}…")),
+            ServerState::Ready => Some("Roslyn".into()),
+            ServerState::Failed(why) => Some(why.clone()),
+        }
+    }
+
+    /// Whether Roslyn is starting or loading the projects.
+    pub fn server_busy(&self) -> bool {
+        matches!(self.server_state, ServerState::Starting | ServerState::Loading(_))
+    }
+
     /// Whether Roslyn could not start or stopped, with why.
     pub fn server_failed(&self) -> Option<&str> {
         match &self.server_state {
@@ -821,6 +941,11 @@ impl MainWindow {
     /// What was opened: the solution or project file, else the folder.
     pub fn opened_as(&self) -> Option<&Path> {
         self.opened_as.as_deref()
+    }
+
+    /// The editor the keys go to, as a test reads it.
+    pub fn editor(&self) -> Option<Entity<CodeEditor>> {
+        self.area.active_editor().cloned()
     }
 
     fn active_editor(&self) -> Option<&Entity<CodeEditor>> {
@@ -1216,6 +1341,7 @@ impl MainWindow {
         let content = match tool {
             Tool::Solution => self.solution_content(window, cx).into_any_element(),
             Tool::Problems => self.problems_content(cx).into_any_element(),
+            Tool::Find => self.find_content(cx).into_any_element(),
         };
         island().child(header).child(content)
     }
@@ -1226,6 +1352,7 @@ impl MainWindow {
             Tool::Problems => self
                 .active_editor()
                 .map(|e| e.read(cx).path.file_name().unwrap_or_default().to_string_lossy().into_owned()),
+            Tool::Find => self.found.as_ref().map(|(title, found)| format!("{title}: {}", found.len())),
         }
     }
 
@@ -1309,6 +1436,7 @@ impl MainWindow {
         match tool {
             Tool::Solution => &self.explorer_focus,
             Tool::Problems => &self.problems_focus,
+            Tool::Find => &self.find_focus,
         }
     }
 
@@ -1944,13 +2072,8 @@ impl MainWindow {
                 let found = &e.buffer.read(cx).diagnostics;
                 (found.iter().filter(|d| d.error).count(), found.iter().filter(|d| !d.error).count())
             }),
-            match &self.server_state {
-                ServerState::None => None,
-                ServerState::Starting => Some(("Starting Roslyn…".to_string(), theme::text_muted())),
-                ServerState::Loading(what) => Some((format!("{what}…"), theme::text_muted())),
-                ServerState::Ready => Some(("Roslyn".to_string(), theme::text_muted())),
-                ServerState::Failed(why) => Some((why.clone(), theme::error())),
-            },
+            self.server_status()
+                .map(|said| (said, if self.server_failed().is_some() { theme::error() } else { theme::text_muted() })),
         );
         div()
             .h(px(30.))

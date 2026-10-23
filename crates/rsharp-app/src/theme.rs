@@ -139,6 +139,21 @@ pub mod editor {
     pub fn search_result() -> Rgba {
         rgb(0x114957)
     }
+    /// IDENTIFIER_UNDER_CARET_ATTRIBUTES and WRITE_IDENTIFIER_UNDER_CARET_ATTRIBUTES' backgrounds: the usages of
+    /// what the caret is on, read and written (Rider Dark, as Passenger's RiderScheme.axaml carries it).
+    pub fn usage_read() -> Rgba {
+        rgb(0x373B39)
+    }
+    pub fn usage_write() -> Rgba {
+        rgb(0x402F33)
+    }
+    /// INLINE_PARAMETER_HINT's foreground and background (Rider Dark, as Passenger carries it).
+    pub fn inlay_hint() -> Rgba {
+        rgb(0x8F9298)
+    }
+    pub fn inlay_hint_background() -> Rgba {
+        rgb(0x2B2D30)
+    }
 }
 
 /// Rider Dark's colour for a kind of C#.
@@ -154,6 +169,23 @@ pub fn syntax(kind: Kind) -> Hsla {
         Kind::Property => 0x66C3CC,
     })
     .into()
+}
+
+/// Rider Dark's colour for what Roslyn names a word (its semantic token types, by its legend's names), where it says more than the syntax:
+/// ReSharper's identifier colours, as Passenger's RiderScheme.axaml carries them. A local or a parameter is plain
+/// text, which takes back a colour the syntax guessed. None leaves the syntax's colour.
+pub fn semantic(kind: &str) -> Option<Hsla> {
+    let colour = match kind {
+        "class" | "recordClass" | "interface" | "typeParameter" => 0xC191FF,
+        "struct" | "recordStruct" | "enum" | "delegate" => 0xE1BFFF,
+        "method" | "extensionMethod" | "function" => 0x39CC9B,
+        "property" | "field" | "constant" | "enumMember" => 0x66C3CC,
+        "event" => 0xED94C0,
+        "parameter" | "variable" | "label" | "namespace" => 0xBCBEC4,
+        "excludedCode" => 0x6F737A,
+        _ => return None,
+    };
+    Some(rgb(colour).into())
 }
 
 pub const UI_FONT: &str = "Inter";

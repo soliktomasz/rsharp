@@ -24,7 +24,8 @@ tools/bench.sh             # the release build on 1, 3 and 10 projects: start, l
 ```
 
 `--key` and `--type` are steps through the window's real input once it has opened, in order, each waiting for
-what the one before opened: `--key cmd-shift-a --type clo` shows Find Action with "clo" typed. A malformed key is
+what the one before opened, and all of them for Roslyn to load the projects (at most a minute): `--key cmd-shift-a
+--type clo` shows Find Action with "clo" typed. A malformed key is
 fatal, as every malformed flag is.
 
 `just` isn't required: each recipe is one cargo command. A Debug build optimises dependencies (gpui and

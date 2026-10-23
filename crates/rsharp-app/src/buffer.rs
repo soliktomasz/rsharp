@@ -307,6 +307,20 @@ impl Buffer {
         self.check(Duration::ZERO, cx);
     }
 
+    /// The server the file is open in, and its URI there.
+    pub fn server(&self) -> Option<(Arc<LanguageServer>, String)> {
+        self.server.clone()
+    }
+
+    /// Edits made from outside any editor (a rename, a context action), as one step Undo takes back; every editor's
+    /// carets follow.
+    pub fn apply_edits(&mut self, edits: Vec<Edit>, cx: &mut Context<Self>) {
+        let selections = self.document.selections().to_vec();
+        let changes = self.document.apply(EditPlan { edits, selections, ..Default::default() });
+        let me = cx.entity_id();
+        self.changed(changes, me, cx);
+    }
+
     pub fn detach_server(&mut self) {
         if let Some((server, uri)) = self.server.take() {
             server.notify("textDocument/didClose", json!({ "textDocument": { "uri": uri } }));
