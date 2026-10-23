@@ -1,6 +1,9 @@
 //! dotnet new's installed templates and Rider's project families, with the options an IDE asks for.
 
 pub mod catalog;
+mod command;
+pub mod create;
+pub mod developer_tools;
 pub mod families;
 pub mod options;
 pub mod packs;
@@ -162,5 +165,88 @@ impl TemplatePlatform {
         } else {
             Self::Linux
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TemplateEnvironment {
+    pub dotnet: std::path::PathBuf,
+    pub cli_home: std::path::PathBuf,
+    pub hive: Option<std::path::PathBuf>,
+    pub nuget_packages: Option<std::path::PathBuf>,
+}
+
+impl TemplateEnvironment {
+    pub fn discover() -> Result<Self, String> {
+        let dotnet = crate::programs::dotnet().ok_or("dotnet is not installed or could not be found")?;
+        let cli_home = std::env::var_os("DOTNET_CLI_HOME")
+            .filter(|v| !v.is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(crate::programs::home);
+        if cli_home.as_os_str().is_empty() {
+            return Err("Neither DOTNET_CLI_HOME nor the home folder is set".into());
+        }
+        Ok(Self { dotnet, cli_home, hive: None, nuget_packages: None })
+    }
+
+    pub fn command(&self, arguments: &[std::ffi::OsString], folder: &std::path::Path) -> std::process::Command {
+        let mut command = std::process::Command::new(&self.dotnet);
+        command
+            .args(arguments)
+            .current_dir(folder)
+            .env("DOTNET_CLI_HOME", &self.cli_home)
+            .env("DOTNET_NOLOGO", "1")
+            .env("DOTNET_SKIP_FIRST_TIME_EXPERIENCE", "1")
+            .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1");
+        if let Some(packages) = &self.nuget_packages {
+            command.env("NUGET_PACKAGES", packages);
+        }
+        command
+    }
+
+    pub fn new_command(&self, arguments: &[std::ffi::OsString], folder: &std::path::Path) -> std::process::Command {
+        let mut arguments =
+            std::iter::once(std::ffi::OsString::from("new")).chain(arguments.iter().cloned()).collect::<Vec<_>>();
+        if let Some(hive) = &self.hive {
+            arguments.extend(["--debug:custom-hive".into(), hive.as_os_str().into()]);
+        }
+        self.command(&arguments, folder)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ProjectTarget {
+    pub solution: std::path::PathBuf,
+    pub folder: Option<String>,
+    pub projects: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CreateRequest {
+    pub target: Option<ProjectTarget>,
+    pub template: ProjectTemplate,
+    pub language: Option<String>,
+    pub framework: Option<String>,
+    pub solution_name: String,
+    pub project_name: String,
+    pub directory: std::path::PathBuf,
+    pub same_directory: bool,
+    pub solution_format: String,
+    pub values: std::collections::BTreeMap<String, String>,
+}
+
+impl CreateRequest {
+    pub fn name_given(&self) -> &str {
+        if self.template.is_solution { self.solution_name.trim() } else { self.project_name.trim() }
+    }
+    pub fn variant(&self) -> &TemplateVariant {
+        self.template.variant(self.language.as_deref(), self.framework.as_deref())
+    }
+    pub fn values(&self) -> std::collections::BTreeMap<String, String> {
+        self.variant()
+            .options
+            .iter()
+            .map(|o| (o.name.clone(), self.values.get(&o.name).unwrap_or(&o.default).clone()))
+            .collect()
     }
 }
