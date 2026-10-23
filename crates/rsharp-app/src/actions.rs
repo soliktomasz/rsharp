@@ -26,6 +26,7 @@ use crate::window::{
     CloseSolution, CloseTab, FindAction, FloatToolWindow, HideToolWindow, OpenFolder, RestoreDefaultLayout,
     ToggleProblems, ToggleSolution,
 };
+use crate::window::{RecentLocations, ReplaceInFiles, SearchEverywhere};
 use gpui::{Action, Menu, MenuItem};
 
 pub struct IdeAction {
@@ -95,6 +96,9 @@ pub static ALL: &[IdeAction] = &[
     ide!("Class…", "Navigate", ["go to type", "go to class", "find type"], GoToType),
     ide!("Symbol…", "Navigate", ["go to symbol", "go to member", "find symbol"], GoToSymbol),
     ide!("Find in Files…", "Edit", ["search in files", "find in path", "grep"], FindInFiles),
+    ide!("Replace in Files…", "Edit", ["replace in path", "find and replace in files"], ReplaceInFiles),
+    ide!("Search Everywhere", "Navigate", ["go to everything", "search all"], SearchEverywhere),
+    ide!("Recent Locations", "View", ["recent places", "recently visited"], RecentLocations),
     ide!("Declaration or Usages", "Navigate", ["go to declaration", "go to definition"], GoToDeclaration),
     ide!("Implementation(s)", "Navigate", ["go to implementation", "derived symbols"], GoToImplementation),
     ide!("Base Symbols", "Navigate", ["super method", "go to base", "base class"], BaseSymbols),

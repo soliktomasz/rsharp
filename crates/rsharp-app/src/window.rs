@@ -62,7 +62,10 @@ actions!(
         GoToFile,
         GoToType,
         GoToSymbol,
-        FindInFiles
+        FindInFiles,
+        SearchEverywhere,
+        RecentLocations,
+        ReplaceInFiles
     ]
 );
 
@@ -729,33 +732,45 @@ impl MainWindow {
 
     /// Opens a Go to popup over the window: the files it looks among, the open files' text and the server given it.
     fn open_go_to(&mut self, kind: crate::goto::Kind, window: &mut Window, cx: &mut Context<Self>) {
-        use crate::goto::{Ended, GoToPopup, Kind};
+        use crate::goto::{Ended, Given, GoToPopup, Kind};
         let Some(folder) = self.folder().map(Path::to_path_buf) else { return };
-        let files = match kind {
+        let shown = self.active_editor().map(|e| e.read(cx).path.clone());
+        let mut given = Given { server: self.server.clone(), ..Default::default() };
+        given.here = shown.as_ref().and_then(|p| p.parent().map(Path::to_path_buf));
+        match kind {
             Kind::RecentFiles => {
-                let here = self.active_editor().map(|e| e.read(cx).path.clone());
-                self.recent.iter().filter(|p| Some(*p) != here.as_ref()).cloned().collect()
+                given.files = self.recent.iter().filter(|p| Some(*p) != shown.as_ref()).cloned().collect();
             }
-            _ => Vec::new(),
-        };
-        let open = match kind {
-            Kind::FindInFiles => self
-                .area
-                .editors()
-                .map(|e| {
-                    let buffer = e.read(cx).buffer.read(cx);
-                    (buffer.path.clone(), buffer.document.text().to_string())
-                })
-                .collect(),
-            _ => Default::default(),
-        };
-        let server = self.server.clone();
+            Kind::RecentLocations => given.places = self.recent_locations(cx),
+            Kind::FindInFiles | Kind::ReplaceInFiles => {
+                given.open = self
+                    .area
+                    .editors()
+                    .map(|e| {
+                        let buffer = e.read(cx).buffer.read(cx);
+                        (buffer.path.clone(), buffer.document.text().to_string())
+                    })
+                    .collect();
+            }
+            _ => {}
+        }
         let before = window.focused(cx);
-        let popup = cx.new(|cx| GoToPopup::new(kind, folder, files, open, server, cx));
+        let popup = cx.new(|cx| GoToPopup::new(kind, folder, given, cx));
         cx.subscribe_in(&popup, window, move |w, _, ended: &Ended, window, cx| {
             w.go_to = None;
             match ended {
                 Ended::Chosen(place) => w.open_file(&place.path.clone(), place.at, window, cx),
+                Ended::ReplaceAll { query, replacement, files } => {
+                    let server = w.server.clone();
+                    w.said = Some(
+                        match crate::language::replace_in_files(files, query, replacement, server.as_deref(), cx) {
+                            Ok(n) => format!("Replaced {n} {}", if n == 1 { "match" } else { "matches" }),
+                            Err(why) => why,
+                        }
+                        .into(),
+                    );
+                    w.focus_editor(window, cx);
+                }
                 Ended::Dismissed => {
                     if let Some(before) = &before {
                         window.focus(before);
@@ -768,6 +783,42 @@ impl MainWindow {
         window.focus(&popup.focus_handle(cx));
         self.go_to = Some(popup);
         cx.notify();
+    }
+
+    /// Recent Locations' places: those left and edited, the latest first, one for each stretch of a file, each with its
+    /// line's text.
+    fn recent_locations(&self, cx: &App) -> Vec<crate::goto::Place> {
+        let mut spots: Vec<&Spot> = Vec::new();
+        for spot in self.back.iter().chain(&self.edits).rev() {
+            if spots.iter().all(|s| !s.near(spot)) {
+                spots.push(spot);
+            }
+        }
+        spots
+            .into_iter()
+            .filter(|s| s.path.is_file())
+            .map(|s| {
+                let line = match crate::buffer::find(&s.path, cx) {
+                    Some(buffer) => buffer.read(cx).document.text().line(s.line).to_string(),
+                    None => std::fs::read_to_string(&s.path)
+                        .ok()
+                        .and_then(|t| t.lines().nth(s.line).map(str::to_string))
+                        .unwrap_or_default(),
+                };
+                let file = s.path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                crate::goto::Place {
+                    name: line.trim().to_string(),
+                    detail: format!("{file}:{}", s.line + 1),
+                    path: s.path.clone(),
+                    at: Some((s.line, s.column)),
+                }
+            })
+            .collect()
+    }
+
+    /// The Go to popup open, for a test to set its scope, mask or replacement.
+    pub fn go_to_popup(&self) -> Option<Entity<crate::goto::GoToPopup>> {
+        self.go_to.clone()
     }
 
     /// What the open Go to popup lists, as a person reads it.
@@ -1430,10 +1481,21 @@ impl Render for MainWindow {
                     .on_action(
                         cx.listener(|w, _: &FindInFiles, window, cx| w.open_go_to(Kind::FindInFiles, window, cx)),
                     )
+                    .on_action(
+                        cx.listener(|w, _: &ReplaceInFiles, window, cx| w.open_go_to(Kind::ReplaceInFiles, window, cx)),
+                    )
+                    .on_action(
+                        cx.listener(|w, _: &SearchEverywhere, window, cx| w.open_go_to(Kind::Everything, window, cx)),
+                    )
             })
             .when(!self.recent.is_empty(), |d| {
                 d.on_action(cx.listener(|w, _: &RecentFiles, window, cx| {
                     w.open_go_to(crate::goto::Kind::RecentFiles, window, cx)
+                }))
+            })
+            .when(!self.back.is_empty() || !self.edits.is_empty(), |d| {
+                d.on_action(cx.listener(|w, _: &RecentLocations, window, cx| {
+                    w.open_go_to(crate::goto::Kind::RecentLocations, window, cx)
                 }))
             })
             .when(!self.back.is_empty(), |d| {

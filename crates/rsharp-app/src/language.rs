@@ -96,6 +96,52 @@ pub fn apply_workspace_edit(edit: &WorkspaceEdit, server: Option<&LanguageServer
     Ok(())
 }
 
+/// Replace in Files: every match of `query` in `files` (ASCII case ignored, as Find in Files matches) replaced, an
+/// open file's as one undo step left unsaved, a file not open written in its own encoding; the server told of the
+/// files written. Says how many matches were replaced, or which file could not be changed.
+pub fn replace_in_files(
+    files: &[PathBuf],
+    query: &str,
+    replacement: &str,
+    server: Option<&LanguageServer>,
+    cx: &mut App,
+) -> Result<usize, String> {
+    let mut replaced = 0;
+    let mut written = Vec::new();
+    for path in files {
+        let open = buffer::find(path, cx);
+        let shown = open.is_some();
+        let buffer = match open {
+            Some(buffer) => buffer,
+            None if crate::workspace::searched_text(path, &Default::default()).is_none() => continue,
+            None => buffer::open(path.clone(), cx).map_err(|e| format!("{} could not be read: {e}", name(path)))?,
+        };
+        let count = buffer.update(cx, |b, cx| {
+            let text = b.document.text().to_string();
+            let edits: Vec<Edit> = crate::workspace::matches(&text, query)
+                .into_iter()
+                .map(|range| Edit { range, text: replacement.to_string() })
+                .collect();
+            let count = edits.len();
+            if count > 0 {
+                b.apply_edits(edits, cx);
+                if !shown {
+                    b.save(cx).map_err(|e| format!("{} could not be written: {e}", name(path)))?;
+                }
+            }
+            Ok::<usize, String>(count)
+        })?;
+        if count > 0 && !shown {
+            written.push(json!({ "uri": rsharp_core::paths::to_uri(path), "type": 2 }));
+        }
+        replaced += count;
+    }
+    if let Some(server) = server.filter(|_| !written.is_empty()) {
+        server.notify("workspace/didChangeWatchedFiles", json!({ "changes": written }));
+    }
+    Ok(replaced)
+}
+
 /// Renames files, as a type's rename does: an open one keeps its tab and its unsaved text under its new name, one not
 /// open is renamed on disk, and the server is told of both. Says which could not be, and stops there.
 pub fn move_files(moves: &[(PathBuf, PathBuf)], server: Option<&LanguageServer>, cx: &mut App) -> Result<(), String> {

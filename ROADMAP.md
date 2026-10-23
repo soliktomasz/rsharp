@@ -94,10 +94,11 @@ highlights; context actions and quick fixes; Rename across files; Reformat Code;
 Cmd+click), Implementation and Type Declaration; Find Usages into a Find window; Back and Forward, Last Edit
 Location, Recent Files, Go to File, Type and Symbol, and Find in Files; inlay hints; Problems' Solution tab (with
 solution-wide analysis turned on) and Toolset tab, and project-load problems in the status bar; Base and Derived Symbols; a type's file renamed with it; and the MCP
-server (`rsharp --mcp`) with `workspace`, `diagnostics`, `find_symbol`, `outline`, `usages`, `rename` and `edit`.
+server (`rsharp --mcp`) with `workspace`, `diagnostics`, `find_symbol`, `outline`, `usages`, `rename` and `edit`;
+Search Everywhere (types, files, symbols), Recent Locations, and Find in Files' Solution and Directory scopes, file
+mask and Replace in Files.
 Left: Host and
-Roslyn.Extension (decision 1), the named refactorings and their dialogs, live templates, the framework switcher, Search Everywhere, Recent
-Locations, and Find in Files' scopes and Replace in Files.
+Roslyn.Extension (decision 1), the named refactorings and their dialogs, live templates, and the framework switcher.
 - **Roslyn in full:** Passenger's `Host` for design-time builds and `Roslyn.Extension` loaded with `--extension`, so
   projects load the way Passenger loads them.
 - Semantic tokens over the syntax colours (this closes the shortcut in `rsharp-languages`), refreshed for the
