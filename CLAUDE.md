@@ -48,6 +48,9 @@ terminal and takes focus for a moment.
   paths, `file://` URIs), `programs` (finds `dotnet` as a login shell would), `files::write` (every save:
   temporary file and rename, a read-only file refused), `encodings` (a file's bytes as its text: BOM, else UTF-8,
   else its .editorconfig's 8-bit charset, else windows-1252; a character the encoding cannot hold refused at save),
+  `solution` (a .sln or .slnx as its file says: folders, items, projects), `project` (the Host's `EvaluatedProject`, its
+  `Stamp`s as the Host takes them, `ProjectFiles` placing its files as Rider's Solution view does, `Evaluations` the
+  folder's `projectModels.json`), `nesting` (Rider's file nesting rules and DependentUpon, one level deep),
   `editorconfig` (the .editorconfig files over a file, its own parser and globs), `history` (Local History: each version
   of a file under `localHistory/`, content once by hash in `blobs/`, a JSON line per version in `changes.log`), `state` (the one `StateStore`: `RSHARP_STATE` or the local app data; app documents
   at its root, each folder's under `workspaces/<name>-<hash>/`; writes debounced on its own thread, merged over
@@ -71,7 +74,8 @@ terminal and takes focus for a moment.
   which runs Roslyn with `--clientProcessId`, so it ends with the IDE even after a crash. Its `build.rs` publishes
   Passenger's sidecars from `vendor/passenger` (a pinned submodule) into `target/<profile>/sidecars`: Roslyn then runs
   as Passenger runs it, the server version Passenger pins with its extension, the projects named in
-  `passenger/loadProjects` and each one's design-time build asked of Passenger's Host (`host.rs`, JSON lines), a
+  `passenger/loadProjects` and each one's design-time build asked of Passenger's Host (`host.rs`, JSON lines; `SharedHost` the folder's one Host, which the Solution view's
+  `evaluate` shares), a
   build's problem passed on as the project's error. Without dotnet or the submodule at build time it warns and runs
   the person's `roslyn-language-server` tool, which opens the solution (`solution/open`) or finds the projects.
 - `crates/rsharp-mcp`: no UI. RSharp as an MCP server (`rsharp --mcp [FOLDER]`, JSON-RPC a line at a time on
@@ -95,7 +99,8 @@ terminal and takes focus for a moment.
   `find_action.rs`; `field.rs` the single-line text field, its editing `rsharp-text`'s commands under the
   editor's own actions; `fuzzy.rs` how a query matches a name. `settings.rs` is `AppSettings` (`settings.json`),
   a gpui global that editors observe; `settings_dialog.rs` Rider's searchable Settings window (a new setting is
-  a field, an `Opt` on a page, and what follows it). `find_bar.rs` is find and replace over the editor, one
+  a field, an `Opt` on a page, and what follows it). `solution_view.rs` is the Solution view's tree for a folder with a solution (only open nodes walked, each kept
+  open by its key); a folder without one shows its files. `find_bar.rs` is find and replace over the editor, one
   per window, following the active tab. `buffer.rs` is an open file's text, undo, tree, problems and server, shared by
   every editor of it, and how it is stored (encoding, line separator, indent from .editorconfig, the file's own lines
   or C#'s, read-only, the .editorconfig's save-time rules); `editor_area.rs` the groups of tabs, split right and down, pinned tabs and the tabs closed;

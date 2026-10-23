@@ -134,6 +134,13 @@ Roslyn window tests print when they fail; Passenger's Host (decision 1) loading 
 round it. Since the Host and the extension load the projects, the stall has not been seen; watch for it.
 
 ### Phase 4: Solution and projects (M)
+Built: the Solution view's first piece, seeing the solution: its folders, the files they list and its projects
+(`rsharp-core`'s `solution`, a .sln and a .slnx); each project's Dependencies, by framework when it has several, and
+its files as Passenger's Host evaluates them (`project`'s `ProjectFiles`, links and removes kept), nested by Rider's
+rules (`nesting`); the folder's last evaluations shown first (`projectModels.json`), each project evaluated again once
+its inputs change, the active file's first, and on a project file saved in the IDE. Next: changing it (Add, Add
+Reference, Rename, Delete, Cut, Copy, Paste, drags, the folder watcher), per
+`docs/superpowers/specs/2026-10-23-solution-view-design.md`.
 - **The Solution view as Rider's:** the solution's projects, Dependencies, solution folders, file nesting.
   Cut, copy, paste and drag; every Add kind; Add Reference.
 - **Edits that keep every other byte:** `SolutionEdits` (.sln line by line, .slnx with its whitespace kept) and
