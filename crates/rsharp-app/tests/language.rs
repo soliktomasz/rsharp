@@ -61,9 +61,21 @@ fn declaration_completion_rename_and_usages_work_against_roslyn(cx: &mut TestApp
 
     let declaration = if cfg!(target_os = "macos") { "cmd-b" } else { "f12" };
     cx.simulate_keystrokes(declaration);
-    wait(cx, "Go to Declaration opening Greeter.cs", |cx| {
+    // Roslyn may say it has loaded before the open file has moved into the project; until then it finds no
+    // declaration, so the key is pressed again while it says so.
+    let opened = |cx: &mut VisualTestContext| {
+        if main.read_with(cx, |m, _| m.said() == Some("Cannot find declaration to go to")) {
+            std::thread::sleep(Duration::from_millis(500));
+            cx.simulate_keystrokes(declaration);
+        }
         main.read_with(cx, |m, cx| m.active_tab_name(cx).as_deref() == Some("Greeter.cs"))
-    });
+    };
+    if !wait_for(cx, opened) {
+        panic!(
+            "Go to Declaration did not open Greeter.cs; the status bar says {:?}",
+            main.read_with(cx, |m, _| m.said().map(str::to_string))
+        );
+    }
     let caret = main.read_with(cx, |m, cx| m.editor().unwrap().read(cx).caret());
     assert_eq!((caret.line, caret.column), (2, 13), "Go to Declaration did not land on the class's name");
 
@@ -102,4 +114,20 @@ fn declaration_completion_rename_and_usages_work_against_roslyn(cx: &mut TestApp
         Some(vec!["Program.cs:7".to_string()]),
         "Find Usages listed the wrong places"
     );
+
+    // Go to Type finds the class by its letters; Go to Symbol finds the renamed method.
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-o" } else { "ctrl-t" });
+    cx.simulate_input("Gree");
+    let listed = |cx: &mut VisualTestContext| main.read_with(cx, |m, cx| m.go_to_listed(cx)).unwrap_or_default();
+    wait(cx, "Go to Type finding Greeter", |cx| {
+        cx.executor().advance_clock(Duration::from_millis(200));
+        listed(cx).first().is_some_and(|l| l.starts_with("Greeter "))
+    });
+    cx.simulate_keystrokes("escape");
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-alt-o" } else { "ctrl-shift-alt-t" });
+    cx.simulate_input("Welcome");
+    wait(cx, "Go to Symbol finding the method", |cx| {
+        cx.executor().advance_clock(Duration::from_millis(200));
+        listed(cx).iter().any(|l| l.starts_with("Welcome"))
+    });
 }

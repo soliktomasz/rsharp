@@ -16,6 +16,7 @@ use crate::editor::{
 };
 use crate::find_bar::{Find, FindNext, FindPrevious, Replace};
 use crate::keymap::{OpenSettings, Quit};
+use crate::window::{Back, FindInFiles, Forward, GoToFile, GoToSymbol, GoToType, LastEditLocation, RecentFiles};
 use crate::window::{
     CloseAllButPinned, CloseAllTabs, CloseOtherTabs, CloseTabsToLeft, CloseTabsToRight, FileEncoding, LineSeparators,
     OpenTabInNewWindow, PinTab, ReopenClosedTab, ShowHistory, SplitDown, SplitRight, Unsplit, UnsplitAll,
@@ -85,6 +86,14 @@ pub static ALL: &[IdeAction] = &[
     ide!("Add Carets to Ends of Selected Lines", "Edit", ["caret per line", "multiple carets"], CaretPerLine),
     ide!("Column Selection Mode", "Edit", ["block selection", "rectangular selection"], ToggleColumnMode),
     ide!("Move Caret to Matching Brace", "Navigate", ["brace", "bracket"], MatchBrace),
+    ide!("Back", "Navigate", ["navigate back", "previous place"], Back),
+    ide!("Forward", "Navigate", ["navigate forward", "next place"], Forward),
+    ide!("Last Edit Location", "Navigate", ["last change", "jump to last change"], LastEditLocation),
+    ide!("Recent Files", "View", ["recently opened", "switcher"], RecentFiles),
+    ide!("File…", "Navigate", ["go to file", "open file", "find file"], GoToFile),
+    ide!("Class…", "Navigate", ["go to type", "go to class", "find type"], GoToType),
+    ide!("Symbol…", "Navigate", ["go to symbol", "go to member", "find symbol"], GoToSymbol),
+    ide!("Find in Files…", "Edit", ["search in files", "find in path", "grep"], FindInFiles),
     ide!("Declaration or Usages", "Navigate", ["go to declaration", "go to definition"], GoToDeclaration),
     ide!("Implementation(s)", "Navigate", ["go to implementation", "derived symbols"], GoToImplementation),
     ide!("Type Declaration", "Navigate", ["go to type declaration", "go to type definition"], GoToTypeDeclaration),

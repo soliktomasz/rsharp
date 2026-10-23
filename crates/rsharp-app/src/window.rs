@@ -54,7 +54,15 @@ actions!(
         ExplorerDown,
         ExplorerExpand,
         ExplorerCollapse,
-        ExplorerOpen
+        ExplorerOpen,
+        Back,
+        Forward,
+        LastEditLocation,
+        RecentFiles,
+        GoToFile,
+        GoToType,
+        GoToSymbol,
+        FindInFiles
     ]
 );
 
@@ -72,6 +80,26 @@ enum ServerState {
     Ready,
     Failed(String),
 }
+
+/// A place the caret was: its file, line and UTF-16 column, from 0.
+// shortcut: a place keeps its line and column, so an edit above it since moves it off its code; carry it through
+// the buffer's changes, as Passenger's NavigationHistory does, once that is missed.
+#[derive(Clone, PartialEq, Debug)]
+struct Spot {
+    path: PathBuf,
+    line: usize,
+    column: usize,
+}
+
+impl Spot {
+    /// Two places in a file a few lines apart are one, as IntelliJ counts them.
+    fn near(&self, other: &Spot) -> bool {
+        self.path == other.path && self.line.abs_diff(other.line) < 5
+    }
+}
+
+/// IntelliJ's own limit on places kept each way (editor.navigation.history.stack.size).
+const HISTORY: usize = 50;
 
 /// A place in the Find window: its file, line and column (UTF-16, from 0), and its line's text.
 struct Found {
@@ -120,6 +148,16 @@ pub struct MainWindow {
     projects_loaded: bool,
     said: Option<SharedString>,
     find_action: Option<Entity<FindActionPopup>>,
+    go_to: Option<Entity<crate::goto::GoToPopup>>,
+    /// Back and Forward's places, the latest last.
+    back: Vec<Spot>,
+    forward: Vec<Spot>,
+    /// The places edited, the latest last, and where Last Edit Location stands among them while pressed again.
+    edits: Vec<Spot>,
+    edit_step: Option<usize>,
+    /// The files shown, the latest first, for Recent Files.
+    // shortcut: not kept with the folder; keep it in FolderState once a restart's empty list is missed.
+    recent: Vec<PathBuf>,
     /// The find bar over the editor while open, on the active tab's file.
     find_bar: Option<Entity<FindBar>>,
     /// The main menu's dropdown while open (Windows and Linux, which have no menu bar): each action's
@@ -156,6 +194,12 @@ impl MainWindow {
             projects_loaded: false,
             said: None,
             find_action: None,
+            go_to: None,
+            back: Vec::new(),
+            forward: Vec::new(),
+            edits: Vec::new(),
+            edit_step: None,
+            recent: Vec::new(),
             find_bar: None,
             main_menu: None,
             _server_task: None,
@@ -231,6 +275,10 @@ impl MainWindow {
     fn show_tab(&mut self, group: usize, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.area.current = group;
         self.area.groups[group].active = Some(index);
+        let path = self.area.groups[group].tabs[index].editor.read(cx).path.clone();
+        self.recent.retain(|p| *p != path);
+        self.recent.insert(0, path);
+        self.recent.truncate(HISTORY);
         window.focus(&self.area.groups[group].tabs[index].editor.focus_handle(cx));
         self.follow_find_bar(cx);
         self.save_state(cx);
@@ -445,6 +493,117 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         let path = rsharp_core::paths::canonical(path);
+        // Leaving a place for another file, or for another part of this one, is a place Back goes to.
+        if let Some(here) = self.here(cx) {
+            let there = Spot { path: path.clone(), line: caret.map_or(usize::MAX, |c| c.0), column: 0 };
+            if !here.near(&there) {
+                self.back.push(here);
+                if self.back.len() > HISTORY {
+                    self.back.remove(0);
+                }
+                self.forward.clear();
+            }
+        }
+        self.show_file(&path, caret, window, cx);
+    }
+
+    /// Where the caret is in the editor the keys go to.
+    fn here(&self, cx: &App) -> Option<Spot> {
+        let editor = self.active_editor()?.read(cx);
+        let caret = editor.caret();
+        Some(Spot { path: editor.path.clone(), line: caret.line, column: caret.utf16_column })
+    }
+
+    /// Back (or Forward): the place left last, the place here kept the other way.
+    fn go_back(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let here = self.here(cx);
+        let (from, to) =
+            if forward { (&mut self.forward, &mut self.back) } else { (&mut self.back, &mut self.forward) };
+        let Some(spot) = from.pop() else { return };
+        to.extend(here);
+        if spot.path.is_file() {
+            self.show_file(&spot.path, Some((spot.line, spot.column)), window, cx);
+        }
+    }
+
+    /// Last Edit Location: the latest place edited away from the caret, then each before it as it is pressed again.
+    fn last_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let here = self.here(cx);
+        let from = self.edit_step.unwrap_or(self.edits.len());
+        let Some(at) = (0..from).rev().find(|&i| here.as_ref().is_none_or(|h| !self.edits[i].near(h))) else { return };
+        self.edit_step = Some(at);
+        let spot = self.edits[at].clone();
+        if spot.path.is_file() {
+            self.open_file(&spot.path, Some((spot.line, spot.column)), window, cx);
+        }
+    }
+
+    /// An edit made in `editor`: its place kept for Last Edit Location, one near the last taking its place.
+    fn edited_at(&mut self, editor: &Entity<CodeEditor>, cx: &App) {
+        let editor = editor.read(cx);
+        let caret = editor.caret();
+        let spot = Spot { path: editor.path.clone(), line: caret.line, column: caret.utf16_column };
+        if self.edits.last().is_some_and(|last| last.near(&spot)) {
+            self.edits.pop();
+        }
+        self.edits.push(spot);
+        if self.edits.len() > HISTORY {
+            self.edits.remove(0);
+        }
+        self.edit_step = None;
+    }
+
+    /// Opens a Go to popup over the window: the files it looks among, the open files' text and the server given it.
+    fn open_go_to(&mut self, kind: crate::goto::Kind, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::goto::{Ended, GoToPopup, Kind};
+        let Some(folder) = self.folder().map(Path::to_path_buf) else { return };
+        let files = match kind {
+            Kind::RecentFiles => {
+                let here = self.active_editor().map(|e| e.read(cx).path.clone());
+                self.recent.iter().filter(|p| Some(*p) != here.as_ref()).cloned().collect()
+            }
+            _ => Vec::new(),
+        };
+        let open = match kind {
+            Kind::FindInFiles => self
+                .area
+                .editors()
+                .map(|e| {
+                    let buffer = e.read(cx).buffer.read(cx);
+                    (buffer.path.clone(), buffer.document.text().to_string())
+                })
+                .collect(),
+            _ => Default::default(),
+        };
+        let server = self.server.clone();
+        let before = window.focused(cx);
+        let popup = cx.new(|cx| GoToPopup::new(kind, folder, files, open, server, cx));
+        cx.subscribe_in(&popup, window, move |w, _, ended: &Ended, window, cx| {
+            w.go_to = None;
+            match ended {
+                Ended::Chosen(place) => w.open_file(&place.path.clone(), place.at, window, cx),
+                Ended::Dismissed => {
+                    if let Some(before) = &before {
+                        window.focus(before);
+                    }
+                }
+            }
+            cx.notify();
+        })
+        .detach();
+        window.focus(&popup.focus_handle(cx));
+        self.go_to = Some(popup);
+        cx.notify();
+    }
+
+    /// What the open Go to popup lists, as a person reads it.
+    pub fn go_to_listed(&self, cx: &App) -> Option<Vec<String>> {
+        self.go_to.as_ref().map(|p| p.read(cx).listed())
+    }
+
+    /// Shows a file in the current group, opening it there if it is not, with the caret at a line and column.
+    fn show_file(&mut self, path: &Path, caret: Option<(usize, usize)>, window: &mut Window, cx: &mut Context<Self>) {
+        let path = path.to_path_buf();
         let group = self.area.current;
         let index = match self.area.tab_of(group, &path, cx) {
             Some(index) => index,
@@ -563,7 +722,16 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<CodeEditor> {
-        let editor = cx.new(|cx| CodeEditor::new(buffer, cx));
+        let editor = cx.new(|cx| CodeEditor::new(buffer.clone(), cx));
+        let edits_by = editor.clone();
+        cx.subscribe(&buffer, move |w, _, event: &crate::buffer::BufferEvent, cx| {
+            if let crate::buffer::BufferEvent::Edited { by, .. } = event
+                && *by == edits_by.entity_id()
+            {
+                w.edited_at(&edits_by, cx);
+            }
+        })
+        .detach();
         cx.subscribe_in(&editor, window, |_, editor, _: &editor::ReadOnlyEdit, window, cx| {
             editor::ask_clear_read_only(editor.clone(), editor::AfterClearing::Edit, window, cx)
         })
@@ -1075,6 +1243,29 @@ impl Render for MainWindow {
                 .on_action(cx.listener(move |_, _: &editor::Escape, _, cx| close.update(cx, |b, cx| b.close(cx))))
             })
             .map(|d| self.tab_actions(d, cx))
+            .when(self.workspace.is_some(), |d| {
+                use crate::goto::Kind;
+                d.on_action(cx.listener(|w, _: &GoToFile, window, cx| w.open_go_to(Kind::File, window, cx)))
+                    .on_action(cx.listener(|w, _: &GoToType, window, cx| w.open_go_to(Kind::Type, window, cx)))
+                    .on_action(cx.listener(|w, _: &GoToSymbol, window, cx| w.open_go_to(Kind::Symbol, window, cx)))
+                    .on_action(
+                        cx.listener(|w, _: &FindInFiles, window, cx| w.open_go_to(Kind::FindInFiles, window, cx)),
+                    )
+            })
+            .when(!self.recent.is_empty(), |d| {
+                d.on_action(cx.listener(|w, _: &RecentFiles, window, cx| {
+                    w.open_go_to(crate::goto::Kind::RecentFiles, window, cx)
+                }))
+            })
+            .when(!self.back.is_empty(), |d| {
+                d.on_action(cx.listener(|w, _: &Back, window, cx| w.go_back(false, window, cx)))
+            })
+            .when(!self.forward.is_empty(), |d| {
+                d.on_action(cx.listener(|w, _: &Forward, window, cx| w.go_back(true, window, cx)))
+            })
+            .when(!self.edits.is_empty(), |d| {
+                d.on_action(cx.listener(|w, _: &LastEditLocation, window, cx| w.last_edit(window, cx)))
+            })
             .when(self.area.active_editor().is_some(), |d| {
                 d.on_action(cx.listener(|w, _: &CloseTab, window, cx| {
                     if let Some(active) = w.area.group().active {
@@ -1103,6 +1294,17 @@ impl Render for MainWindow {
             .children(self.main_menu.as_ref().map(|(available, keys, _)| self.main_menu_dropdown(available, keys, cx)))
             .children(self.tab_menu.map(|at| self.tab_menu_view(at, window, cx)))
             .children(self.status_menu.map(|kind| self.status_menu_view(kind, cx)))
+            .children(self.go_to.clone().map(|popup| {
+                div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(
+                    div()
+                        .on_mouse_down_out(cx.listener(|w, _, window, cx| {
+                            if w.go_to.take().is_some() {
+                                w.focus_editor(window, cx);
+                            }
+                        }))
+                        .child(popup),
+                )
+            }))
             .children(self.find_action.clone().map(|popup| {
                 div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(
                     div()
