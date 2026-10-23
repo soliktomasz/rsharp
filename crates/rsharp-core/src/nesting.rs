@@ -69,7 +69,7 @@ fn rider_rules() -> Vec<(String, String)> {
     rules
 }
 
-/// The rules each combined with those that go on from its child or lead to its parent, as IntelliJ's
+/// The rules each combined, in lower case as names are matched with those that go on from its child or lead to its parent, as IntelliJ's
 /// FileNestingBuilder combines them: .cs to .resx and .resx to .designer.cs make .cs to .designer.cs.
 static COMBINED: LazyLock<Vec<(String, String)>> = LazyLock::new(|| {
     let mut all = rider_rules();
@@ -88,7 +88,7 @@ static COMBINED: LazyLock<Vec<(String, String)>> = LazyLock::new(|| {
         }
         at += 1;
     }
-    all
+    all.into_iter().map(|(p, c)| (p.to_lowercase(), c.to_lowercase())).collect()
 });
 
 /// ASP.NET Core's settings for an environment go under its settings for all, as Visual Studio nests them.

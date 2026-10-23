@@ -357,3 +357,46 @@ fn a_project_that_does_not_evaluate_says_so_and_the_rest_still_load(cx: &mut Tes
     open_row(&main, cx, "Bad (load failed)");
     assert!(rows(&main, cx).contains(&"    Thing.cs".to_string()), "a broken project would not show its folder");
 }
+
+#[gpui::test]
+fn the_selection_stays_on_its_row_as_an_evaluation_lands_above_it(cx: &mut TestAppContext) {
+    let run = Run::new("sv-selection", &files());
+    let (main, cx) = open(&run, cx, vec![]);
+    for row in ["src", "Web", "Api"] {
+        open_row(&main, cx, row);
+    }
+    let at = rows(&main, cx).iter().position(|r| r.trim_start() == "Program.cs").unwrap();
+    main.update(cx, |main, cx| main.select_row(at, cx));
+    let mut web = web(&run.folder);
+    web.items = ["A.cs", "B.cs", "C.cs"].iter().map(|f| item("Compile", &run.folder.join("Web").join(f))).collect();
+    main.update(cx, |main, cx| main.set_evaluated(web, cx));
+    assert_eq!(
+        main.read_with(cx, |main, _| main.selected_row()).as_deref().map(str::trim_start),
+        Some("Program.cs"),
+        "an evaluation landing above the selected row would move the selection to another file"
+    );
+}
+
+#[gpui::test]
+fn a_host_that_cannot_load_an_sdk_says_why_on_the_solution(cx: &mut TestAppContext) {
+    let run = Run::new(
+        "sv-no-sdk",
+        &[
+            ("global.json", "{ \"sdk\": { \"version\": \"1.0.100\", \"rollForward\": \"disable\" } }\n"),
+            (
+                "Shop.slnx",
+                "<Solution>\n  <Project Path=\"Api/Api.csproj\" />\n  <Project Path=\"Web/Web.csproj\" />\n</Solution>\n",
+            ),
+            ("Api/Api.csproj", EVALUATED),
+            ("Web/Web.csproj", EVALUATED),
+        ],
+    );
+    let Some((main, cx)) = evaluated(&run, cx) else { return };
+    assert_eq!(
+        rows(&main, cx)[0],
+        "Shop (projects not evaluated)",
+        "the Solution view would not say its projects never loaded"
+    );
+    let tip = main.read_with(cx, |main, _| main.solution_row_tip(0));
+    assert!(tip.as_deref().is_some_and(|t| t.contains("SDK")), "the reason would not be given: {tip:?}");
+}

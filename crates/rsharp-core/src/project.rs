@@ -80,14 +80,21 @@ pub struct ProjectFiles {
     root: PathBuf,
     files: HashMap<String, Vec<(String, PathBuf)>>,
     folders: HashMap<String, Vec<String>>,
+    /// Each file's DependentUpon, as a path, found by the file's.
+    dependents: HashMap<PathBuf, PathBuf>,
 }
 
 impl ProjectFiles {
     pub fn new(project: &EvaluatedProject) -> Self {
         let root = project.path.parent().map(Path::to_path_buf).unwrap_or_default();
-        let mut placed = Self { root, files: HashMap::new(), folders: HashMap::new() };
+        let mut placed = Self { root, files: HashMap::new(), folders: HashMap::new(), dependents: HashMap::new() };
         let mut seen = HashSet::new();
         for item in &project.items {
+            if let Some(parent) = &item.dependent_upon
+                && let Some(folder) = item.path.parent()
+            {
+                placed.dependents.entry(item.path.clone()).or_insert_with(|| folder.join(parent.replace('\\', "/")));
+            }
             let logical = placed.logical(item);
             if item.r#type == "Folder" {
                 placed.add_folder(&logical);
@@ -124,6 +131,11 @@ impl ProjectFiles {
             names.push(name.to_string());
             relative = parent.to_string();
         }
+    }
+
+    /// The file the project says `file` depends on.
+    pub fn dependent_upon(&self, file: &Path) -> Option<PathBuf> {
+        self.dependents.get(file).cloned()
     }
 
     /// A place in the project as a path on disk, whether or not a folder is there.

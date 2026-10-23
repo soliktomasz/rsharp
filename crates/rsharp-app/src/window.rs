@@ -628,13 +628,16 @@ impl MainWindow {
     }
 
     fn rebuild_rows(&mut self) {
+        // The selection follows its row, which an evaluation landing above it moves.
+        let selected = self.selected.and_then(|at| self.rows.get(at)).map(|r| r.key.clone());
         if let Some(tree) = &self.tree {
             self.rows = tree.rows().to_vec();
         } else {
             self.rebuild_folder_rows();
         }
-        if let Some(selected) = self.selected {
-            self.selected = Some(selected.min(self.rows.len().saturating_sub(1)));
+        let found = selected.and_then(|key| self.rows.iter().position(|r| r.key == key));
+        if let Some(at) = self.selected {
+            self.selected = Some(found.unwrap_or(at).min(self.rows.len().saturating_sub(1)));
         }
     }
 
@@ -646,13 +649,13 @@ impl MainWindow {
             kind: if is_folder { NodeKind::Folder } else { NodeKind::File },
             name,
             detail: None,
-            path: Some(path),
             depth,
             expandable: is_folder,
             expanded,
             dimmed: false,
             tip: None,
-            key: String::new(),
+            key: path.display().to_string(),
+            path: Some(path),
         };
         let mut rows = vec![row(root.clone(), workspace.name(), true, 0, self.expanded.contains(&root))];
         fn walk(
@@ -713,27 +716,42 @@ impl MainWindow {
                     })
                     .await;
                 let landed = this.update(cx, |w, cx| {
-                    let Some(tree) =
-                        w.tree.as_mut().filter(|_| w.workspace.as_ref().map(|ws| &ws.folder) == Some(&folder))
-                    else {
+                    if w.workspace.as_ref().map(|ws| &ws.folder) != Some(&folder) {
                         return false;
-                    };
+                    }
                     match evaluated {
-                        Some(Ok(project)) => {
-                            tree.set_evaluated(project);
-                            let kept = rsharp_core::project::Evaluations { projects: tree.all_evaluated() };
-                            store(cx).write_for(&folder, &kept);
+                        Some(Ok(project)) => w.set_evaluated(project, cx),
+                        Some(Err(failed)) => {
+                            // A Host that cannot start or answer fails the same for every project: the round ends
+                            // here, saying why, rather than starting it again for each.
+                            log::warn!("{}", failed.0);
+                            if let Some(tree) = &mut w.tree {
+                                tree.set_problem(Some(failed.0));
+                            }
                             w.rebuild_rows();
                             cx.notify();
+                            return false;
                         }
-                        Some(Err(failed)) => log::warn!("{}", failed.0),
                         None => {}
                     }
                     true
                 });
                 if !landed.unwrap_or(false) {
-                    return;
+                    break;
                 }
+            }
+            // Kept once a round, serialized off the UI thread.
+            let kept = this
+                .update(cx, |w, cx| {
+                    let tree =
+                        w.tree.as_ref().filter(|_| w.workspace.as_ref().map(|ws| &ws.folder) == Some(&folder))?;
+                    Some((store(cx), rsharp_core::project::Evaluations { projects: tree.all_evaluated() }))
+                })
+                .ok()
+                .flatten();
+            if let Some((store, kept)) = kept {
+                let folder = folder.clone();
+                cx.background_executor().spawn(async move { store.write_for(&folder, &kept) }).await;
             }
             let _ = this.update(cx, |w, cx| {
                 w.evaluating = false;
@@ -743,6 +761,30 @@ impl MainWindow {
                 cx.notify();
             });
         }));
+    }
+
+    /// A project's evaluation landing in the Solution view.
+    pub fn set_evaluated(&mut self, project: rsharp_core::project::EvaluatedProject, cx: &mut Context<Self>) {
+        let Some(tree) = &mut self.tree else { return };
+        tree.set_evaluated(project);
+        self.rebuild_rows();
+        cx.notify();
+    }
+
+    /// Selects a row of the Solution view, as a click does.
+    pub fn select_row(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.selected = Some(index.min(self.rows.len().saturating_sub(1)));
+        cx.notify();
+    }
+
+    /// What hovering a row of the Solution view says.
+    pub fn solution_row_tip(&self, index: usize) -> Option<String> {
+        self.rows.get(index)?.tip.clone()
+    }
+
+    /// The selected row of the Solution view, as `solution_rows` shows it.
+    pub fn selected_row(&self) -> Option<String> {
+        self.selected.and_then(|at| self.solution_rows().get(at).cloned())
     }
 
     /// Whether the Solution view is waiting on the Host for an evaluation.
