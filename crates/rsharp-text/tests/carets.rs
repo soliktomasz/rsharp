@@ -110,3 +110,25 @@ fn caret_per_line_puts_a_caret_at_the_end_of_each_line_selected() {
         "a selection ending at a line's start still put a caret on that line, or missed one it covers"
     );
 }
+
+#[test]
+fn the_primary_caret_stays_last_through_a_merge_and_an_edit() {
+    // The primary, last, comes first in the text; sorting must not take its place.
+    let carets = vec![Selection::caret(4), Selection::caret(4), Selection::caret(0)];
+    assert_eq!(merge_overlapping(carets), [Selection::caret(4), Selection::caret(0)], "a merge lost the primary");
+    let text = Rope::from_str("ab\ncd\n");
+    let plan = insert(&text, &[Selection::caret(3), Selection::caret(0)], "x");
+    assert_eq!(plan.selections.last(), Some(&Selection::caret(1)), "typing at several carets lost the primary");
+}
+
+#[test]
+fn the_word_at_the_caret_finds_whole_words_and_a_part_of_one_finds_every_copy() {
+    let text = Rope::from_str("count counter count");
+    let all = select_all_occurrences(&text, &[Selection::caret(1)]);
+    assert_eq!(all.len(), 2, "the word at the caret matched inside a longer word: {all:?}");
+    let word = select_next_occurrence(&text, &[Selection::caret(1)]);
+    let next = select_next_occurrence(&text, &word);
+    assert_eq!(next.last(), Some(&Selection { anchor: 14, head: 19 }), "Next stopped inside 'counter'");
+    let part = select_all_occurrences(&text, &[Selection { anchor: 0, head: 3 }]);
+    assert_eq!(part.len(), 3, "a selection of part of a word did not find every copy");
+}

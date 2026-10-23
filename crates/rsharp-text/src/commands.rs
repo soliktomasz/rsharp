@@ -96,10 +96,9 @@ pub fn delete(text: &Rope, selections: &[Selection]) -> EditPlan {
 
 /// Paste of as many lines as there are carets: one line to each caret, in the order they stand in the text.
 pub fn insert_each(selections: &[Selection], pieces: &[&str]) -> EditPlan {
-    let mut ordered = selections.to_vec();
-    ordered.sort_by_key(|s| s.start());
+    // The plan takes the carets in the text's order, so the lines are dealt out in it.
     let mut pieces = pieces.iter();
-    plan(&ordered, |s| Some(Edit { range: s.range(), text: pieces.next().map_or("", |p| p).to_string() }))
+    plan(selections, |s| Some(Edit { range: s.range(), text: pieces.next().map_or("", |p| p).to_string() }))
 }
 
 /// Enter: a new line at the line's indent, one deeper after an opening brace.
@@ -133,6 +132,8 @@ pub fn tab(text: &Rope, selections: &[Selection], unit: &Indent) -> EditPlan {
 fn plan(selections: &[Selection], mut edit: impl FnMut(&Selection) -> Option<Edit>) -> EditPlan {
     let mut ordered: Vec<&Selection> = selections.iter().collect();
     ordered.sort_by_key(|s| s.start());
+    let primary = selections.last();
+    let mut primary_caret = None;
     let mut edits: Vec<Edit> = Vec::new();
     let mut carets = Vec::with_capacity(ordered.len());
     let mut shift: isize = 0;
@@ -146,7 +147,11 @@ fn plan(selections: &[Selection], mut edit: impl FnMut(&Selection) -> Option<Edi
             }
             _ => carets.push(Selection::caret((selection.head as isize + shift) as usize)),
         }
+        if primary.is_some_and(|p| std::ptr::eq(p, selection)) {
+            primary_caret = carets.last().copied();
+        }
     }
     carets.dedup();
+    crate::primary_last(&mut carets, primary_caret);
     EditPlan { edits, selections: carets, kind: EditKind::Other }
 }

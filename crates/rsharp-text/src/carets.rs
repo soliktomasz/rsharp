@@ -24,6 +24,18 @@ pub fn word_at(text: &Rope, offset: usize) -> Selection {
     Selection { anchor: text.char_to_byte(start), head: text.char_to_byte(end) }
 }
 
+/// Whether a range is a whole identifier, as the word at a caret selects: its copies are then whole words only, as
+/// Rider's, while a selection of part of a word finds every copy.
+fn is_whole_word(text: &Rope, range: std::ops::Range<usize>) -> bool {
+    !range.is_empty() && word_at(text, range.start).range() == range
+}
+
+/// Whether a copy at `at` has no word character just before or after it.
+fn stands_alone(haystack: &str, at: usize, len: usize) -> bool {
+    !haystack[..at].chars().next_back().is_some_and(is_word)
+        && !haystack[at + len..].chars().next().is_some_and(is_word)
+}
+
 /// Select Next Occurrence: first the word under each empty caret, then the next copy of the primary selection
 /// after the last caret, wrapping, as the new primary.
 pub fn select_next_occurrence(text: &Rope, selections: &[Selection]) -> Vec<Selection> {
@@ -38,8 +50,11 @@ pub fn select_next_occurrence(text: &Rope, selections: &[Selection]) -> Vec<Sele
     // a file this large makes the press felt.
     let haystack = text.to_string();
     let needle = &haystack[primary.range()];
+    let whole = is_whole_word(text, primary.range());
     let from = selections.iter().map(Selection::end).max().unwrap_or(0);
-    let taken = |at: &usize| selections.iter().all(|s| s.start() != *at);
+    let taken = |at: &usize| {
+        selections.iter().all(|s| s.start() != *at) && (!whole || stands_alone(&haystack, *at, needle.len()))
+    };
     let found = haystack[from..]
         .match_indices(needle)
         .map(|(at, _)| from + at)
@@ -62,8 +77,10 @@ pub fn select_all_occurrences(text: &Rope, selections: &[Selection]) -> Vec<Sele
     }
     let haystack = text.to_string();
     let needle = &haystack[range.clone()];
+    let whole = is_whole_word(text, range.clone());
     let mut all: Vec<Selection> = haystack
         .match_indices(needle)
+        .filter(|(at, _)| !whole || stands_alone(&haystack, *at, needle.len()))
         .map(|(at, _)| Selection { anchor: at, head: at + needle.len() })
         .filter(|s| s.start() != range.start)
         .take(MAX_CARETS - 1)
@@ -112,11 +129,13 @@ pub fn column_selection(text: &Rope, from: (usize, usize), to: (usize, usize)) -
         .collect()
 }
 
-/// Carets after a move: those that came to touch or overlap are one, in the order of the text.
+/// Carets after a move: those that came to touch or overlap are one, in the order of the text, the one the
+/// primary went into last, where it stays the primary.
 pub fn merge_overlapping(mut selections: Vec<Selection>) -> Vec<Selection> {
     if selections.len() < 2 {
         return selections;
     }
+    let primary = *selections.last().expect("two carets at least");
     selections.sort_by_key(|s| (s.start(), s.end()));
     let mut merged: Vec<Selection> = Vec::with_capacity(selections.len());
     for s in selections {
@@ -135,6 +154,8 @@ pub fn merge_overlapping(mut selections: Vec<Selection>) -> Vec<Selection> {
         let forward = last.head >= last.anchor;
         *last = if forward { Selection { anchor: start, head: end } } else { Selection { anchor: end, head: start } };
     }
+    let holding = merged.iter().copied().find(|m| m.start() <= primary.start() && primary.end() <= m.end());
+    crate::primary_last(&mut merged, holding);
     merged
 }
 

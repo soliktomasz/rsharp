@@ -5,7 +5,12 @@
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// Held through each record and prune, so a prune rewriting the log never drops a line just added or a blob just
+/// written, and two records of one file never both find it new.
+static WRITING: Mutex<()> = Mutex::new(());
 
 /// How long a version is kept, as Rider's default.
 pub const KEPT: Duration = Duration::from_secs(5 * 24 * 60 * 60);
@@ -42,6 +47,7 @@ impl LocalHistory {
     /// Keeps `bytes` as the file's newest version unless they are what its newest is already. A first version is
     /// unlabelled; a later one takes `label` (an External change seen as the file opens, say).
     pub fn record(&self, path: &Path, bytes: &[u8], label: Option<&str>) -> std::io::Result<bool> {
+        let _writing = WRITING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let blob = format!("{:016x}-{:x}", crate::state::fnv(bytes), bytes.len());
         let previous = self.revisions(path);
         if previous.last().is_some_and(|r| r.blob == blob) {
@@ -79,6 +85,7 @@ impl LocalHistory {
     // shortcut: kept by the clock, not by Rider's days of activity; count those once someone away a week misses
     // their history.
     pub fn prune(&self) -> std::io::Result<()> {
+        let _writing = WRITING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let Ok(log) = std::fs::read_to_string(self.log()) else { return Ok(()) };
         let oldest = now().saturating_sub(KEPT.as_secs());
         let kept: Vec<Revision> =

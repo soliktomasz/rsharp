@@ -337,6 +337,8 @@ impl CodeEditor {
 
     fn undo(&mut self, redo: bool, cx: &mut Context<Self>) {
         if self.buffer.read(cx).read_only {
+            // Undo is not kept to make once cleared, and an edit refused before it must not be made in its place.
+            self.pending = None;
             cx.emit(ReadOnlyEdit);
             return;
         }
@@ -404,10 +406,11 @@ impl CodeEditor {
             index += 1;
             targets[index - 1]
         });
-        // Carets that met are one now, and their goals no longer line up with them.
-        if self.carets.as_slice().len() == goals.len() {
-            self.goal_columns = Some(goals);
-        }
+        // The move puts the carets in the text's order: each keeps the goal of the caret that went where it is. Carets
+        // that met are one now, and their goals no longer line up with them.
+        let kept: Option<Vec<usize>> =
+            self.carets.iter().map(|c| targets.iter().position(|t| *t == c.head).map(|i| goals[i])).collect();
+        self.goal_columns = kept.filter(|g| g.len() == goals.len());
     }
 
     /// Makes the rows again if the text, the folds or the wrap width changed since they were made.

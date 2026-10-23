@@ -49,6 +49,14 @@ impl Selection {
     }
 }
 
+/// Puts `primary` back at the end of carets put in the text's order, where the editor keeps the primary.
+fn primary_last(carets: &mut Vec<Selection>, primary: Option<Selection>) {
+    if let Some(at) = primary.and_then(|p| carets.iter().position(|c| *c == p)) {
+        let primary = carets.remove(at);
+        carets.push(primary);
+    }
+}
+
 /// One replacement, against the text before the command.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Edit {

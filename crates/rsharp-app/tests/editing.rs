@@ -96,3 +96,28 @@ fn shift_and_the_arrows_select_a_column_in_column_selection_mode(cx: &mut TestAp
         "Shift and the arrows in Column Selection Mode did not select the same columns on every line"
     );
 }
+
+#[gpui::test]
+fn each_caret_of_a_column_dragged_upward_keeps_its_own_column_going_down(cx: &mut TestAppContext) {
+    let run = Run::new("goals", &[("Program.cs", "abcdefgh\nab\nabcd\nabcdefgh\nabcdefgh\n")]);
+    let (main, cx) = run.window(cx);
+    main.update_in(cx, |main, window, cx| {
+        main.open_workspace(&run.folder, window, cx);
+        main.open_file(&run.folder.join("Program.cs"), Some((2, 4)), window, cx);
+    });
+    cx.run_until_parked();
+
+    // Upward, the carets come bottom first: the line under the caret last, as the primary.
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-shift-8" } else { "alt-shift-insert" });
+    cx.simulate_keystrokes("shift-up shift-up");
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-shift-8" } else { "alt-shift-insert" });
+    cx.simulate_keystrokes("down down");
+    cx.simulate_input("X");
+    cx.simulate_keystrokes("secondary-s");
+    cx.run_until_parked();
+    assert_eq!(
+        std::fs::read_to_string(run.folder.join("Program.cs")).unwrap(),
+        "abcdefgh\nab\nabcdX\nabXcdefgh\nabcdXefgh\n",
+        "a caret took another caret's column on its way down"
+    );
+}

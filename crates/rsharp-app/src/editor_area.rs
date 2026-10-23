@@ -157,8 +157,8 @@ impl EditorArea {
         while self.groups.len() > 1 {
             let from = self.current;
             let into = if from == 0 { 1 } else { from - 1 };
-            let tabs = std::mem::take(&mut self.groups[from].tabs);
             let shown = self.groups[from].active_editor().map(|e| e.read(cx).path.clone());
+            let tabs = std::mem::take(&mut self.groups[from].tabs);
             for tab in tabs {
                 let path = tab.editor.read(cx).path.clone();
                 if self.tab_of(into, &path, cx).is_some() {
