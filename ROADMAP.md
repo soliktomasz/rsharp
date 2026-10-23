@@ -87,7 +87,15 @@ Passenger: `Passenger.Editor`, `Passenger.Text`, `Editors/`, `History/`, `Worksp
 Done when: Passenger's editor tests, translated, pass, and the per-key allocation budget holds against a file
 10 times larger.
 
-### Phase 3: C# language service (L)
+### Phase 3: C# language service (L) — under way
+Built: the protocol's answers made plain (`rsharp-lsp`'s `protocol`, checked against the real server); semantic
+tokens for the lines on screen; completion, parameter info, Quick Documentation and the hover card, usage
+highlights; context actions and quick fixes; Rename across files; Reformat Code; Go to Declaration (and
+Cmd+click), Implementation and Type Declaration; Find Usages into a Find window. Left: Host and Roslyn.Extension
+(decision 1), inlay hints, the Problems window's Solution and Toolset tabs, a type's file renamed with it, Base
+and Derived, the named refactorings and their dialogs, live templates, the framework switcher, navigation (Go to
+File, Type, Symbol, Search Everywhere, Recent Files, Back and Forward, Last Edit Location, Find in Files), and the
+MCP server.
 - **Roslyn in full:** Passenger's `Host` for design-time builds and `Roslyn.Extension` loaded with `--extension`, so
   projects load the way Passenger loads them.
 - Semantic tokens over the syntax colours (this closes the shortcut in `rsharp-languages`), refreshed for the
