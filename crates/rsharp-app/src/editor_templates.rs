@@ -8,6 +8,8 @@ use super::*;
 /// indent; and each variable's default, in the order Tab visits them.
 pub struct Template {
     pub shortcut: &'static str,
+    /// What it is, as completion lists it beside its shortcut.
+    pub name: &'static str,
     pub text: &'static str,
     pub defaults: &'static [(&'static str, &'static str)],
 }
@@ -15,60 +17,128 @@ pub struct Template {
 pub const TEMPLATES: &[Template] = &[
     Template {
         shortcut: "for",
+        name: "Simple \"for\" loop",
         text: "for (int $INDEX$ = 0; $INDEX$ < $UPPER$; $INDEX$++)\n{\n\t$END$\n}",
         defaults: &[("INDEX", "i"), ("UPPER", "length")],
     },
     Template {
         shortcut: "forr",
+        name: "Reverse 'for' loop",
         text: "for (int $INDEX$ = $MAX$ - 1; $INDEX$ >= 0; $INDEX$--)\n{\n\t$END$\n}",
         defaults: &[("INDEX", "i"), ("MAX", "length")],
     },
     Template {
         shortcut: "foreach",
+        name: "foreach block",
         text: "foreach (var $VARIABLE$ in $COLLECTION$)\n{\n\t$END$\n}",
         defaults: &[("VARIABLE", "item"), ("COLLECTION", "collection")],
     },
-    Template { shortcut: "if", text: "if ($CONDITION$)\n{\n\t$END$\n}", defaults: &[("CONDITION", "true")] },
-    Template { shortcut: "else", text: "else\n{\n\t$END$\n}", defaults: &[] },
-    Template { shortcut: "while", text: "while ($CONDITION$)\n{\n\t$END$\n}", defaults: &[("CONDITION", "true")] },
-    Template { shortcut: "do", text: "do\n{\n\t$END$\n} while ($CONDITION$);", defaults: &[("CONDITION", "true")] },
+    Template {
+        shortcut: "if",
+        name: "if statement",
+        text: "if ($CONDITION$)\n{\n\t$END$\n}",
+        defaults: &[("CONDITION", "true")],
+    },
+    Template { shortcut: "else", name: "else statement", text: "else\n{\n\t$END$\n}", defaults: &[] },
+    Template {
+        shortcut: "while",
+        name: "while loop",
+        text: "while ($CONDITION$)\n{\n\t$END$\n}",
+        defaults: &[("CONDITION", "true")],
+    },
+    Template {
+        shortcut: "do",
+        name: "do...while loop",
+        text: "do\n{\n\t$END$\n} while ($CONDITION$);",
+        defaults: &[("CONDITION", "true")],
+    },
     Template {
         shortcut: "switch",
+        name: "switch statement",
         text: "switch ($EXPRESSION$)\n{\n\t$END$\n}",
         defaults: &[("EXPRESSION", "expression")],
     },
     Template {
         shortcut: "try",
+        name: "try catch",
         text: "try\n{\n\t$END$\n}\ncatch ($EXCEPTION$ $EX_NAME$)\n{\n\tConsole.WriteLine($EX_NAME$);\n\tthrow;\n}",
         defaults: &[("EXCEPTION", "Exception"), ("EX_NAME", "e")],
     },
-    Template { shortcut: "tryf", text: "try\n{\n\t$END$\n}\nfinally\n{\n}", defaults: &[] },
-    Template { shortcut: "using", text: "using ($RESOURCE$)\n{\n\t$END$\n}", defaults: &[("RESOURCE", "resource")] },
-    Template { shortcut: "lock", text: "lock ($EXPRESSION$)\n{\n\t$END$\n}", defaults: &[("EXPRESSION", "this")] },
-    Template { shortcut: "cw", text: "Console.WriteLine($END$);", defaults: &[] },
+    Template { shortcut: "tryf", name: "try finally", text: "try\n{\n\t$END$\n}\nfinally\n{\n}", defaults: &[] },
+    Template {
+        shortcut: "using",
+        name: "using statement",
+        text: "using ($RESOURCE$)\n{\n\t$END$\n}",
+        defaults: &[("RESOURCE", "resource")],
+    },
+    Template {
+        shortcut: "lock",
+        name: "lock statement",
+        text: "lock ($EXPRESSION$)\n{\n\t$END$\n}",
+        defaults: &[("EXPRESSION", "this")],
+    },
+    Template { shortcut: "cw", name: "Console.WriteLine", text: "Console.WriteLine($END$);", defaults: &[] },
     Template {
         shortcut: "thr",
+        name: "throw new",
         text: "throw new $EXCEPTION$($END$);",
         defaults: &[("EXCEPTION", "InvalidOperationException")],
     },
     Template {
         shortcut: "prop",
+        name: "Property",
         text: "public $TYPE$ $NAME$ { get; set; }$END$",
         defaults: &[("TYPE", "int"), ("NAME", "Name")],
     },
     Template {
         shortcut: "propg",
+        name: "Property with a 'get' accessor",
         text: "public $TYPE$ $NAME$ { get; }$END$",
         defaults: &[("TYPE", "int"), ("NAME", "Name")],
     },
-    Template { shortcut: "ctor", text: "public $TYPE_NAME$($END$)\n{\n}", defaults: &[] },
-    Template { shortcut: "svm", text: "static void Main(string[] args)\n{\n\t$END$\n}", defaults: &[] },
-    Template { shortcut: "sim", text: "static int Main(string[] args)\n{\n\t$END$\n\treturn 0;\n}", defaults: &[] },
-    Template { shortcut: "class", text: "public class $NAME$\n{\n\t$END$\n}", defaults: &[("NAME", "Name")] },
-    Template { shortcut: "record", text: "public record $NAME$($END$);", defaults: &[("NAME", "Name")] },
-    Template { shortcut: "interface", text: "public interface $NAME$\n{\n\t$END$\n}", defaults: &[("NAME", "IName")] },
-    Template { shortcut: "struct", text: "public struct $NAME$\n{\n\t$END$\n}", defaults: &[("NAME", "Name")] },
-    Template { shortcut: "enum", text: "public enum $NAME$\n{\n\t$END$\n}", defaults: &[("NAME", "Name")] },
+    Template { shortcut: "ctor", name: "Constructor", text: "public $TYPE_NAME$($END$)\n{\n}", defaults: &[] },
+    Template {
+        shortcut: "svm",
+        name: "'void Main' method",
+        text: "static void Main(string[] args)\n{\n\t$END$\n}",
+        defaults: &[],
+    },
+    Template {
+        shortcut: "sim",
+        name: "'int Main' method",
+        text: "static int Main(string[] args)\n{\n\t$END$\n\treturn 0;\n}",
+        defaults: &[],
+    },
+    Template {
+        shortcut: "class",
+        name: "Class",
+        text: "public class $NAME$\n{\n\t$END$\n}",
+        defaults: &[("NAME", "Name")],
+    },
+    Template {
+        shortcut: "record",
+        name: "Record",
+        text: "public record $NAME$($END$);",
+        defaults: &[("NAME", "Name")],
+    },
+    Template {
+        shortcut: "interface",
+        name: "Interface",
+        text: "public interface $NAME$\n{\n\t$END$\n}",
+        defaults: &[("NAME", "IName")],
+    },
+    Template {
+        shortcut: "struct",
+        name: "Struct",
+        text: "public struct $NAME$\n{\n\t$END$\n}",
+        defaults: &[("NAME", "Name")],
+    },
+    Template {
+        shortcut: "enum",
+        name: "Enum",
+        text: "public enum $NAME$\n{\n\t$END$\n}",
+        defaults: &[("NAME", "Name")],
+    },
 ];
 
 /// A template being filled in: each variable still to visit, every place it is used, and where it ends.

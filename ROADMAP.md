@@ -87,7 +87,7 @@ Passenger: `Passenger.Editor`, `Passenger.Text`, `Editors/`, `History/`, `Worksp
 Done when: Passenger's editor tests, translated, pass, and the per-key allocation budget holds against a file
 10 times larger.
 
-### Phase 3: C# language service (L) — under way
+### Phase 3: C# language service (L) — in place
 Built: the protocol's answers made plain (`rsharp-lsp`'s `protocol`, checked against the real server); semantic
 tokens for the lines on screen; completion, parameter info, Quick Documentation and the hover card, usage
 highlights; context actions and quick fixes; Rename across files; Reformat Code; Go to Declaration (and
@@ -101,8 +101,9 @@ Method and Inline (Roslyn's code actions by their titles), Safe Delete at a decl
 Current Statement; live templates (Rider's built-in ones on Tab, a variable's every use typed at once).
 Roslyn runs as Passenger runs it: the server version
 Passenger pins, its Roslyn.Extension, and each project's design-time build from its Host. Change Signature, Extract Interface, Move, Pull Members Up and Push Members Down
-through dialogs the extension answers. Left: Safe Delete's wider search through the extension; templates in completion and a person's own; and the framework
-switcher.
+through dialogs the extension answers; Safe Delete from any use, a declaration's whole extent from the syntax, Delete
+Anyway asked over its usages; the live templates in completion; and the target framework switcher in the status bar.
+Not taken: a person's own live templates (Settings' Live Templates page); Undo of a type rename's file move.
 - **Roslyn in full:** Passenger's `Host` for design-time builds and `Roslyn.Extension` loaded with `--extension`, so
   projects load the way Passenger loads them.
 - Semantic tokens over the syntax colours (this closes the shortcut in `rsharp-languages`), refreshed for the

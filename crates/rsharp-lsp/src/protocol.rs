@@ -239,9 +239,49 @@ pub struct Symbol {
     pub location: Location,
 }
 
+/// The project context chosen for each document, by its URI: the target framework of a multi-targeted project the
+/// editor's switcher chose, which every request about the document names.
+// shortcut: one map for the process, as a document's URI is one file whatever window shows it; per server if two
+// servers ever hold one file.
+static CONTEXTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Value>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// A request's document: its URI, and the project context chosen for it, if any.
+pub fn document(uri: &str) -> Value {
+    match CONTEXTS.lock().unwrap().get(uri) {
+        Some(context) => json!({ "uri": uri, "_vs_projectContext": context }),
+        None => json!({ "uri": uri }),
+    }
+}
+
+/// The project context requests about a document name from now, or none (the server's default).
+pub fn set_project_context(uri: &str, context: Option<Value>) {
+    let mut contexts = CONTEXTS.lock().unwrap();
+    match context {
+        Some(context) => drop(contexts.insert(uri.to_string(), context)),
+        None => drop(contexts.remove(uri)),
+    }
+}
+
+/// What asks for a document's project contexts (textDocument/_vs_getProjectContexts).
+pub fn contexts_request(uri: &str, version: u64) -> Value {
+    json!({ "_vs_textDocument": { "uri": uri, "languageId": "csharp", "version": version, "text": "" } })
+}
+
+/// A document's project contexts (a target framework of a multi-targeted project each), with the one the server answers
+/// for by default; Roslyn's Miscellaneous Files left out.
+pub fn project_contexts(answer: &Value) -> (Vec<Value>, usize) {
+    let all: Vec<&Value> = answer["_vs_projectContexts"].as_array().into_iter().flatten().collect();
+    let default = answer["_vs_defaultIndex"].as_u64().and_then(|i| all.get(i as usize).copied());
+    let kept: Vec<Value> =
+        all.into_iter().filter(|c| !c["_vs_is_miscellaneous"].as_bool().unwrap_or(false)).cloned().collect();
+    let at = default.and_then(|d| kept.iter().position(|c| c == d)).unwrap_or(0);
+    (kept, at)
+}
+
 /// The `textDocument` and `position` every request about a place sends.
 pub fn at(uri: &str, point: Point) -> Value {
-    json!({ "textDocument": { "uri": uri }, "position": point.to_json() })
+    json!({ "textDocument": document(uri), "position": point.to_json() })
 }
 
 fn path_of(uri: &Value) -> Option<PathBuf> {

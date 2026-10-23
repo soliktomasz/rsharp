@@ -204,6 +204,68 @@ pub fn matching_bracket(tree: &Tree, offset: usize) -> Option<(Range<usize>, Ran
     Some((node.byte_range(), pair.byte_range()))
 }
 
+/// What Safe Delete would take out for a name declared at `offset`: the declaration's bytes (its attributes and the
+/// `///` comment above it included, from its line's start) and what it is; or why it takes out none.
+pub struct Declaration {
+    pub range: Range<usize>,
+    pub kind: &'static str,
+}
+
+/// The declaration a name at `offset` declares: a type, a member, an enum member, a local or a local function.
+pub fn declaration_at(tree: &Tree, text: &Rope, offset: usize) -> Result<Declaration, &'static str> {
+    let at = tree.root_node().descendant_for_byte_range(offset, offset).ok_or("Nothing to delete here")?;
+    let mut node = Some(at);
+    while let Some(n) = node {
+        let kind = match n.kind() {
+            "class_declaration" | "record_declaration" => "class",
+            "struct_declaration" | "record_struct_declaration" => "struct",
+            "interface_declaration" => "interface",
+            "enum_declaration" => "enum",
+            "delegate_declaration" => "delegate",
+            "method_declaration" | "local_function_statement" => "method",
+            "constructor_declaration" | "destructor_declaration" => "constructor",
+            "property_declaration" | "indexer_declaration" => "property",
+            "event_declaration" | "event_field_declaration" => "event",
+            "field_declaration" | "local_declaration_statement" => {
+                // One of several declared together would take the others with it.
+                let declarators = count(n, "variable_declarator");
+                if declarators > 1 {
+                    return Err(
+                        "Safe Delete removes one of several declared together only with them: split them first",
+                    );
+                }
+                if n.kind() == "field_declaration" { "field" } else { "local" }
+            }
+            "enum_member_declaration" => "enum member",
+            "parameter" => return Err("Safe Delete does not delete a parameter: Change Signature does"),
+            _ => {
+                node = n.parent();
+                continue;
+            }
+        };
+        let mut start = n.start_byte();
+        // The `///` comments just above it go with it.
+        let mut above = n.prev_sibling();
+        while let Some(comment) =
+            above.filter(|c| c.kind() == "comment" && text.byte_slice(c.byte_range()).to_string().starts_with("///"))
+        {
+            start = comment.start_byte();
+            above = comment.prev_sibling();
+        }
+        return Ok(Declaration { range: start..n.end_byte(), kind });
+    }
+    Err("Safe Delete removes a type, a member or a local, and none is declared here")
+}
+
+fn count(node: Node, kind: &str) -> usize {
+    let mut cursor = node.walk();
+    let mut found = usize::from(node.kind() == kind);
+    for child in node.children(&mut cursor) {
+        found += count(child, kind);
+    }
+    found
+}
+
 /// Tells a tree of an edit made since it was parsed, so the next parse reuses what the edit left alone.
 pub fn edit(tree: &mut Tree, change: &Change) {
     let point = |p: &rsharp_text::Position| Point { row: p.line, column: p.column };
@@ -301,6 +363,23 @@ fn kind_of(capture: &str, node: &Node, text: &Rope) -> Option<Kind> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_declaration_is_found_from_a_name_in_it_with_its_doc_comment_and_a_parameter_refused() {
+        let code = "class A\n{\n    /// Says it.\n    void Say(int times) { }\n    int a, b;\n}\n";
+        let text = super::Rope::from(code);
+        let tree = super::parse(&text, None);
+        let method = super::declaration_at(&tree, &text, code.find("Say(").unwrap()).ok().unwrap();
+        assert_eq!((&code[method.range.clone()], method.kind), ("/// Says it.\n    void Say(int times) { }", "method"));
+        assert!(
+            super::declaration_at(&tree, &text, code.find("times").unwrap()).is_err(),
+            "a parameter was offered to delete"
+        );
+        assert!(
+            super::declaration_at(&tree, &text, code.find("a, b").unwrap()).is_err(),
+            "one of two fields took the other"
+        );
+    }
+
     use super::*;
     use rsharp_text::{Document, Selection, insert};
 

@@ -247,7 +247,25 @@ impl CodeEditor {
             None => json!({ "triggerKind": 1 }),
         };
         let answer = ask(&server, "textDocument/completion", params, cx);
-        let list = cx.background_executor().spawn(async move { answer.await.map(|a| lsp::completion(&a)) });
+        // Where a statement or a member begins, the live templates are listed too, as Rider lists them.
+        let line_start = self.text.line_to_byte(self.text.byte_to_line(start));
+        let templates = self.text.byte_slice(line_start..start).to_string().trim().is_empty() && trigger.is_none();
+        let list = cx.background_executor().spawn(async move {
+            let mut list = answer.await.map(|a| lsp::completion(&a))?;
+            if templates {
+                list.items.extend(super::templates::TEMPLATES.iter().map(|t| CompletionItem {
+                    label: t.shortcut.into(),
+                    detail: t.name.into(),
+                    kind: 15,
+                    filter_text: t.shortcut.into(),
+                    sort_text: t.shortcut.into(),
+                    edit: None,
+                    additional: Vec::new(),
+                    raw: json!({ "template": t.shortcut }),
+                }));
+            }
+            Some(list)
+        });
         self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
             let Some(list) = list.await else { return };
             let _ = this.update(cx, |e, cx| {
@@ -320,6 +338,17 @@ impl CodeEditor {
         let Some(Popup::Completion { list, shown, selected, start, .. }) = self.assist.popup.take() else { return };
         let item: CompletionItem = list.items[shown[selected]].clone();
         let head = self.primary().head.max(start);
+        // A template: its shortcut written over the word, then written out as Tab writes it.
+        if let Some(shortcut) = item.raw["template"].as_str() {
+            let plan = EditPlan {
+                edits: vec![Edit { range: start..head, text: shortcut.to_string() }],
+                selections: vec![Selection::caret(start + shortcut.len())],
+                ..Default::default()
+            };
+            self.apply(plan, cx);
+            self.expand_template(cx);
+            return;
+        }
         let (from, written) = match &item.edit {
             Some(edit) => (offset(&self.text, edit.span.start).min(start), edit.text.clone()),
             None => (start, item.label.clone()),
@@ -562,7 +591,7 @@ impl CodeEditor {
         let options = json!({ "tabSize": indent.size, "insertSpaces": !indent.tabs });
         let selection = self.primary();
         let (method, params) = if selection.is_empty() {
-            ("textDocument/formatting", json!({ "textDocument": { "uri": uri }, "options": options }))
+            ("textDocument/formatting", json!({ "textDocument": lsp::document(&uri), "options": options }))
         } else {
             let span = lsp::Span {
                 start: language::point(&self.text, selection.start()),
@@ -570,7 +599,7 @@ impl CodeEditor {
             };
             (
                 "textDocument/rangeFormatting",
-                json!({ "textDocument": { "uri": uri }, "range": span.to_json(), "options": options }),
+                json!({ "textDocument": lsp::document(&uri), "range": span.to_json(), "options": options }),
             )
         };
         let answer = ask(&server, method, params, cx);
@@ -595,7 +624,7 @@ impl CodeEditor {
             end: language::point(&self.text, selection.end()),
         };
         let params =
-            json!({ "textDocument": { "uri": uri }, "range": span.to_json(), "context": { "diagnostics": [] } });
+            json!({ "textDocument": lsp::document(&uri), "range": span.to_json(), "context": { "diagnostics": [] } });
         let answer = ask(&server, "textDocument/codeAction", params, cx);
         let head = selection.head;
         self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
@@ -763,7 +792,7 @@ impl CodeEditor {
             let pause = if self.assist.tokens.is_empty() { Duration::ZERO } else { Duration::from_millis(300) };
             self.assist.token_task = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(pause).await;
-                let params = json!({ "textDocument": { "uri": uri }, "range": range.to_json() });
+                let params = json!({ "textDocument": lsp::document(&uri), "range": range.to_json() });
                 let Ok((answer, hinted)) = this.update(cx, |_, cx| {
                     let hinted = ask(&server, "textDocument/inlayHint", params.clone(), cx);
                     (ask(&server, "textDocument/semanticTokens/range", params, cx), hinted)

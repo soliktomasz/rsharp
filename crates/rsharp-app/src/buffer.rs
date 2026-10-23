@@ -9,7 +9,7 @@ use rsharp_core::encodings::{Charset, decode, encode};
 use rsharp_languages::{edit as edit_tree, parse};
 use rsharp_lsp::LanguageServer;
 use rsharp_text::{Change, Document, Edit, EditPlan, Indent, LineEnding, Rope, Selection, detect_indent, line_end};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,6 +23,8 @@ pub enum BufferEvent {
     Parsed,
     /// The file was renamed on disk (a type's rename): its new path.
     Moved(PathBuf),
+    /// Another project context (target framework) chosen: what the server says of the file asked again.
+    ContextChanged,
 }
 
 /// Where a file's indentation comes from, the first of these that says, as Rider's indent widget names it.
@@ -56,6 +58,11 @@ pub struct Buffer {
     parsing: Option<Task<()>>,
     server: Option<(Arc<LanguageServer>, String)>,
     checking: Option<Task<()>>,
+    /// The projects Roslyn compiles the file in (a target framework of a multi-targeted project each), and the one its
+    /// requests are about, as the editor's target framework switcher chose it.
+    pub contexts: Vec<Value>,
+    pub context: usize,
+    asking_contexts: Option<Task<()>>,
 }
 
 impl EventEmitter<BufferEvent> for Buffer {}
@@ -184,6 +191,9 @@ impl Buffer {
             parsing: None,
             server: None,
             checking: None,
+            contexts: Vec::new(),
+            context: 0,
+            asking_contexts: None,
         };
         buffer.on_disk = stamp(&buffer.path);
         buffer.reparse(cx);
@@ -307,6 +317,7 @@ impl Buffer {
         }}));
         self.server = Some((server, uri));
         self.check(Duration::ZERO, cx);
+        self.ask_contexts(cx);
     }
 
     /// The file renamed on disk to `to`: known by its new path from now, the server told it is the new file, and every
@@ -343,6 +354,41 @@ impl Buffer {
         self.changed(changes, me, cx);
     }
 
+    /// The projects Roslyn compiles the file in, asked as it is opened there; the one chosen before kept by its label.
+    fn ask_contexts(&mut self, cx: &mut Context<Self>) {
+        let Some((server, uri)) = self.server.clone() else { return };
+        let answer = server
+            .ask("textDocument/_vs_getProjectContexts", rsharp_lsp::contexts_request(&uri, self.document.version()));
+        self.asking_contexts = Some(cx.spawn(async move |this, cx| {
+            let Ok(answer) = answer.await else { return };
+            let (contexts, default) = rsharp_lsp::project_contexts(&answer);
+            let _ = this.update(cx, |b, cx| {
+                let chosen = b.contexts.get(b.context).map(|c| c["_vs_label"].clone());
+                b.context =
+                    chosen.and_then(|label| contexts.iter().position(|c| c["_vs_label"] == label)).unwrap_or(default);
+                b.contexts = contexts;
+                cx.notify();
+            });
+        }));
+    }
+
+    /// The target framework switcher's choice: the file's requests about that project from now, its problems asked again
+    /// and its editors told.
+    pub fn choose_context(&mut self, index: usize, cx: &mut Context<Self>) {
+        let (Some(context), Some((_, uri))) = (self.contexts.get(index).cloned(), self.server.clone()) else { return };
+        self.context = index;
+        rsharp_lsp::set_project_context(&uri, Some(context));
+        self.check(Duration::ZERO, cx);
+        cx.emit(BufferEvent::ContextChanged);
+        cx.notify();
+    }
+
+    /// The chosen project context's label (its target framework), when the file is in more than one.
+    pub fn context_label(&self) -> Option<String> {
+        (self.contexts.len() > 1)
+            .then(|| self.contexts[self.context]["_vs_label"].as_str().unwrap_or_default().to_string())
+    }
+
     pub fn detach_server(&mut self) {
         if let Some((server, uri)) = self.server.take() {
             server.notify("textDocument/didClose", json!({ "textDocument": { "uri": uri } }));
@@ -355,7 +401,7 @@ impl Buffer {
         let version = self.document.version();
         self.checking = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(after).await;
-            let answer = server.ask("textDocument/diagnostic", json!({ "textDocument": { "uri": uri } }));
+            let answer = server.ask("textDocument/diagnostic", json!({ "textDocument": rsharp_lsp::document(&uri) }));
             let Ok(report) = answer.await else { return };
             let _ = this.update(cx, |buffer, cx| {
                 if buffer.document.version() != version {

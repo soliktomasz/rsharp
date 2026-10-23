@@ -23,7 +23,7 @@ pub const PUSH_MEMBERS_DOWN: &str = "Passenger.Roslyn.Extension.PushMembersDown"
 pub fn request(handler: &str, message: &Value, uri: &str) -> (&'static str, Value) {
     (
         "textDocument/_vs_dipatchExtensionMessage",
-        json!({ "messageName": handler, "message": message.to_string(), "textDocument": { "uri": uri } }),
+        json!({ "messageName": handler, "message": message.to_string(), "textDocument": crate::document(uri) }),
     )
 }
 

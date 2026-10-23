@@ -2530,6 +2530,12 @@ impl MainWindow {
             StatusMenu::Encodings => {
                 rsharp_core::encodings::LISTED.iter().map(|c| (c.name().to_string(), *c == read.charset)).collect()
             }
+            StatusMenu::TargetFramework => read
+                .contexts
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (c["_vs_label"].as_str().unwrap_or_default().to_string(), i == read.context))
+                .collect(),
         };
         let rows: Vec<_> = items
             .into_iter()
@@ -2555,6 +2561,7 @@ impl MainWindow {
                         buffer.update(cx, |b, cx| match kind {
                             StatusMenu::LineSeparators => b.set_line_ending(rsharp_text::LineEnding::ALL[i], cx),
                             StatusMenu::Encodings => b.set_charset(rsharp_core::encodings::LISTED[i], cx),
+                            StatusMenu::TargetFramework => b.choose_context(i, cx),
                         });
                         cx.notify();
                     }))
@@ -2780,9 +2787,17 @@ impl MainWindow {
                         cx.notify();
                     })
                 };
+                let framework = read.context_label();
                 div()
                     .flex()
                     .items_center()
+                    .children(framework.map(|label| {
+                        status_widget(label)
+                            .id("target-framework")
+                            .debug_selector(|| "status: target framework".into())
+                            .hover(|d| d.bg(theme::button_hover()))
+                            .on_click(menu(StatusMenu::TargetFramework))
+                    }))
                     .child(status_widget(format!("{}:{}", caret.line + 1, caret.utf16_column + 1)))
                     .child(
                         status_widget(ending.name().into())
@@ -2969,6 +2984,8 @@ impl Render for Tip {
 enum StatusMenu {
     LineSeparators,
     Encodings,
+    /// The target frameworks a multi-targeted project compiles the file for, as Rider's switcher offers them.
+    TargetFramework,
 }
 
 /// A tab on its way somewhere: its group and index, and its name for the preview under the pointer.

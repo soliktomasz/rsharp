@@ -77,7 +77,7 @@ impl CodeEditor {
         self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
             let mut made_any = false;
             for prefixes in steps {
-                let params = json!({ "textDocument": { "uri": uri }, "range": span.to_json(), "context": { "diagnostics": [] } });
+                let params = json!({ "textDocument": lsp::document(&uri), "range": span.to_json(), "context": { "diagnostics": [] } });
                 let Ok(answer) = this.update(cx, |_, cx| ask(&server, "textDocument/codeAction", params, cx)) else { return };
                 let actions = answer.await.map(|a| lsp::code_actions(&a)).unwrap_or_default();
                 let found: Vec<CodeAction> = named(&actions, prefixes).into_iter().cloned().collect();
@@ -118,48 +118,101 @@ impl CodeEditor {
         }));
     }
 
-    /// Safe Delete at a declaration: deleted, its whole lines, when nothing uses it; else its usages listed and it kept.
-    // shortcut: from its declaration only, and without Passenger's search of what deleting it would break beyond its
-    // usages (an override, an implementation); widen it with Roslyn.Extension (decision 1).
-    pub(super) fn safe_delete(&mut self, cx: &mut Context<Self>) {
+    /// Safe Delete, from the declaration or any use of it: what it declares (a type, a member, a local), its attributes
+    /// and doc comment with it, deleted where nothing outside it uses it; else its usages listed and Delete Anyway asked.
+    /// Only what this folder's own code declares is deleted, never a library's.
+    pub(super) fn safe_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((server, uri)) = self.server(cx) else { return };
         let head = self.primary().head;
-        let here = language::point(&self.text, head);
-        let name = self.text.byte_slice(word_at(&self.text, head).range()).to_string();
-        let mut params = lsp::at(&uri, here);
+        let here = lsp::at(&uri, language::point(&self.text, head));
+        let mut params = here.clone();
         params["context"] = json!({ "includeDeclaration": false });
-        let usages = ask(&server, "textDocument/references", params, cx);
-        let symbols = ask(&server, "textDocument/documentSymbol", json!({ "textDocument": { "uri": uri } }), cx);
-        let version = self.version;
-        self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
-            let used = usages.await.map(|u| lsp::locations(&u)).unwrap_or_default();
-            let symbols = symbols.await.unwrap_or_default();
-            let _ = this.update(cx, |e, cx| {
-                if e.version != version {
+        let (declared, used) =
+            (ask(&server, "textDocument/definition", here, cx), ask(&server, "textDocument/references", params, cx));
+        let name = self.text.byte_slice(word_at(&self.text, head).range()).to_string();
+        self.assist.popup_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let declared = declared.await.map(|d| lsp::locations(&d)).unwrap_or_default();
+            let used = used.await.map(|u| lsp::locations(&u)).unwrap_or_default();
+            let found = this.update(cx, |_, cx| Self::doomed(&declared, &used, cx));
+            let (edit, uses, kind) = match found {
+                Ok(Ok(found)) => found,
+                Ok(Err(why)) => {
+                    let _ = this.update(cx, |_, cx| cx.emit(Said(why)));
                     return;
                 }
-                if !used.is_empty() {
-                    cx.emit(Said(format!("{name} is used in {} places, so it was kept", used.len())));
-                    cx.emit(Navigate { title: format!("Usages of {name}"), to: used, list: true });
+                Err(_) => return,
+            };
+            if !uses.is_empty() {
+                let count = uses.len();
+                let asked = this.update_in(cx, |_, window, cx| {
+                    cx.emit(Navigate { title: format!("Usages of {name}"), to: uses, list: true });
+                    window.prompt(
+                        gpui::PromptLevel::Warning,
+                        &format!(
+                            "The {kind} '{name}' is used in {count} {}",
+                            if count == 1 { "place" } else { "places" }
+                        ),
+                        Some("Deleting it breaks them. Delete it anyway?"),
+                        &["Delete Anyway", "Cancel"],
+                        cx,
+                    )
+                });
+                let Ok(answer) = asked else { return };
+                if answer.await != Ok(0) {
+                    let _ = this
+                        .update(cx, |_, cx| cx.emit(Said(format!("Safe Delete left the {kind} '{name}' where it is"))));
                     return;
                 }
-                let Some(whole) = declaration_at(&symbols, here) else {
-                    cx.emit(Said("Safe Delete works at a declaration".into()));
-                    return;
-                };
-                // The declaration's whole lines, so no blank line or indent is left where it was.
-                let text = &e.text;
-                let (first, last) = (whole.start.line, whole.end.line);
-                let start = text.line_to_byte(first);
-                let end = if last + 1 < text.len_lines() { text.line_to_byte(last + 1) } else { text.len_bytes() };
-                let plan = EditPlan {
-                    edits: vec![Edit { range: start..end, text: String::new() }],
-                    selections: vec![Selection::caret(start)],
-                    ..Default::default()
-                };
-                e.apply(plan, cx);
+            }
+            let _ = this.update(cx, |_, cx| match language::apply_workspace_edit(&edit, Some(&server), cx) {
+                Ok(()) => cx.emit(Said(format!("Deleted the {kind} '{name}'"))),
+                Err(why) => cx.emit(Said(why)),
             });
         }));
+    }
+
+    /// What Safe Delete would take out, as an edit of whole lines, the usages outside it, and what it is; or why not.
+    fn doomed(
+        declared: &[lsp::Location],
+        used: &[lsp::Location],
+        cx: &App,
+    ) -> Result<(lsp::WorkspaceEdit, Vec<lsp::Location>, &'static str), String> {
+        let [declaration] = declared else {
+            return Err(match declared.len() {
+                0 => "Nothing to delete here: put the caret on a name".into(),
+                n => format!("Safe Delete cannot delete what is declared in {n} places"),
+            });
+        };
+        let path = &declaration.path;
+        // A library's declaration is Roslyn's own text of it, under its MetadataAsSource folder.
+        if !path.is_file()
+            || path.extension().is_none_or(|e| e != "cs")
+            || path.to_string_lossy().contains("MetadataAsSource")
+        {
+            return Err("Safe Delete deletes only what this folder's own code declares".into());
+        }
+        let text = match crate::buffer::find(path, cx) {
+            Some(buffer) => buffer.read(cx).document.text().clone(),
+            None => Rope::from(
+                std::fs::read_to_string(path).map_err(|e| format!("{} could not be read: {e}", path.display()))?,
+            ),
+        };
+        let tree = rsharp_languages::parse(&text, None);
+        let removal = rsharp_languages::declaration_at(&tree, &text, language::offset(&text, declaration.span.start))
+            .map_err(str::to_string)?;
+        // What uses it from inside what goes with it (a recursive call, a constructor of its type) goes too.
+        let uses: Vec<lsp::Location> = used
+            .iter()
+            .filter(|u| u.path != *path || !removal.range.contains(&language::offset(&text, u.span.start)))
+            .cloned()
+            .collect();
+        let (first, last) = (text.byte_to_line(removal.range.start), text.byte_to_line(removal.range.end));
+        let span = lsp::Span { start: lsp::Point::new(first, 0), end: lsp::Point::new(last + 1, 0) };
+        let edit = lsp::WorkspaceEdit {
+            files: vec![(path.clone(), vec![lsp::TextEdit { span, text: String::new() }])],
+            ..Default::default()
+        };
+        Ok((edit, uses, removal.kind))
     }
 
     /// Surround With: its constructs listed over the selection.
@@ -233,27 +286,6 @@ impl CodeEditor {
         };
         self.apply(plan, cx);
     }
-}
-
-/// The range of the declaration whose name is at `here` in a documentSymbol answer.
-fn declaration_at(symbols: &serde_json::Value, here: lsp::Point) -> Option<lsp::Span> {
-    for symbol in symbols.as_array().into_iter().flatten() {
-        if let Some(found) = declaration_at(&symbol["children"], here) {
-            return Some(found);
-        }
-        let point = |v: &serde_json::Value| {
-            Some(lsp::Point::new(v["line"].as_u64()? as usize, v["character"].as_u64()? as usize))
-        };
-        let (Some(start), Some(end)) =
-            (point(&symbol["selectionRange"]["start"]), point(&symbol["selectionRange"]["end"]))
-        else {
-            continue;
-        };
-        if start <= here && here <= end {
-            return Some(lsp::Span { start: point(&symbol["range"]["start"])?, end: point(&symbol["range"]["end"])? });
-        }
-    }
-    None
 }
 
 /// What Complete Current Statement adds at a line's end, and where the caret goes in it: a header (`if (…)`,

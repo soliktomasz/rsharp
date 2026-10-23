@@ -257,6 +257,7 @@ impl CodeEditor {
                 }
                 BufferEvent::Parsed => {}
                 BufferEvent::Moved(to) => editor.path = to.clone(),
+                BufferEvent::ContextChanged => editor.server_ready(cx),
             }
             cx.notify();
         });
@@ -938,7 +939,6 @@ moves! {
     EncapsulateField => |e, cx| e.named_refactoring("Encapsulate Field", &[&["Encapsulate field"]], cx);
     ExtractMethod => |e, cx| e.named_refactoring("Extract Method", &[&["Extract method"]], cx);
     Inline => |e, cx| e.named_refactoring("Inline", &[&["Inline"]], cx);
-    SafeDelete => |e, cx| e.safe_delete(cx);
     SurroundWith => |e, cx| e.open_surround(cx);
     CompleteStatement => |e, cx| e.complete_statement(cx);
     ChangeSignature => |e, cx| e.open_refactoring(crate::refactor_dialog::Kind::ChangeSignature, cx);
@@ -999,6 +999,7 @@ impl Render for CodeEditor {
         bind_moves(element, cx)
             .on_action(cx.listener(Self::escape))
             .on_action(cx.listener(|e, _: &Rename, window, cx| e.start_rename(window, cx)))
+            .on_action(cx.listener(|e, _: &SafeDelete, window, cx| e.safe_delete(window, cx)))
             .child(EditorElement { editor: cx.entity() })
             .children(popup)
     }

@@ -57,7 +57,7 @@ fn complete_current_statement_closes_the_line_and_goes_to_the_next(cx: &mut Test
     );
 }
 
-const SHOP: &str = "using System.Text;\nusing System;\n\nnamespace Demo;\n\npublic class Shop\n{\n    private int count;\n\n    private int Unused() => 1;\n\n    public int Total(int price) => price + count;\n}\n";
+const SHOP: &str = "using System.Text;\nusing System;\n\nnamespace Demo;\n\npublic class Shop\n{\n    private int count;\n\n    private int Unused() => 1;\n\n    private int Used() => 2;\n\n    public int Total(int price) => price + count + Used();\n\n    public void Log()\n    {\n        \n    }\n}\n";
 
 /// Waits, in real time, for what Roslyn does on threads of its own; false after three minutes.
 fn wait_for(cx: &mut VisualTestContext, until: impl Fn(&mut VisualTestContext) -> bool) -> bool {
@@ -124,6 +124,45 @@ fn optimize_usings_encapsulate_field_and_safe_delete_change_the_code_as_roslyn_s
     cx.simulate_keystrokes("enter");
     let encapsulated = wait_for(cx, |cx| text(&main, cx).contains(" Count { get => count; set => count = value; }"));
     assert!(encapsulated, "Encapsulate Field made no property:\n{}", text(&main, cx));
+
+    // Safe Delete from a use of a method still used: asked first; Cancel keeps it, Delete Anyway deletes it.
+    let call = line(cx, "+ Used()");
+    let column = text(&main, cx).lines().nth(call).unwrap().find("Used()").unwrap();
+    for (answer, kept) in [("Cancel", true), ("Delete Anyway", false)] {
+        main.update_in(cx, |main, window, cx| {
+            main.open_file(&run.folder.join("Shop.cs"), Some((call, column)), window, cx)
+        });
+        cx.simulate_keystrokes(key("cmd-delete", "alt-delete"));
+        assert!(wait_for(cx, |cx| cx.has_pending_prompt()), "Safe Delete did not ask before deleting what is used");
+        cx.simulate_prompt_answer(answer);
+        let done = wait_for(cx, |cx| {
+            text(&main, cx).contains("int Used()") == kept
+                && main.read_with(cx, |m, _| m.said().is_some_and(|s| s.contains("Used")))
+        });
+        assert!(done, "{answer} did not {} the method", if kept { "keep" } else { "delete" });
+    }
+
+    // Completion lists the live templates where a statement begins: cw written out as Console.WriteLine.
+    let blank = line(cx, "void Log()") + 2;
+    main.update_in(cx, |main, window, cx| main.open_file(&run.folder.join("Shop.cs"), Some((blank, 8)), window, cx));
+    cx.simulate_input("c");
+    cx.simulate_input("w");
+    let editor = main.read_with(cx, |m, _| m.editor().unwrap());
+    let listed = wait_for(cx, |cx| {
+        editor.read_with(cx, |e, _| e.completion_shown()).is_some_and(|l| l.first().is_some_and(|f| f == "cw"))
+    });
+    assert!(
+        listed,
+        "completion did not list the cw template first: {:?}",
+        editor.read_with(cx, |e, _| e.completion_shown())
+    );
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(
+        text(&main, cx).contains("        Console.WriteLine();\n"),
+        "the cw template was not written out:\n{}",
+        text(&main, cx)
+    );
 }
 
 #[gpui::test]
