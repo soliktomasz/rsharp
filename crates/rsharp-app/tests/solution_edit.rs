@@ -273,3 +273,122 @@ fn the_new_key_offers_the_add_items_and_the_rename_key_asks_the_name(cx: &mut Te
     let popup = main.read_with(cx, |main, _| main.name_popup()).expect("the rename key would not ask the name");
     assert_eq!(popup.read_with(cx, |popup, cx| popup.text(cx)), "src", "the popup would not start from the name");
 }
+
+#[gpui::test]
+fn an_existing_project_added_to_a_folder_shows_there_and_in_the_slnx(cx: &mut TestAppContext) {
+    let mut files = files();
+    files.push(("tools/Importer/Importer.csproj", PROJECT));
+    let run = Run::new("se-existing-project", &files);
+    let solution = run.folder.join("Shop.slnx");
+    let (main, cx) = open(&run, cx);
+    let importer = run.folder.join("tools/Importer/Importer.csproj");
+    let added = main.update(cx, |main, cx| main.add_existing(Some("/src/".into()), vec![importer], true, cx));
+    assert_eq!(added, Ok(()), "the project would not be added");
+    assert!(
+        on_disk(&solution).contains("  <Folder Name=\"/src/\">\n    <Project Path=\"src/Shop.Core/Shop.Core.csproj\" />\n    <Project Path=\"tools/Importer/Importer.csproj\" />\n  </Folder>\n"),
+        "the project would not be written into its folder:\n{}",
+        on_disk(&solution)
+    );
+    assert!(
+        rows(&main, cx).contains(&"    Importer".to_string()),
+        "the project would not show in its folder: {:?}",
+        rows(&main, cx)
+    );
+    assert_eq!(main.read_with(cx, |main, _| main.selected_row()).as_deref(), Some("    Importer"));
+}
+
+#[gpui::test]
+fn an_existing_item_added_to_a_solution_folder_shows_there(cx: &mut TestAppContext) {
+    let mut files = files();
+    files.push(("docs/notes.md", "# Notes\n"));
+    let run = Run::new("se-existing-item", &files);
+    let solution = run.folder.join("Shop.slnx");
+    let (main, cx) = open(&run, cx);
+    let notes = run.folder.join("docs/notes.md");
+    let added = main.update(cx, |main, cx| main.add_existing(Some("/Solution Items/".into()), vec![notes], false, cx));
+    assert_eq!(added, Ok(()));
+    assert!(
+        on_disk(&solution).contains("    <File Path=\"README.md\" />\n    <File Path=\"docs/notes.md\" />\n"),
+        "{}",
+        on_disk(&solution)
+    );
+    assert!(
+        rows(&main, cx).contains(&"    notes.md".to_string()),
+        "the file would not show in its folder: {:?}",
+        rows(&main, cx)
+    );
+}
+
+fn trash_for(run: &Run) -> std::path::PathBuf {
+    let trash = run.folder.parent().unwrap().join("trash");
+    rsharp_core::trash::set_folder(Some(trash.clone()));
+    trash
+}
+
+#[gpui::test]
+fn delete_on_a_project_beside_its_solution_takes_it_out_and_leaves_the_folder(cx: &mut TestAppContext) {
+    let run = Run::new(
+        "se-remove-beside",
+        &[
+            ("Shop.slnx", "<Solution>\n  <Project Path=\"Shop.csproj\" />\n</Solution>\n"),
+            ("Shop.csproj", PROJECT),
+            ("Models/Order.cs", "class Order { }\n"),
+        ],
+    );
+    let trash = trash_for(&run);
+    let (main, cx) = open(&run, cx);
+    // The solution is named Shop too: its project is the row under it.
+    let project = rows(&main, cx).iter().position(|r| r == "  Shop").expect("no project row");
+    main.update_in(cx, |main, window, cx| main.choose(project, "Edit > Remove...", window, cx));
+    cx.run_until_parked();
+    assert_eq!(
+        main.read_with(cx, |m, _| m.asked().map(str::to_string)).as_deref(),
+        Some("Remove Shop from the solution? Its folder and files stay on disk.")
+    );
+    cx.simulate_prompt_answer("Remove");
+    cx.run_until_parked();
+    assert!(!cx.has_pending_prompt(), "a project beside its solution would be offered to the Trash");
+    assert_eq!(
+        on_disk(&run.folder.join("Shop.slnx")),
+        "<Solution>\n</Solution>\n",
+        "the project would stay in the solution"
+    );
+    assert!(
+        run.folder.join("Shop.csproj").is_file() && run.folder.join("Models").is_dir(),
+        "the project's files would go"
+    );
+    assert!(!trash.exists(), "something would go to the Trash");
+    rsharp_core::trash::set_folder(None);
+}
+
+#[gpui::test]
+fn delete_on_a_project_in_its_own_folder_moves_that_folder_to_the_trash_only_once_asked_again(cx: &mut TestAppContext) {
+    let run = Run::new(
+        "se-remove-own",
+        &[
+            (
+                "Shop.slnx",
+                "<Solution>\n  <Project Path=\"Shop.csproj\" />\n  <Project Path=\"Lib/Lib.csproj\" />\n</Solution>\n",
+            ),
+            ("Shop.csproj", PROJECT),
+            ("Lib/Lib.csproj", PROJECT),
+            ("Lib/Thing.cs", "class Thing { }\n"),
+        ],
+    );
+    let trash = trash_for(&run);
+    let (main, cx) = open(&run, cx);
+    choose(&main, cx, "Lib", "Edit > Remove...");
+    cx.simulate_prompt_answer("Remove");
+    cx.run_until_parked();
+    assert_eq!(
+        main.read_with(cx, |m, _| m.asked().map(str::to_string)).as_deref(),
+        Some("Also move the folder Lib and everything in it to the Trash?"),
+        "a project in its own folder would not be offered to the Trash"
+    );
+    cx.simulate_prompt_answer("Move to Trash");
+    cx.run_until_parked();
+    assert!(!run.folder.join("Lib").exists(), "the project's folder would stay");
+    assert!(trash.join("Lib/Lib.csproj").is_file(), "the project's folder would not be in the Trash");
+    assert_eq!(on_disk(&run.folder.join("Shop.slnx")), "<Solution>\n  <Project Path=\"Shop.csproj\" />\n</Solution>\n");
+    rsharp_core::trash::set_folder(None);
+}

@@ -18,6 +18,7 @@ change that brings it in.
 | `ropey` | MIT | Nathan Vegdahl |
 | `serde` | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
 | `serde_json` | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
+| `trash` | MIT | Artur Kovacs and contributors |
 | `tree-sitter` | MIT | Max Brunsfeld |
 | `tree-sitter-c-sharp` | MIT | Max Brunsfeld, Damien Guard and contributors |
 

@@ -126,6 +126,14 @@ impl MainWindow {
                 );
             }
             (NodeKind::SolutionFolder, "Remove...") => self.remove_solution_folder(&found, window, cx),
+            (NodeKind::Solution | NodeKind::SolutionFolder, "Existing Project...") => {
+                self.pick_and_add(solution_folder_of(&found), true, window, cx)
+            }
+            (NodeKind::SolutionFolder, "Existing Item...") => {
+                self.pick_and_add(solution_folder_of(&found), false, window, cx)
+            }
+            (NodeKind::Project, "Remove...") => self.remove_project(&found, window, cx),
+            (NodeKind::File, "Remove...") => self.remove_item(&found, window, cx),
             (_, "Copy Path") => {
                 if let Some(path) = &found.path {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(path.display().to_string()));
@@ -299,6 +307,201 @@ impl MainWindow {
             });
         })
         .detach();
+    }
+
+    /// Add Existing Project or Item: the files the person picks, put in a solution folder (a project at the solution's
+    /// top with none).
+    fn pick_and_add(&mut self, into: Option<String>, projects: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let chosen = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some(if projects { "Add Project" } else { "Add Item" }.into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = chosen.await {
+                let _ = this.update(cx, |w, cx| {
+                    if let Err(why) = w.add_existing(into, paths, projects, cx) {
+                        w.said = Some(why.into());
+                    }
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// What Add Existing Project and Item do with the files picked: each put in the folder, the tree opened to the last.
+    pub fn add_existing(
+        &mut self,
+        into: Option<String>,
+        picked: Vec<PathBuf>,
+        projects: bool,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let solution = self.tree.as_ref().map(|t| t.solution().path.clone()).ok_or("There is no solution")?;
+        let picked: Vec<PathBuf> = picked.iter().map(|p| rsharp_core::paths::canonical(p)).collect();
+        for path in &picked {
+            let edit = match (projects, into.as_deref()) {
+                (true, folder) => SolutionEdit::AddProject { folder, project: path },
+                (false, Some(folder)) => SolutionEdit::AddFile { folder, path },
+                (false, None) => return Err("A file goes in a solution folder".into()),
+            };
+            self.write_edited(&solution, |text| solution_edits::edit(&solution, text, edit), cx)?;
+        }
+        if projects && let Some(server) = &self.server {
+            rsharp_lsp::reload_projects_of(server, &picked);
+        }
+        if let Some(folder) = &into {
+            self.reveal_solution_folder(folder, cx);
+            if let Some(tree) = &mut self.tree {
+                tree.reveal(&[format!("sf:{folder}")]);
+            }
+            self.rebuild_rows();
+        }
+        if let Some(last) = picked.last() {
+            if let Some(at) = self.rows.iter().position(|r| r.path.as_deref() == Some(last.as_path())) {
+                self.selected = Some(at);
+            }
+            let name = last.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            self.said = Some(format!("Added {name}").into());
+        }
+        cx.notify();
+        Ok(())
+    }
+
+    /// Asks a question before a change, and runs `then` in the window once its first answer is chosen.
+    fn confirm(
+        &mut self,
+        title: &str,
+        question: String,
+        answer: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        self.asked = Some(question.clone());
+        let chosen = window.prompt(gpui::PromptLevel::Warning, title, Some(&question), &[answer, "Cancel"], cx);
+        cx.spawn_in(window, async move |this, cx| {
+            if chosen.await == Ok(0) {
+                let _ = this.update_in(cx, |w, window, cx| {
+                    then(w, window, cx);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Rider's Remove on a project: it leaves the solution and its files stay. Moving its folder to the Trash is a second
+    /// question, never asked of the open folder, a folder above it, or one holding the solution or another of its
+    /// projects.
+    fn remove_project(&mut self, row: &TreeRow, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(project), Some(tree)) = (row.path.clone(), &self.tree) else { return };
+        let solution = tree.solution().path.clone();
+        let others: Vec<PathBuf> =
+            tree.solution().projects().iter().filter(|p| p.path != project).map(|p| p.path.clone()).collect();
+        let name = row.name.clone();
+        let question = format!("Remove {name} from the solution? Its folder and files stay on disk.");
+        self.confirm("Remove Project", question, "Remove", window, cx, move |w, window, cx| {
+            let edit = SolutionEdit::RemoveProject { project: &project };
+            if let Err(why) = w.write_edited(&solution, |text| solution_edits::edit(&solution, text, edit), cx) {
+                w.said = Some(format!("{name} could not be removed: {why}").into());
+                return;
+            }
+            w.said = Some(format!("Removed {name} from the solution").into());
+            if let Some(server) = &w.server {
+                rsharp_lsp::reload_projects_of(server, std::slice::from_ref(&project));
+            }
+            let own = project.parent().map(Path::to_path_buf).unwrap_or_default();
+            let folder = w.workspace.as_ref().map(|ws| ws.folder.clone()).unwrap_or_default();
+            let apart =
+                !folder.starts_with(&own) && !solution.starts_with(&own) && !others.iter().any(|p| p.starts_with(&own));
+            if apart {
+                let what = own.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let question = format!("Also move the folder {what} and everything in it to the Trash?");
+                w.confirm("Delete Project Files", question, "Move to Trash", window, cx, move |w, window, cx| {
+                    w.said = Some(
+                        match w.delete_to_trash(&own, window, cx) {
+                            Ok(()) => format!("Moved {what} to the Trash"),
+                            Err(why) => why,
+                        }
+                        .into(),
+                    );
+                });
+            }
+        });
+    }
+
+    /// Takes a file out of the solution folder that lists it; the file stays on disk.
+    fn remove_item(&mut self, row: &TreeRow, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(path), Some(tree)) = (row.path.clone(), &self.tree) else { return };
+        fn holder(entries: &[SolutionEntry], path: &Path) -> Option<String> {
+            entries.iter().find_map(|e| match e {
+                SolutionEntry::Folder { path: folder, children, .. } => children
+                    .iter()
+                    .any(|c| matches!(c, SolutionEntry::Item { path: p, .. } if p == path))
+                    .then(|| folder.clone())
+                    .or_else(|| holder(children, path)),
+                _ => None,
+            })
+        }
+        let Some(folder) = holder(&tree.solution().entries, &path) else { return };
+        let solution = tree.solution().path.clone();
+        let folder_name = folder.trim_end_matches('/').rsplit('/').next().unwrap_or_default().to_string();
+        let question = format!("Remove {} from the solution folder {folder_name}? The file stays on disk.", row.name);
+        let name = row.name.clone();
+        self.confirm("Remove Item", question, "Remove", window, cx, move |w, _, cx| {
+            let edit = SolutionEdit::RemoveFile { folder: &folder, path: &path };
+            w.said = Some(
+                match w.write_edited(&solution, |text| solution_edits::edit(&solution, text, edit), cx) {
+                    Ok(()) => format!("Removed {name} from {folder_name}"),
+                    Err(why) => why,
+                }
+                .into(),
+            );
+        });
+    }
+
+    /// Moves a file or folder to the Trash: its open files saved first, so the Trash and Local History hold what the
+    /// editor showed, and their tabs closed once it is gone; kept open when the Trash refused.
+    pub(super) fn delete_to_trash(
+        &mut self,
+        path: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let open: Vec<_> = self.area.editors().filter(|e| e.read(cx).path.starts_with(path)).cloned().collect();
+        for editor in &open {
+            let buffer = editor.read(cx).buffer.clone();
+            if buffer.read(cx).is_modified() {
+                buffer.update(cx, |b, cx| b.save(cx)).map_err(|e| format!("{name} could not be saved: {e}"))?;
+            }
+        }
+        if path.is_file()
+            && let Ok(bytes) = std::fs::read(path)
+        {
+            crate::history_window::record(path.to_path_buf(), bytes, Some("Deleted"), cx);
+        }
+        rsharp_core::trash::move_to_trash(path).map_err(|e| format!("{name} could not be moved to the Trash: {e}"))?;
+        self.close_tabs_under(path, window, cx);
+        if let Some(tree) = &mut self.tree {
+            tree.forget(path.parent().unwrap_or(path));
+        }
+        self.rebuild_rows();
+        Ok(())
+    }
+
+    /// Closes every tab of a file at or under a path.
+    pub(super) fn close_tabs_under(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        loop {
+            let found = self.area.groups.iter().enumerate().find_map(|(g, group)| {
+                group.tabs.iter().position(|t| t.editor.read(cx).path.starts_with(path)).map(|i| (g, i))
+            });
+            let Some((group, index)) = found else { return };
+            self.close_tab(group, index, window, cx);
+        }
     }
 
     /// Writes a solution or project file through `change`: an open one saved first, so its edits are kept; the bytes

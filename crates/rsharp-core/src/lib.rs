@@ -14,3 +14,4 @@ pub mod project_edits;
 pub mod solution;
 pub mod solution_edits;
 pub mod state;
+pub mod trash;
