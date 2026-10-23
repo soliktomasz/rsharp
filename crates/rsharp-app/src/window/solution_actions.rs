@@ -115,6 +115,9 @@ impl MainWindow {
         self.selected = Some(row);
         let title = item_title(item);
         match (found.kind, title) {
+            (NodeKind::Solution | NodeKind::SolutionFolder, "New Project...") => {
+                self.show_new_project(solution_folder_of(&found), window, cx)
+            }
             (NodeKind::Solution | NodeKind::SolutionFolder, "New Solution Folder...") => {
                 let parent = solution_folder_of(&found);
                 self.ask_name("New Solution Folder", "", Vec::new(), NameFor::NewSolutionFolder { parent }, window, cx);
@@ -366,13 +369,39 @@ impl MainWindow {
     ) -> Result<(), String> {
         let solution = self.tree.as_ref().map(|t| t.solution().path.clone()).ok_or("There is no solution")?;
         let picked: Vec<PathBuf> = picked.iter().map(|p| rsharp_core::paths::canonical(p)).collect();
-        for path in &picked {
-            let edit = match (projects, into.as_deref()) {
-                (true, folder) => SolutionEdit::AddProject { folder, project: path },
-                (false, Some(folder)) => SolutionEdit::AddFile { folder, path },
-                (false, None) => return Err("A file goes in a solution folder".into()),
-            };
-            self.write_edited(&solution, |text| solution_edits::edit(&solution, text, edit), cx)?;
+        if projects {
+            for path in &picked {
+                if !path.is_file()
+                    || !path
+                        .extension()
+                        .is_some_and(|e| ["csproj", "fsproj", "vbproj"].iter().any(|s| e.eq_ignore_ascii_case(s)))
+                {
+                    return Err(format!("{} is not an existing .NET project", path.display()));
+                }
+            }
+            self.write_edited(
+                &solution,
+                |text| {
+                    let mut text = text.to_string();
+                    for path in &picked {
+                        text = solution_edits::edit(
+                            &solution,
+                            &text,
+                            SolutionEdit::AddProject { folder: into.as_deref(), project: path },
+                        )?;
+                    }
+                    Ok(text)
+                },
+                cx,
+            )?;
+        } else {
+            for path in &picked {
+                let edit = match into.as_deref() {
+                    Some(folder) => SolutionEdit::AddFile { folder, path },
+                    None => return Err("A file goes in a solution folder".into()),
+                };
+                self.write_edited(&solution, |text| solution_edits::edit(&solution, text, edit), cx)?;
+            }
         }
         if projects && let Some(server) = &self.server {
             rsharp_lsp::reload_projects_of(server, &picked);

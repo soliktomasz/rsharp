@@ -171,6 +171,16 @@ impl NewProjectDialog {
 }
 
 impl NewProjectDialog {
+    pub(crate) fn watch_owner(&mut self, owner: &Entity<MainWindow>, window: &Window, cx: &mut Context<Self>) {
+        let handle = window.window_handle().downcast::<Self>().unwrap();
+        self._owner_subscription = Some(cx.observe_release(owner, move |d, _, cx| {
+            d.cancel.store(true, Ordering::Release);
+            d.closing = true;
+            cx.defer(move |cx| {
+                let _ = handle.update(cx, |d, w, cx| d.cancel(w, cx));
+            });
+        }));
+    }
     pub fn draft(&self) -> &Draft {
         &self.draft
     }

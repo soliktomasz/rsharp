@@ -73,3 +73,18 @@ fn escape_closes_find_action_and_typing_goes_back_to_the_editor(cx: &mut TestApp
         "after Escape the keys did not reach the editor"
     );
 }
+
+#[gpui::test]
+fn new_project_explains_that_it_needs_a_solution(cx: &mut TestAppContext) {
+    let run = Run::new("new-project-no-solution", &[]);
+    let (main, cx) = run.window(cx);
+    cx.run_until_parked();
+    cx.simulate_keystrokes("secondary-shift-a");
+    cx.simulate_input("new project");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(
+        main.read_with(cx, |m, _| m.said().map(str::to_string)).as_deref(),
+        Some("New Project requires an open solution")
+    );
+}

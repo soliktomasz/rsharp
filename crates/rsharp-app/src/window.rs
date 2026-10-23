@@ -31,6 +31,8 @@ actions!(
         CloseSolution,
         FindAction,
         OpenFolder,
+        NewSolution,
+        NewProject,
         ToggleSolution,
         ToggleProblems,
         HideToolWindow,
@@ -78,6 +80,7 @@ actions!(
 
 mod file_moves;
 mod file_ops;
+mod new_project;
 mod solution_actions;
 
 use solution_actions::{NameFor, SolutionMenu};
@@ -211,6 +214,10 @@ pub struct MainWindow {
     evaluating: bool,
     evaluate_again: bool,
     _evaluate_task: Option<Task<()>>,
+    creation_dialog: Option<gpui::WindowHandle<crate::new_project_dialog::NewProjectDialog>>,
+    creation_opening: bool,
+    _creation_subscription: Option<gpui::Subscription>,
+    project_menu: bool,
 }
 
 impl MainWindow {
@@ -269,6 +276,10 @@ impl MainWindow {
             evaluating: false,
             evaluate_again: false,
             _evaluate_task: None,
+            creation_dialog: None,
+            creation_opening: false,
+            _creation_subscription: None,
+            project_menu: false,
         }
     }
 
@@ -1454,7 +1465,7 @@ impl MainWindow {
                 if available[*index] {
                     window.dispatch_action((ALL[*index].action)(), cx);
                 } else {
-                    w.said = Some(format!("{} is not available here", ALL[*index].title.trim_end_matches('…')).into());
+                    w.said = Some(unavailable_action(*index));
                 }
             }
             cx.notify();
@@ -1549,7 +1560,7 @@ impl MainWindow {
         if available[index] {
             window.dispatch_action((ALL[index].action)(), cx);
         } else {
-            self.said = Some(format!("{} is not available here", ALL[index].title.trim_end_matches('…')).into());
+            self.said = Some(unavailable_action(index));
         }
         cx.notify();
     }
@@ -1647,6 +1658,14 @@ fn is_csharp(path: &Path) -> bool {
     path.extension().is_some_and(|e| e == "cs" || e == "csx")
 }
 
+fn unavailable_action(index: usize) -> SharedString {
+    if ALL[index].title == "New Project…" {
+        "New Project requires an open solution".into()
+    } else {
+        format!("{} is not available here", ALL[index].title.trim_end_matches('…')).into()
+    }
+}
+
 /// The branch `.git/HEAD` names, or the commit's short hash when detached.
 fn current_branch(folder: &Path) -> Option<String> {
     let head = folder.ancestors().map(|f| f.join(".git/HEAD")).find(|h| h.is_file())?;
@@ -1686,6 +1705,17 @@ impl Render for MainWindow {
                 }),
             )
             .on_action(cx.listener(Self::choose_folder))
+            .on_action(cx.listener(|m, _: &NewSolution, w, cx| m.show_new_solution(w, cx)))
+            .when(self.tree.is_some(), |d| {
+                d.on_action(cx.listener(|m, _: &NewProject, w, cx| {
+                    let into = m
+                        .selected
+                        .and_then(|i| m.rows.get(i))
+                        .filter(|r| r.kind == NodeKind::SolutionFolder)
+                        .and_then(|r| r.key.strip_prefix("sf:").map(str::to_string));
+                    m.show_new_project(into, w, cx);
+                }))
+            })
             .on_action(cx.listener(|w, _: &FindAction, window, cx| w.find_action(window, cx)))
             // Each acts only while it has something to act on, so menus and Find Action grey it otherwise.
             .when(self.workspace.is_some(), |d| {
@@ -1809,6 +1839,7 @@ impl Render for MainWindow {
             .child(self.status_bar(cx))
             .children(floating)
             .children(self.main_menu.as_ref().map(|(available, keys, _)| self.main_menu_dropdown(available, keys, cx)))
+            .children(self.project_menu.then(|| self.project_widget_menu(cx)))
             .children(self.tab_menu.map(|at| self.tab_menu_view(at, window, cx)))
             .children(self.status_menu.map(|kind| self.status_menu_view(kind, cx)))
             .children(self.refactoring.clone().map(|dialog| {
@@ -1896,8 +1927,15 @@ impl MainWindow {
             })
             .children(name.map(|name| {
                 widget("project-widget")
+                    .debug_selector(|| "project widget".into())
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(project_badge(&name, 20.))
                     .child(div().font_weight(FontWeight::SEMIBOLD).child(name))
+                    .child(icon("chevron-down", 12.))
+                    .on_click(cx.listener(|m, _: &ClickEvent, _, cx| {
+                        m.project_menu = !m.project_menu;
+                        cx.notify();
+                    }))
             }))
             .children(
                 self.branch.clone().map(|branch| widget("branch-widget").child(icon("branch", 16.)).child(branch)),
@@ -2960,6 +2998,11 @@ impl MainWindow {
             .gap(px(8.))
             .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("RSharp"))
             .child(div().text_color(theme::text_muted()).child("Open a folder, solution or project to start."))
+            .child(
+                crate::settings_dialog::button("New Solution", true, true)
+                    .mt(px(12.))
+                    .on_click(cx.listener(|m, _: &ClickEvent, w, cx| m.show_new_solution(w, cx))),
+            )
             .child(
                 div()
                     .id("open")

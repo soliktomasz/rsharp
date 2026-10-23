@@ -72,6 +72,7 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("enter", Choose, Some("NamePopup")),
         KeyBinding::new("escape", Dismiss, Some("NamePopup")),
         KeyBinding::new("secondary-shift-a", FindAction, None),
+        KeyBinding::new("secondary-shift-n", NewProject, Some("MainWindow")),
         KeyBinding::new("up", SelectPrevious, Some("FindAction")),
         KeyBinding::new("down", SelectNext, Some("FindAction")),
         KeyBinding::new("enter", Choose, Some("FindAction")),
