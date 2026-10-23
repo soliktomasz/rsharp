@@ -82,6 +82,8 @@ actions!(
         GoToDeclaration,
         GoToImplementation,
         GoToTypeDeclaration,
+        BaseSymbols,
+        DerivedSymbols,
         FindUsages,
     ]
 );
@@ -235,6 +237,7 @@ impl CodeEditor {
                     }
                 }
                 BufferEvent::Parsed => {}
+                BufferEvent::Moved(to) => editor.path = to.clone(),
             }
             cx.notify();
         });
@@ -902,6 +905,8 @@ moves! {
     GoToImplementation => |e, cx| e.go_to("textDocument/implementation", "Implementation", cx);
     GoToTypeDeclaration => |e, cx| e.go_to("textDocument/typeDefinition", "Type Declaration", cx);
     FindUsages => |e, cx| e.find_usages(cx);
+    BaseSymbols => |e, cx| e.go_to_related(true, cx);
+    DerivedSymbols => |e, cx| e.go_to_related(false, cx);
 }
 
 /// An offset carried through a change: before it, kept; after it, moved by what it added; inside it, to its end.

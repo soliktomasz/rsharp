@@ -32,6 +32,16 @@ fn main() {
             std::process::exit(2);
         }
     };
+    if let Some(folder) = &options.mcp {
+        rsharp_core::logs::start(&rsharp_core::state::StateStore::default_root().join("logs"));
+        let served = rsharp_mcp::serve(folder, std::io::stdin().lock(), std::io::stdout().lock());
+        rsharp_core::process::end_all();
+        if let Err(error) = served {
+            eprintln!("rsharp: MCP: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Some(path) = options.path.as_ref().filter(|p| !p.exists()) {
         eprintln!("rsharp: {} does not exist", path.display());
         std::process::exit(2);

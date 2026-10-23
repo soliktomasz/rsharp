@@ -19,6 +19,7 @@ just run [PATH] [--file F] [--caret L:C] [--key KEYS] [--type TEXT]   # the IDE 
 just test [filter]         # every test
 just screenshot OUT.png [args]   # the real window captured on macOS (tools/screenshot.sh; WAIT=seconds,
                            # SHOT_WINDOW=Settings for another window by title; a state folder of its own)
+target/debug/rsharp --mcp [FOLDER]   # RSharp as an MCP server on standard input and output (no window)
 tools/bench.sh             # the release build on 1, 3 and 10 projects: start, load, memory, key to frame;
                            # appends bench/results.csv by commit (keep its window in front)
 ```
@@ -67,6 +68,13 @@ terminal and takes focus for a moment.
 - `crates/rsharp-lsp`: the LSP client (JSON-RPC over stdio, a reader thread, `ServerFailed` the one failure) and
   `start_roslyn`, which runs the person's `roslyn-language-server` dotnet tool with `--clientProcessId`, so it
   ends with the IDE even after a crash, and opens the solution (`solution/open`) or lets it find the projects.
+- `crates/rsharp-mcp`: no UI. RSharp as an MCP server (`rsharp --mcp [FOLDER]`, JSON-RPC a line at a time on
+  standard input and output), Roslyn on the folder behind its tools: `workspace`, `diagnostics` (a file's, or the
+  solution's with solution-wide analysis), `find_symbol`, `outline`, `usages`, `rename` (a type's file renamed with it)
+  and `edit` (answers with the file's problems after). A place is a file, line and column from 1, or a symbol's name;
+  each tool waits for Roslyn's load, files are written in their own encoding and line separator, and Roslyn is told
+  each write (a change names the range it replaces: Roslyn crashes on one that does not). An agent adds it as a
+  stdio server: `claude mcp add rsharp -- /path/to/rsharp --mcp /path/to/folder`.
 - `crates/rsharp-app`: the shell, a library (`lib.rs`, whose `init` the executable and the tests both call) and
   `main.rs`. `window.rs` is a project window as Rider's Islands: the toolbar and status bar on the frame, a stripe
   down each side, the editor and the open tool windows as islands, the gaps between them resizing what they

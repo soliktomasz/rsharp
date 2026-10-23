@@ -125,6 +125,77 @@ pub struct CodeAction {
     pub raw: Value,
 }
 
+/// A type in a type hierarchy: its name, where it is declared (the whole and its name), and the item as the server
+/// sent it, which its supertypes and subtypes are asked by.
+#[derive(Clone, Debug)]
+pub struct HierarchyItem {
+    pub name: String,
+    pub path: PathBuf,
+    pub range: Span,
+    pub selection: Span,
+    pub raw: Value,
+}
+
+/// A prepareTypeHierarchy, supertypes or subtypes answer: the types, those outside a file left out.
+pub fn hierarchy_items(answer: &Value) -> Vec<HierarchyItem> {
+    answer
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            Some(HierarchyItem {
+                name: item["name"].as_str()?.to_string(),
+                path: path_of(&item["uri"])?,
+                range: Span::from(&item["range"]),
+                selection: Span::from(&item["selectionRange"]),
+                raw: item.clone(),
+            })
+        })
+        .collect()
+}
+
+/// A document's symbols, each with its depth in the outline, as a hierarchical answer nests them (or a flat one lists
+/// them, at depth 0): its name, its kind and where its name is.
+pub fn outline(answer: &Value) -> Vec<(usize, String, u64, Span)> {
+    fn walk(items: &Value, depth: usize, out: &mut Vec<(usize, String, u64, Span)>) {
+        for item in items.as_array().into_iter().flatten() {
+            let Some(name) = item["name"].as_str() else { continue };
+            let at = item.get("selectionRange").or(item["location"].get("range")).map(Span::from).unwrap_or_default();
+            out.push((depth, name.to_string(), item["kind"].as_u64().unwrap_or(0), at));
+            walk(&item["children"], depth + 1, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(answer, 0, &mut out);
+    out
+}
+
+/// A symbol kind as a person names it (the protocol's numbers).
+pub fn kind_name(kind: u64) -> &'static str {
+    match kind {
+        1 => "file",
+        2 => "module",
+        3 => "namespace",
+        4 => "package",
+        5 => "class",
+        6 => "method",
+        7 => "property",
+        8 => "field",
+        9 => "constructor",
+        10 => "enum",
+        11 => "interface",
+        12 => "function",
+        13 => "variable",
+        14 => "constant",
+        22 => "enum member",
+        23 => "struct",
+        24 => "event",
+        25 => "operator",
+        26 => "type parameter",
+        _ => "symbol",
+    }
+}
+
 /// A problem the server found in a file: where, how bad (an error, else a warning) and what.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Problem {

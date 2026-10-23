@@ -45,8 +45,9 @@ fn a_project_that_will_not_load_is_said_in_the_status_bar_and_listed_in_toolset(
     let listed = |cx: &mut VisualTestContext| main.read_with(cx, |m, cx| m.problems_listed(ProblemsTab::Toolset, cx));
     if !wait_for(cx, |cx| !listed(cx).is_empty()) {
         panic!(
-            "Toolset never listed Bad.csproj; the status bar says {:?}",
-            main.read_with(cx, |m, _| m.server_status())
+            "Toolset never listed Bad.csproj; the status bar says {:?}; Roslyn said:\n{}",
+            main.read_with(cx, |m, _| m.server_status()),
+            main.read_with(cx, |m, _| m.roslyn_said().join("\n"))
         );
     }
     let problems = listed(cx);

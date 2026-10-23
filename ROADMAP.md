@@ -93,10 +93,11 @@ tokens for the lines on screen; completion, parameter info, Quick Documentation 
 highlights; context actions and quick fixes; Rename across files; Reformat Code; Go to Declaration (and
 Cmd+click), Implementation and Type Declaration; Find Usages into a Find window; Back and Forward, Last Edit
 Location, Recent Files, Go to File, Type and Symbol, and Find in Files; inlay hints; Problems' Solution tab (with
-solution-wide analysis turned on) and Toolset tab, and project-load problems in the status bar. Left: Host and
-Roslyn.Extension (decision 1), a type's file renamed with it, Base
-and Derived, the named refactorings and their dialogs, live templates, the framework switcher, Search Everywhere, Recent
-Locations, Find in Files' scopes and Replace in Files, and the MCP server.
+solution-wide analysis turned on) and Toolset tab, and project-load problems in the status bar; Base and Derived Symbols; a type's file renamed with it; and the MCP
+server (`rsharp --mcp`) with `workspace`, `diagnostics`, `find_symbol`, `outline`, `usages`, `rename` and `edit`.
+Left: Host and
+Roslyn.Extension (decision 1), the named refactorings and their dialogs, live templates, the framework switcher, Search Everywhere, Recent
+Locations, and Find in Files' scopes and Replace in Files.
 - **Roslyn in full:** Passenger's `Host` for design-time builds and `Roslyn.Extension` loaded with `--extension`, so
   projects load the way Passenger loads them.
 - Semantic tokens over the syntax colours (this closes the shortcut in `rsharp-languages`), refreshed for the
@@ -118,6 +119,13 @@ Passenger: `CSharp/`, `Navigation/`, `Mcp/`, `Passenger.Lsp`, `Passenger.Host`, 
 issues #174, #175, #177, #178, #181, #210.
 Done when: Passenger's C# feature tests pass against RSharp, and an agent can run `diagnostics` and `rename` on
 RSharp's own repository.
+
+Open: Roslyn 5.8 now and then ends its project load ("Loaded 1 project(s)") without loading the project or saying
+why, a sound project and a broken one alike; the status bar then stays on "Loading solution…" and the code tools
+find nothing. Starting it again in the same process stalls the same way, and turning off MSBuild's node reuse or
+file-based programs changes nothing. The window keeps what Roslyn said (`MainWindow::roslyn_said`), which the
+Roslyn window tests print when they fail; Passenger's Host (decision 1) loading the projects itself may be the way
+round it.
 
 ### Phase 4: Solution and projects (M)
 - **The Solution view as Rider's:** the solution's projects, Dependencies, solution folders, file nesting.

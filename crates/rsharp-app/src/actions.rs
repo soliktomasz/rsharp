@@ -2,6 +2,7 @@
 //! finds it by. The main menu and Find Action both read this list, and keys run the same gpui actions,
 //! so an action is one entry here, one binding in `keymap.rs` and one handler where it acts.
 
+use crate::editor::{BaseSymbols, DerivedSymbols};
 use crate::editor::{
     CaretPerLine, CloneCaretAbove, CloneCaretBelow, Copy, Cut, Paste, Redo, Save, SelectAll, SelectAllOccurrences,
     SelectNextOccurrence, ToggleColumnMode, Undo, UnselectOccurrence,
@@ -96,6 +97,8 @@ pub static ALL: &[IdeAction] = &[
     ide!("Find in Files…", "Edit", ["search in files", "find in path", "grep"], FindInFiles),
     ide!("Declaration or Usages", "Navigate", ["go to declaration", "go to definition"], GoToDeclaration),
     ide!("Implementation(s)", "Navigate", ["go to implementation", "derived symbols"], GoToImplementation),
+    ide!("Base Symbols", "Navigate", ["super method", "go to base", "base class"], BaseSymbols),
+    ide!("Derived Symbols", "Navigate", ["go to derived", "inheritors", "subclasses"], DerivedSymbols),
     ide!("Type Declaration", "Navigate", ["go to type declaration", "go to type definition"], GoToTypeDeclaration),
     ide!("Find Usages", "Edit", ["references", "find references", "usages"], FindUsages),
     ide!("Basic Completion", "Code", ["code completion", "intellisense", "complete"], Complete),

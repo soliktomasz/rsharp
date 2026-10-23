@@ -13,6 +13,7 @@ rsharp-core = { path = "crates/rsharp-core" }
 rsharp-text = { path = "crates/rsharp-text" }
 rsharp-lsp = { path = "crates/rsharp-lsp" }
 rsharp-languages = { path = "crates/rsharp-languages" }
+rsharp-mcp = { path = "crates/rsharp-mcp" }
 # runtime_shaders: macOS compiles gpui's Metal shaders at start, so a build needs no Metal toolchain.
 gpui = { version = "0.2.2", features = ["runtime_shaders"] }
 encoding_rs = "0.8"

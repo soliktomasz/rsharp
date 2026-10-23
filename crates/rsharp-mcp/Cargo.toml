@@ -1,0 +1,13 @@
+[package]
+name = "rsharp-mcp"
+description = "RSharp as an MCP server: Roslyn's view of a folder's C#, as tools an agent calls."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+log.workspace = true
+rsharp-core.workspace = true
+rsharp-lsp.workspace = true
+rsharp-text.workspace = true
+serde_json.workspace = true

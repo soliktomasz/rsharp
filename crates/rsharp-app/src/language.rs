@@ -96,6 +96,28 @@ pub fn apply_workspace_edit(edit: &WorkspaceEdit, server: Option<&LanguageServer
     Ok(())
 }
 
+/// Renames files, as a type's rename does: an open one keeps its tab and its unsaved text under its new name, one not
+/// open is renamed on disk, and the server is told of both. Says which could not be, and stops there.
+pub fn move_files(moves: &[(PathBuf, PathBuf)], server: Option<&LanguageServer>, cx: &mut App) -> Result<(), String> {
+    let mut changes = Vec::new();
+    for (from, to) in moves {
+        if to.exists() {
+            return Err(format!("{} was not renamed: {} is there already", name(from), name(to)));
+        }
+        let renamed = match buffer::find(from, cx) {
+            Some(open) => open.update(cx, |b, cx| b.move_to(to.clone(), cx)),
+            None => std::fs::rename(from, to),
+        };
+        renamed.map_err(|e| format!("{} could not be renamed: {e}", name(from)))?;
+        changes.push(json!({ "uri": rsharp_core::paths::to_uri(from), "type": 3 }));
+        changes.push(json!({ "uri": rsharp_core::paths::to_uri(to), "type": 1 }));
+    }
+    if let Some(server) = server.filter(|_| !changes.is_empty()) {
+        server.notify("workspace/didChangeWatchedFiles", json!({ "changes": changes }));
+    }
+    Ok(())
+}
+
 fn name(path: &Path) -> String {
     path.file_name().unwrap_or_default().to_string_lossy().into_owned()
 }

@@ -163,7 +163,7 @@ pub struct MainWindow {
     solution_task: Option<Task<()>>,
     /// Rider's solution-wide analysis: every file analysed, not only the open ones; off until turned on, as it costs.
     solution_wide: bool,
-    /// Roslyn's last log messages, every level, for a failure to say where Roslyn was.
+    /// What Roslyn said last (its log, its notifications, its error output), for a failure to say where it was.
     roslyn_said: std::collections::VecDeque<String>,
     /// The projects Roslyn could not load whole: each project, whether it is an error, and what was wrong.
     load_problems: Vec<(PathBuf, bool, String)>,
@@ -388,14 +388,20 @@ impl MainWindow {
         if rsharp_lsp::says_projects_loaded(&event) && !self.projects_loaded {
             self.projects_loaded(cx);
         }
-        if let ServerEvent::Notification { method, params } = &event
-            && method == "window/logMessage"
-        {
-            if self.roslyn_said.len() == 50 {
-                self.roslyn_said.pop_front();
+        let said = match &event {
+            ServerEvent::Notification { method, params } if method == "window/logMessage" => {
+                params["message"].as_str().unwrap_or_default().chars().take(300).collect()
             }
-            self.roslyn_said.push_back(params["message"].as_str().unwrap_or_default().chars().take(300).collect());
+            ServerEvent::Notification { method, params } => {
+                format!("{method} {}", params.to_string().chars().take(160).collect::<String>())
+            }
+            ServerEvent::Stderr(line) => format!("stderr: {}", line.chars().take(300).collect::<String>()),
+            ServerEvent::Ended => "Roslyn ended".into(),
+        };
+        if self.roslyn_said.len() == 50 {
+            self.roslyn_said.pop_front();
         }
+        self.roslyn_said.push_back(said);
         match event {
             ServerEvent::Notification { method, params } => match method.as_str() {
                 // Followed by token: Roslyn's restore can begin after it said the projects loaded.

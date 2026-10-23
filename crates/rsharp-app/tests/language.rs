@@ -14,6 +14,7 @@ const GREETER: &str =
     "namespace Demo;\n\npublic class Greeter\n{\n    public string Greet(string name) => \"Hello \" + name;\n}\n";
 const PROGRAM: &str = "namespace Demo;\n\npublic static class Program\n{\n    public static void Main()\n    {\n        var greeter = new Greeter();\n        System.Console.WriteLine(greeter.Greet(\"you\"));\n    }\n}\n";
 
+const SHAPES: &str = "namespace Demo;\n\npublic abstract class Shape\n{\n    public abstract double Area();\n}\n\npublic class Circle : Shape\n{\n    public override double Area() => 3;\n}\n";
 const BROKEN: &str = "namespace Demo;\n\nclass Broken\n{\n    int M() => \"no\";\n}\n";
 
 /// Waits, in real time, for what Roslyn does on threads of its own to reach the window; false after three minutes.
@@ -47,7 +48,13 @@ fn declaration_completion_rename_and_usages_work_against_roslyn(cx: &mut TestApp
     }
     let run = Run::new(
         "language",
-        &[("Demo.csproj", PROJECT), ("Greeter.cs", GREETER), ("Program.cs", PROGRAM), ("Broken.cs", BROKEN)],
+        &[
+            ("Demo.csproj", PROJECT),
+            ("Greeter.cs", GREETER),
+            ("Program.cs", PROGRAM),
+            ("Broken.cs", BROKEN),
+            ("Shapes.cs", SHAPES),
+        ],
     );
     let (main, cx) = run.window(cx);
     cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
@@ -157,4 +164,40 @@ fn declaration_completion_rename_and_usages_work_against_roslyn(cx: &mut TestApp
     wait(cx, "the literal argument's parameter hint", |cx| {
         editor.read_with(cx, |e, _| e.inlay_hints()).iter().any(|h| h.starts_with("8:") && h.ends_with(" name:"))
     });
+
+    // Base Symbols on Circle goes to Shape; Derived Symbols on Shape to Circle; Base Symbols on the override to
+    // the abstract method.
+    let (base, derived) = if cfg!(target_os = "macos") { ("cmd-u", None) } else { ("alt-home", Some("alt-end")) };
+    let at = |main: &Entity<MainWindow>, cx: &mut VisualTestContext| {
+        main.read_with(cx, |m, cx| {
+            let e = m.editor().unwrap().read(cx);
+            (e.path.file_name().unwrap().to_string_lossy().into_owned(), e.caret().line, e.caret().column)
+        })
+    };
+    main.update_in(cx, |main, window, cx| main.open_file(&run.folder.join("Shapes.cs"), Some((7, 14)), window, cx));
+    cx.simulate_keystrokes(base);
+    wait(cx, "Base Symbols going to Shape", |cx| at(&main, cx) == ("Shapes.cs".into(), 2, 22));
+    main.update_in(cx, |main, window, cx| main.open_file(&run.folder.join("Shapes.cs"), Some((9, 30)), window, cx));
+    cx.simulate_keystrokes(base);
+    wait(cx, "Base Symbols on the override going to the abstract method", |cx| at(&main, cx).1 == 4);
+    if let Some(derived) = derived {
+        main.update_in(cx, |main, window, cx| main.open_file(&run.folder.join("Shapes.cs"), Some((2, 24)), window, cx));
+        cx.simulate_keystrokes(derived);
+        wait(cx, "Derived Symbols going to Circle", |cx| at(&main, cx) == ("Shapes.cs".into(), 7, 13));
+    }
+
+    // Renaming the class Greeter renames Greeter.cs, its tab following.
+    main.update_in(cx, |main, window, cx| main.open_file(&run.folder.join("Greeter.cs"), Some((2, 15)), window, cx));
+    cx.simulate_keystrokes(rename);
+    cx.run_until_parked();
+    cx.simulate_input("Welcomer");
+    cx.simulate_keystrokes("enter");
+    wait(cx, "Greeter.cs renamed to Welcomer.cs", |_| run.folder.join("Welcomer.cs").is_file());
+    assert!(!run.folder.join("Greeter.cs").exists(), "Greeter.cs was left beside Welcomer.cs");
+    assert_eq!(
+        main.read_with(cx, |m, cx| m.active_tab_name(cx)),
+        Some("Welcomer.cs".into()),
+        "the tab kept the old name"
+    );
+    assert!(text(&main, cx).contains("public class Welcomer"), "the renamed file's tab lost its text");
 }

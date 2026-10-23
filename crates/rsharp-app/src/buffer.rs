@@ -21,6 +21,8 @@ pub enum BufferEvent {
     Edited { changes: Vec<Change>, by: EntityId },
     /// A parse landed: a new tree.
     Parsed,
+    /// The file was renamed on disk (a type's rename): its new path.
+    Moved(PathBuf),
 }
 
 /// Where a file's indentation comes from, the first of these that says, as Rider's indent widget names it.
@@ -305,6 +307,26 @@ impl Buffer {
         }}));
         self.server = Some((server, uri));
         self.check(Duration::ZERO, cx);
+    }
+
+    /// The file renamed on disk to `to`: known by its new path from now, the server told it is the new file, and every
+    /// editor of it told. Refused, with nothing changed, when the rename fails.
+    pub fn move_to(&mut self, to: PathBuf, cx: &mut Context<Self>) -> std::io::Result<()> {
+        std::fs::rename(&self.path, &to)?;
+        let server = self.server.as_ref().map(|(s, _)| s.clone());
+        self.detach_server();
+        let me = cx.entity().downgrade();
+        let registry = &mut cx.default_global::<Buffers>().0;
+        registry.remove(&self.path);
+        registry.insert(to.clone(), me);
+        self.path = to.clone();
+        self.on_disk = stamp(&self.path);
+        if let Some(server) = server {
+            self.attach_server(server, cx);
+        }
+        cx.emit(BufferEvent::Moved(to));
+        cx.notify();
+        Ok(())
     }
 
     /// The server the file is open in, and its URI there.

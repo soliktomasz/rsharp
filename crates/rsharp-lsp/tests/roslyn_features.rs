@@ -176,6 +176,25 @@ fn roslyn_answers_what_the_editor_asks_in_the_form_the_editor_reads() {
     }
     assert!(has(&found), "Go to Symbol found {found:?}");
 
+    // The type hierarchy: the class's supertype is the interface, and the interface's subtype the class.
+    let class = hierarchy_items(&ask(&server, "textDocument/prepareTypeHierarchy", at(&uri, find("Greeter :", 0))));
+    assert_eq!(class.first().map(|t| t.name.as_str()), Some("Greeter"), "prepareTypeHierarchy found {class:?}");
+    let up = hierarchy_items(&ask(&server, "typeHierarchy/supertypes", json!({ "item": class[0].raw })));
+    assert!(up.iter().any(|t| t.name == "IGreeter"), "the class's supertypes were {up:?}");
+    let interface =
+        hierarchy_items(&ask(&server, "textDocument/prepareTypeHierarchy", at(&uri, find("IGreeter {", 0))));
+    let down = hierarchy_items(&ask(&server, "typeHierarchy/subtypes", json!({ "item": interface[0].raw })));
+    assert!(down.iter().any(|t| t.name == "Greeter"), "the interface's subtypes were {down:?}");
+
+    // The file's outline: the namespace's types and their members, nested.
+    let shape = outline(&ask(&server, "textDocument/documentSymbol", json!({ "textDocument": { "uri": uri } })));
+    assert!(
+        shape
+            .iter()
+            .any(|(depth, name, kind, _)| name.starts_with("Greet(") && *depth > 0 && kind_name(*kind) == "method"),
+        "the outline was {shape:?}"
+    );
+
     // Inlay hints: the local's type before its name (`var string? text`), the parameter's name before a literal argument.
     let whole = Span { start: Point::new(0, 0), end: find("}\n}", 0) };
     let hints = inlay_hints(&ask(

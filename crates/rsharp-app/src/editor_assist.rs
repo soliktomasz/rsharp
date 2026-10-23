@@ -431,6 +431,86 @@ impl CodeEditor {
         }));
     }
 
+    /// Rider's Base Symbols (`up`) and Derived Symbols: a type's base types and interfaces through every level (or
+    /// those deriving from it), a member's the members of those types by its name, or those overriding or
+    /// implementing it. One place is gone to, several listed.
+    pub(super) fn go_to_related(&mut self, up: bool, cx: &mut Context<Self>) {
+        let Some((server, uri)) = self.server(cx) else { return };
+        let head = self.primary().head;
+        let name = self.text.byte_slice(word_at(&self.text, head).range()).to_string();
+        let here = lsp::at(&uri, language::point(&self.text, head));
+        let title = if up { "Base Symbols" } else { "Derived Symbols" };
+        self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
+            let ask = |method: &str, params: serde_json::Value| {
+                let answer = server.ask(method, params);
+                async move { answer.await.unwrap_or(serde_json::Value::Null) }
+            };
+            let types = lsp::hierarchy_items(&ask("textDocument/prepareTypeHierarchy", here.clone()).await);
+            let mut to: Vec<Location> = Vec::new();
+            match types.first() {
+                // A type: its hierarchy walked one way, nearest first, each type once, at most fifty.
+                Some(start) if start.name == name || !up && start.name.starts_with(&format!("{name}<")) => {
+                    let method = if up { "typeHierarchy/supertypes" } else { "typeHierarchy/subtypes" };
+                    let mut waiting = vec![start.clone()];
+                    let mut seen = vec![(start.path.clone(), start.selection.start)];
+                    while let Some(item) = waiting.pop().filter(|_| to.len() < 50) {
+                        for next in lsp::hierarchy_items(&ask(method, json!({ "item": item.raw })).await) {
+                            if !seen.contains(&(next.path.clone(), next.selection.start)) {
+                                seen.push((next.path.clone(), next.selection.start));
+                                to.push(Location { path: next.path.clone(), span: next.selection });
+                                waiting.insert(0, next);
+                            }
+                        }
+                    }
+                }
+                // A member: the members of its type's base types that share its name.
+                // shortcut: by name, so an overload in a base type is listed too; filter by the member's references,
+                // as Passenger does, once that is missed.
+                Some(owner) if up => {
+                    let mut bases = Vec::new();
+                    let mut waiting = vec![owner.clone()];
+                    while let Some(item) = waiting.pop().filter(|_| bases.len() < 50) {
+                        for next in
+                            lsp::hierarchy_items(&ask("typeHierarchy/supertypes", json!({ "item": item.raw })).await)
+                        {
+                            waiting.push(next.clone());
+                            bases.push(next);
+                        }
+                    }
+                    let symbols = lsp::symbols(&ask("workspace/symbol", json!({ "query": name })).await);
+                    for symbol in
+                        symbols.into_iter().filter(|s| s.name == name || s.name.starts_with(&format!("{name}(")))
+                    {
+                        let at = symbol.location.span.start;
+                        let inside = |b: &lsp::HierarchyItem| {
+                            b.path == symbol.location.path && b.range.start <= at && at <= b.range.end
+                        };
+                        if bases.iter().any(inside) {
+                            to.push(symbol.location);
+                        }
+                    }
+                }
+                // A member's overrides and implementations: the server's implementations but the member itself.
+                _ if !up => {
+                    let own = lsp::locations(&ask("textDocument/definition", here.clone()).await);
+                    to = lsp::locations(&ask("textDocument/implementation", here).await)
+                        .into_iter()
+                        .filter(|l| !own.contains(l))
+                        .collect();
+                    to.sort_by(|a, b| (&a.path, a.span.start).cmp(&(&b.path, b.span.start)));
+                }
+                _ => {}
+            }
+            let _ = this.update(cx, |_, cx| {
+                if to.is_empty() {
+                    cx.emit(Said(format!("No {} found", title.to_lowercase())));
+                } else {
+                    cx.emit(Navigate { title: title.to_string(), to, list: false });
+                }
+            });
+        }));
+    }
+
     pub(super) fn find_usages(&mut self, cx: &mut Context<Self>) {
         let Some((server, uri)) = self.server(cx) else { return };
         let head = self.primary().head;
@@ -567,15 +647,34 @@ impl CodeEditor {
             cx.notify();
             return;
         };
-        let mut params = lsp::at(&uri, language::point(&self.text, word.start));
+        let here = lsp::at(&uri, language::point(&self.text, word.start));
+        let mut params = here.clone();
         params["newName"] = json!(name);
+        // Whether it is a type's name, and where the type is declared, asked before the rename changes the text.
+        let (types, declared) = (
+            server.ask("textDocument/prepareTypeHierarchy", here.clone()),
+            server.ask("textDocument/definition", here),
+        );
         let answer = ask(&server, "textDocument/rename", params, cx);
         self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
+            let is_type = types.await.is_ok_and(|t| lsp::hierarchy_items(&t).first().is_some_and(|t| t.name == old));
+            let declared: Vec<PathBuf> =
+                declared.await.map(|d| lsp::locations(&d)).unwrap_or_default().into_iter().map(|l| l.path).collect();
             let edit = answer.await.map(|a| lsp::workspace_edit(&a)).unwrap_or_default();
             let _ = this.update(cx, |_, cx| {
                 if edit.is_empty() {
                     cx.emit(Said(format!("{old} cannot be renamed")));
-                } else if let Err(why) = language::apply_workspace_edit(&edit, Some(&server), cx) {
+                    return;
+                }
+                if let Err(why) = language::apply_workspace_edit(&edit, Some(&server), cx) {
+                    cx.emit(Said(why));
+                    return;
+                }
+                // A type's files named after it are renamed with it, as Rider renames them.
+                // shortcut: Undo takes back the text, not the files' new names; make the two one step (Passenger's
+                // CommandHistory) with global undo.
+                let moves = if is_type { rsharp_lsp::files_named_after(&declared, &old, &name) } else { Vec::new() };
+                if let Err(why) = language::move_files(&moves, Some(&server), cx) {
                     cx.emit(Said(why));
                 }
             });

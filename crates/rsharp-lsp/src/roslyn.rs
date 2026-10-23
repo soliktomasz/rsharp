@@ -103,6 +103,7 @@ fn client_capabilities() -> Value {
             "typeDefinition": { "linkSupport": true },
             "implementation": { "linkSupport": true },
             "references": {},
+            "typeHierarchy": {},
             "documentHighlight": {},
             "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
             "codeAction": {
@@ -199,6 +200,20 @@ pub fn load_problem(line: &str) -> Option<(PathBuf, bool, String)> {
     Some((PathBuf::from(path), error, message.split_whitespace().collect::<Vec<_>>().join(" ")))
 }
 
+/// The files named after a type, renamed with it as Rider renames them: a C# file whose name up to its first dot is
+/// the type's (Foo.cs, Foo.Designer.cs) gets the new name before that dot; one named otherwise (Shapes.cs) keeps its own.
+pub fn files_named_after(files: &[PathBuf], old: &str, new: &str) -> Vec<(PathBuf, PathBuf)> {
+    let mut moves: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for file in files {
+        let Some(file_name) = file.file_name().map(|n| n.to_string_lossy().into_owned()) else { continue };
+        let (stem, rest) = file_name.split_once('.').unwrap_or((&file_name, ""));
+        if stem == old && file_name.ends_with(".cs") && moves.iter().all(|(f, _)| f != file) {
+            moves.push((file.clone(), file.with_file_name(format!("{new}.{rest}"))));
+        }
+    }
+    moves
+}
+
 /// The kinds Roslyn names its semantic tokens by, in its legend's order.
 pub fn token_legend(server: &LanguageServer) -> Vec<String> {
     server.capabilities["semanticTokensProvider"]["legend"]["tokenTypes"]
@@ -222,6 +237,18 @@ mod tests {
         );
         assert_eq!(load_problem("Warning while loading /a/B.fsproj: old").map(|p| p.1), Some(false));
         assert_eq!(load_problem("Successfully completed load of /a/App.csproj"), None);
+    }
+
+    #[test]
+    fn a_types_files_are_renamed_before_their_first_dot_and_a_file_named_otherwise_kept() {
+        let files = [PathBuf::from("/a/Foo.cs"), PathBuf::from("/a/Foo.Designer.cs"), PathBuf::from("/a/Shapes.cs")];
+        assert_eq!(
+            files_named_after(&files, "Foo", "Bar"),
+            [
+                (PathBuf::from("/a/Foo.cs"), PathBuf::from("/a/Bar.cs")),
+                (PathBuf::from("/a/Foo.Designer.cs"), PathBuf::from("/a/Bar.Designer.cs")),
+            ]
+        );
     }
 
     #[test]

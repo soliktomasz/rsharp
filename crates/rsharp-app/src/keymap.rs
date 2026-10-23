@@ -123,6 +123,8 @@ pub fn bind(cx: &mut App) {
             KeyBinding::new("cmd-alt-b", GoToImplementation, editor),
             KeyBinding::new("cmd-shift-b", GoToTypeDeclaration, editor),
             KeyBinding::new("alt-f7", FindUsages, editor),
+            // Rider's macOS keymap: Super Method (Base Symbols) is Cmd+U; Derived Symbols has no key of its own there.
+            KeyBinding::new("cmd-u", BaseSymbols, editor),
             // Rider's macOS keymap gives Open no key: Cmd+O is Go to Type.
             KeyBinding::new("cmd-[", Back, None),
             KeyBinding::new("cmd-]", Forward, None),
@@ -180,6 +182,8 @@ pub fn bind(cx: &mut App) {
             KeyBinding::new("ctrl-f12", GoToImplementation, editor),
             KeyBinding::new("ctrl-shift-f11", GoToTypeDeclaration, editor),
             KeyBinding::new("shift-f12", FindUsages, editor),
+            KeyBinding::new("alt-home", BaseSymbols, editor),
+            KeyBinding::new("alt-end", DerivedSymbols, editor),
             KeyBinding::new("ctrl-o", OpenFolder, None),
             KeyBinding::new("ctrl--", Back, None),
             KeyBinding::new("ctrl-shift--", Forward, None),
