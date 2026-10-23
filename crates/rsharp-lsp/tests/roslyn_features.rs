@@ -61,7 +61,7 @@ fn roslyn_answers_what_the_editor_asks_in_the_form_the_editor_reads() {
     let uri = rsharp_core::paths::to_uri(&file);
 
     let (sender, events) = mpsc::channel();
-    let server = start_roslyn(&folder, None, &folder.join("logs"), move |event| {
+    let server = start_roslyn(&folder, None, &folder.join("logs"), None, move |event| {
         let _ = sender.send(event);
     })
     .expect("Roslyn started");

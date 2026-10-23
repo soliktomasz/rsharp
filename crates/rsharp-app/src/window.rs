@@ -345,7 +345,7 @@ impl MainWindow {
             let started = cx
                 .background_executor()
                 .spawn(async move {
-                    start_roslyn(&folder, solution.as_deref(), &logs, move |event| {
+                    start_roslyn(&folder, solution.as_deref(), &logs, None, move |event| {
                         let _ = sender.unbounded_send(event);
                     })
                 })

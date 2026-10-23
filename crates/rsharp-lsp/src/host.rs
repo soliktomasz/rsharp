@@ -4,10 +4,12 @@
 
 use crate::ServerFailed;
 use rsharp_core::process::{self, Child};
+use rsharp_core::project::EvaluatedProject;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Lines, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::{Arc, Mutex};
 
 /// A project's design-time builds, or why there are none, as Roslyn's server takes them from the extension.
 pub struct Built {
@@ -56,35 +58,106 @@ impl ProjectHost {
         serde_json::from_str(&line).map_err(|e| ServerFailed(format!("the project host said what is not JSON: {e}")))
     }
 
-    /// One project's design-time builds, with the global properties a build of its solution gives it.
-    pub fn build(&mut self, project: &Path, properties: &Value) -> Result<Built, ServerFailed> {
+    /// Asks one request and passes each of its partial results on, until its result or its error.
+    fn ask(&mut self, method: &str, params: Value, mut partial: impl FnMut(&Value)) -> Result<(), String> {
         let id = self.next_id;
         self.next_id += 1;
-        let request =
-            json!({ "id": id, "method": "build", "params": { "projects": [project], "properties": properties } });
+        let request = json!({ "id": id, "method": method, "params": params });
         writeln!(self.input, "{request}")
             .and_then(|_| self.input.flush())
-            .map_err(|e| ServerFailed(format!("the project host could not be asked: {e}")))?;
-        let mut built = None;
+            .map_err(|e| format!("the project host could not be asked: {e}"))?;
         loop {
-            let reply = self.reply()?;
+            let reply = self.reply().map_err(|e| e.0)?;
             if reply["id"] != id {
                 continue;
             }
             if let Some(error) = reply["error"].as_str() {
-                return Err(ServerFailed(format!("the project host could not build {}: {error}", project.display())));
+                return Err(error.to_string());
             }
-            if let Some(partial) = reply.get("partial") {
-                built = Some(Built {
-                    infos: partial["infos"].as_str().map(str::to_string),
-                    problem: partial["problem"].as_str().map(str::to_string),
-                    diagnostics: partial.get("diagnostics").cloned().unwrap_or(Value::Null),
-                });
+            if let Some(value) = reply.get("partial") {
+                partial(value);
             }
             if reply.get("result").is_some() {
-                return built
-                    .ok_or_else(|| ServerFailed(format!("the project host built nothing of {}", project.display())));
+                return Ok(());
             }
         }
+    }
+
+    /// One project's design-time builds, with the global properties a build of its solution gives it.
+    pub fn build(&mut self, project: &Path, properties: &Value) -> Result<Built, ServerFailed> {
+        let mut built = None;
+        self.ask("build", json!({ "projects": [project], "properties": properties }), |partial| {
+            built = Some(Built {
+                infos: partial["infos"].as_str().map(str::to_string),
+                problem: partial["problem"].as_str().map(str::to_string),
+                diagnostics: partial.get("diagnostics").cloned().unwrap_or(Value::Null),
+            });
+        })
+        .map_err(|e| ServerFailed(format!("the project host could not build {}: {e}", project.display())))?;
+        built.ok_or_else(|| ServerFailed(format!("the project host built nothing of {}", project.display())))
+    }
+
+    /// One project as MSBuild evaluates it, every framework of it, with the solution's global properties.
+    pub fn evaluate(&mut self, project: &Path, properties: &Value) -> Result<EvaluatedProject, ServerFailed> {
+        let mut evaluated: Option<EvaluatedProject> = None;
+        let mut unread = None;
+        self.ask("evaluate", json!({ "projects": [project], "properties": properties }), |partial| {
+            // A multi-targeted project may come first by its outer evaluation alone; the complete one follows it.
+            match serde_json::from_value(partial.clone()) {
+                Ok(project) => evaluated = Some(project),
+                Err(error) => unread = Some(error),
+            }
+        })
+        .map_err(|e| ServerFailed(format!("the project host could not evaluate {}: {e}", project.display())))?;
+        evaluated.ok_or_else(|| match unread {
+            Some(error) => {
+                ServerFailed(format!("the project host's evaluation of {} did not read: {error}", project.display()))
+            }
+            None => ServerFailed(format!("the project host evaluated nothing of {}", project.display())),
+        })
+    }
+}
+
+/// The one Host a folder has, which Roslyn's design-time builds and the Solution view's evaluations take turns on:
+/// started on first use, and again after it fails.
+#[derive(Clone)]
+pub struct SharedHost {
+    running: Arc<Mutex<Option<ProjectHost>>>,
+    dotnet: PathBuf,
+    host: PathBuf,
+    folder: PathBuf,
+}
+
+impl SharedHost {
+    /// None without Passenger's sidecars or dotnet: then nothing is evaluated and Roslyn finds the projects itself.
+    pub fn carried(folder: &Path) -> Option<Self> {
+        let host = crate::roslyn::carried_host()?;
+        let dotnet = rsharp_core::programs::dotnet()?;
+        Some(Self { running: Arc::default(), dotnet, host, folder: folder.to_path_buf() })
+    }
+
+    fn with<T>(&self, ask: impl FnOnce(&mut ProjectHost) -> Result<T, ServerFailed>) -> Result<T, ServerFailed> {
+        let mut running = self.running.lock().unwrap();
+        if running.is_none() {
+            *running = Some(ProjectHost::start(&self.dotnet, &self.host, &self.folder)?);
+        }
+        let answer = ask(running.as_mut().expect("started above"));
+        if answer.is_err() {
+            *running = None;
+        }
+        answer
+    }
+
+    /// Blocks while a build or another evaluation has the Host, so call it off the UI thread.
+    pub fn build(&self, project: &Path, properties: &Value) -> Result<Built, ServerFailed> {
+        self.with(|host| host.build(project, properties))
+    }
+
+    /// Blocks while a build or another evaluation has the Host, so call it off the UI thread.
+    // shortcut: one project per evaluate request so Roslyn's builds wait at most one evaluation, until the Host is
+    // read by a reader thread that routes replies by id.
+    pub fn evaluate(&self, project: &Path, solution: Option<&Path>) -> Result<EvaluatedProject, ServerFailed> {
+        let properties = crate::roslyn::solution_properties(solution);
+        self.with(|host| host.evaluate(project, &properties))
     }
 }

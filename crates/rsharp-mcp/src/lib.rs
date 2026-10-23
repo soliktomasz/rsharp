@@ -145,7 +145,7 @@ impl Session {
         let load: Arc<(Mutex<Load>, Condvar)> = Arc::default();
         let heard = load.clone();
         let logs = std::env::temp_dir().join(format!("rsharp-mcp-{}", std::process::id()));
-        let started = lsp::start_roslyn(&folder, solution.as_deref(), &logs, move |event| {
+        let started = lsp::start_roslyn(&folder, solution.as_deref(), &logs, None, move |event| {
             let (state, changed) = &*heard;
             let mut state = state.lock().unwrap();
             if lsp::says_projects_loaded(&event) {

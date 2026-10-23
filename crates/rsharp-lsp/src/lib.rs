@@ -7,6 +7,7 @@ mod host;
 mod protocol;
 mod roslyn;
 
+pub use host::SharedHost;
 pub use protocol::*;
 pub use roslyn::*;
 
@@ -256,7 +257,7 @@ mod tests {
         let folder = rsharp_core::paths::canonical(&folder);
 
         let (sender, events) = mpsc::channel();
-        let server = start_roslyn(&folder, None, &folder.join("logs"), move |event| {
+        let server = start_roslyn(&folder, None, &folder.join("logs"), None, move |event| {
             let _ = sender.send(event);
         })
         .expect("Roslyn started and answered initialize");

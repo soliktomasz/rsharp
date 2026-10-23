@@ -15,6 +15,11 @@ struct Carried {
     host: PathBuf,
 }
 
+/// Passenger's Host as RSharp's build published it, when it did.
+pub(crate) fn carried_host() -> Option<PathBuf> {
+    carried().map(|c| c.host)
+}
+
 fn carried() -> Option<Carried> {
     let (sidecars, server) = (env!("RSHARP_SIDECARS"), env!("RSHARP_ROSLYN_SERVER"));
     if sidecars.is_empty() {
@@ -94,7 +99,8 @@ pub fn reload_projects_of(server: &LanguageServer, files: &[PathBuf]) {
 
 /// The global properties a build of the solution gives its projects (a Directory.Build.props may read them), and the
 /// Razor design-time targets Roslyn's server gives its own build host.
-fn build_properties(solution: Option<&Path>, server: &Path) -> Value {
+/// The global properties a build of the solution gives each project.
+pub(crate) fn solution_properties(solution: Option<&Path>) -> Value {
     let mut properties = serde_json::Map::new();
     if let Some(solution) = solution {
         let folder = solution.parent().unwrap_or(solution);
@@ -105,6 +111,12 @@ fn build_properties(solution: Option<&Path>, server: &Path) -> Value {
         properties
             .insert("SolutionExt".into(), json!(solution.extension().map(|e| format!(".{}", e.to_string_lossy()))));
     }
+    Value::Object(properties)
+}
+
+/// A design-time build's properties: the solution's, and Roslyn's own Razor targets when it carries them.
+fn build_properties(solution: Option<&Path>, server: &Path) -> Value {
+    let Value::Object(mut properties) = solution_properties(solution) else { unreachable!("an object above") };
     let razor = server.parent().unwrap_or(server).join("Targets").join("Microsoft.NET.Sdk.Razor.DesignTime.targets");
     if razor.is_file() {
         properties.insert("RazorDesignTimeTargets".into(), json!(razor));
@@ -119,6 +131,7 @@ pub fn start_roslyn(
     folder: &Path,
     solution: Option<&Path>,
     log_folder: &Path,
+    host: Option<crate::SharedHost>,
     events: impl Fn(ServerEvent) + Send + Sync + 'static,
 ) -> Result<LanguageServer, ServerFailed> {
     let dotnet = programs::dotnet();
@@ -153,10 +166,11 @@ pub fn start_roslyn(
             if !cfg!(windows) {
                 command.env("EnableWindowsTargeting", "true");
             }
-            let host = std::sync::Mutex::new(None::<crate::host::ProjectHost>);
-            let (dotnet, host_dll, folder) = (dotnet.clone().unwrap(), carried.host.clone(), folder.to_path_buf());
+            let host = host
+                .or_else(|| crate::SharedHost::carried(folder))
+                .ok_or_else(|| ServerFailed("dotnet was not found for Passenger's Host".into()))?;
             let properties = build_properties(solution, &carried.server);
-            let shared = std::sync::Arc::new((host, dotnet, host_dll, folder, properties));
+            let shared = std::sync::Arc::new((host, properties));
             answers = std::sync::Arc::new(move |method: &str, params: &Value| {
                 if method != "passenger/projectInfo" {
                     return None;
@@ -164,16 +178,8 @@ pub fn start_roslyn(
                 let project = PathBuf::from(params["path"].as_str().unwrap_or_default());
                 let shared = shared.clone();
                 Some(Box::new(move || {
-                    let (host, dotnet, host_dll, folder, properties) = &*shared;
-                    let mut host = host.lock().unwrap();
-                    let built = match &mut *host {
-                        Some(running) => running.build(&project, properties),
-                        None => crate::host::ProjectHost::start(dotnet, host_dll, folder).and_then(|mut started| {
-                            let built = started.build(&project, properties);
-                            *host = Some(started);
-                            built
-                        }),
-                    };
+                    let (host, properties) = &*shared;
+                    let built = host.build(&project, properties);
                     match built {
                         Ok(built) => {
                             // A build's problem (an SDK not found) goes to the server as an error of the project, which
@@ -184,9 +190,8 @@ pub fn start_roslyn(
                             }
                             json!({ "infos": built.infos, "problem": built.problem, "diagnostics": diagnostics })
                         }
+                        // A host that failed is started again for the next project.
                         Err(failed) => {
-                            // A host that failed is started again for the next project.
-                            *host = None;
                             json!({ "infos": null, "problem": failed.0 })
                         }
                     }
