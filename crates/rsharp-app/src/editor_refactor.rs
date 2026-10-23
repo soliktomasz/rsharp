@@ -29,7 +29,32 @@ fn named<'a>(actions: &'a [CodeAction], prefixes: &[&str]) -> Vec<&'a CodeAction
     actions.iter().filter(|a| prefixes.iter().any(|p| a.title.starts_with(p))).collect()
 }
 
+impl gpui::EventEmitter<crate::refactor_dialog::OpenRefactoring> for CodeEditor {}
+
 impl CodeEditor {
+    /// A refactoring that takes options: Passenger's extension describes what is at the caret, which the window's
+    /// dialog then shows; why there is none is said.
+    pub(super) fn open_refactoring(&mut self, kind: crate::refactor_dialog::Kind, cx: &mut Context<Self>) {
+        let Some((server, uri)) = self.server(cx) else { return };
+        let at = language::point(&self.text, self.primary().head);
+        let (method, params) =
+            rsharp_lsp::extension::request(kind.describer(), &json!({ "at": rsharp_lsp::extension::at(at) }), &uri);
+        let answer = ask(&server, method, params, cx);
+        self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
+            let described = answer
+                .await
+                .ok_or_else(|| "Roslyn refused it".to_string())
+                .and_then(|a| rsharp_lsp::extension::answer(&a));
+            let _ = this.update(cx, |_, cx| match described {
+                Ok(described) if described["problem"].is_string() => {
+                    cx.emit(Said(described["problem"].as_str().unwrap_or_default().to_string()))
+                }
+                Ok(described) => cx.emit(crate::refactor_dialog::OpenRefactoring { kind, described, at, uri, server }),
+                Err(why) => cx.emit(Said(format!("{} is not available: {why}", kind.title()))),
+            });
+        }));
+    }
+
     /// A refactoring Roslyn offers as a code action, run where the selection (or the caret) is: one action is made,
     /// several are listed, none is said. Each step of `steps` is asked again of the text the step before left.
     pub(super) fn named_refactoring(

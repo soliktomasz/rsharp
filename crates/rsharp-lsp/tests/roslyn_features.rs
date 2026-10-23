@@ -214,6 +214,34 @@ fn roslyn_answers_what_the_editor_asks_in_the_form_the_editor_reads() {
     let broken = found.iter().find(|(p, _)| p.ends_with("Broken.cs"));
     assert!(broken.is_some_and(|(_, p)| p.iter().any(|p| p.error)), "the solution's problems were {found:?}");
 
+    // Passenger's extension: Change Signature described at the interface's method and its parameter renamed, every
+    // use following; Extract Interface described at the class.
+    let dispatch = |handler: &str, message: serde_json::Value| {
+        let (method, params) = extension::request(handler, &message, &uri);
+        extension::answer(&ask(&server, method, params))
+    };
+    let described = dispatch(extension::DESCRIBE_SIGNATURE, json!({ "at": extension::at(find("Greet(string", 0)) }))
+        .expect("the extension described the signature");
+    assert_eq!(described["parameters"][0]["name"], "name", "Change Signature described {described}");
+    let change = json!({ "at": extension::at(find("Greet(string", 0)), "name": "Greet", "returnType": "string",
+        "parameters": [{ "from": 0, "modifier": "", "type": "string", "name": "who", "defaultValue": "", "callValue": "" }] });
+    let edit =
+        extension::refactored(&dispatch(extension::CHANGE_SIGNATURE, change).expect("Change Signature answered"))
+            .expect("Change Signature changed something");
+    let renamed: usize = edit.files.iter().map(|(_, e)| e.iter().filter(|e| e.text.contains("who")).count()).sum();
+    assert!(
+        renamed >= 2,
+        "Change Signature's edits did not rename the parameter in the interface and the class: {edit:?}"
+    );
+    let source = dispatch(extension::DESCRIBE_INTERFACE, json!({ "at": extension::at(find("Greeter :", 0)) }))
+        .expect("Extract Interface described");
+    assert!(
+        source["members"]
+            .as_array()
+            .is_some_and(|m| m.iter().any(|m| m["text"].as_str().unwrap_or_default().contains("Greet"))),
+        "Extract Interface offered {source}"
+    );
+
     drop(server);
     let _ = std::fs::remove_dir_all(&folder);
 }

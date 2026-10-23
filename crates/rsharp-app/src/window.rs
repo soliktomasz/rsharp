@@ -160,6 +160,7 @@ pub struct MainWindow {
     said: Option<SharedString>,
     find_action: Option<Entity<FindActionPopup>>,
     go_to: Option<Entity<crate::goto::GoToPopup>>,
+    refactoring: Option<Entity<crate::refactor_dialog::RefactorDialog>>,
     problems_tab: ProblemsTab,
     /// Roslyn's errors and warnings in every file of the solution, as last asked.
     solution_problems: Vec<(PathBuf, Vec<rsharp_lsp::Problem>)>,
@@ -216,6 +217,7 @@ impl MainWindow {
             said: None,
             find_action: None,
             go_to: None,
+            refactoring: None,
             problems_tab: ProblemsTab::File,
             solution_problems: Vec::new(),
             solution_task: None,
@@ -816,6 +818,42 @@ impl MainWindow {
             .collect()
     }
 
+    /// A refactoring's dialog over the window, the keys back with the editor once it closes.
+    fn open_refactoring(
+        &mut self,
+        open: &crate::refactor_dialog::OpenRefactoring,
+        editor: Entity<CodeEditor>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::refactor_dialog::{Closed, OpenRefactoring, RefactorDialog};
+        let open = OpenRefactoring {
+            kind: open.kind,
+            described: open.described.clone(),
+            at: open.at,
+            uri: open.uri.clone(),
+            server: open.server.clone(),
+        };
+        let dialog = cx.new(|cx| RefactorDialog::new(open, cx));
+        cx.subscribe_in(&dialog, window, move |w, _, closed: &Closed, window, cx| {
+            w.refactoring = None;
+            if let Some(said) = &closed.0 {
+                w.said = Some(said.clone().into());
+            }
+            window.focus(&editor.focus_handle(cx));
+            cx.notify();
+        })
+        .detach();
+        window.focus(&dialog.focus_handle(cx));
+        self.refactoring = Some(dialog);
+        cx.notify();
+    }
+
+    /// The refactoring dialog open, for a test to set its options and press OK.
+    pub fn refactoring(&self) -> Option<Entity<crate::refactor_dialog::RefactorDialog>> {
+        self.refactoring.clone()
+    }
+
     /// The Go to popup open, for a test to set its scope, mask or replacement.
     pub fn go_to_popup(&self) -> Option<Entity<crate::goto::GoToPopup>> {
         self.go_to.clone()
@@ -962,6 +1000,10 @@ impl MainWindow {
         })
         .detach();
         cx.subscribe_in(&editor, window, |w, _, go: &editor::Navigate, window, cx| w.navigate(go, window, cx)).detach();
+        cx.subscribe_in(&editor, window, |w, editor, open: &crate::refactor_dialog::OpenRefactoring, window, cx| {
+            w.open_refactoring(open, editor.clone(), window, cx)
+        })
+        .detach();
         cx.subscribe(&editor, |w, _, said: &editor::Said, cx| {
             w.said = Some(said.0.clone().into());
             cx.notify()
@@ -1536,6 +1578,9 @@ impl Render for MainWindow {
             .children(self.main_menu.as_ref().map(|(available, keys, _)| self.main_menu_dropdown(available, keys, cx)))
             .children(self.tab_menu.map(|at| self.tab_menu_view(at, window, cx)))
             .children(self.status_menu.map(|kind| self.status_menu_view(kind, cx)))
+            .children(self.refactoring.clone().map(|dialog| {
+                div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(dialog)
+            }))
             .children(self.go_to.clone().map(|popup| {
                 div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(
                     div()

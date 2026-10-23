@@ -86,6 +86,8 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("alt-enter", ShowContextActions, editor),
         KeyBinding::new("enter", Choose, Some("RenamePopup")),
         KeyBinding::new("escape", Dismiss, Some("RenamePopup")),
+        KeyBinding::new("enter", Choose, Some("RefactorDialog")),
+        KeyBinding::new("escape", Dismiss, Some("RefactorDialog")),
     ]);
     if mac {
         cx.bind_keys([
@@ -134,6 +136,8 @@ pub fn bind(cx: &mut App) {
             KeyBinding::new("cmd-delete", SafeDelete, editor),
             KeyBinding::new("cmd-alt-t", SurroundWith, editor),
             KeyBinding::new("cmd-shift-enter", CompleteStatement, editor),
+            KeyBinding::new("cmd-f6", ChangeSignature, editor),
+            KeyBinding::new("f6", MoveType, editor),
             // Rider's macOS keymap gives Open no key: Cmd+O is Go to Type.
             KeyBinding::new("cmd-[", Back, None),
             KeyBinding::new("cmd-]", Forward, None),
@@ -207,6 +211,8 @@ pub fn bind(cx: &mut App) {
             KeyBinding::new("ctrl-e ctrl-u", SurroundWith, editor),
             KeyBinding::new("ctrl-k ctrl-s", SurroundWith, editor),
             KeyBinding::new("ctrl-shift-enter", CompleteStatement, editor),
+            KeyBinding::new("ctrl-r ctrl-s", ChangeSignature, editor),
+            KeyBinding::new("ctrl-r ctrl-o", MoveType, editor),
             KeyBinding::new("alt-end", DerivedSymbols, editor),
             KeyBinding::new("ctrl-o", OpenFolder, None),
             KeyBinding::new("ctrl--", Back, None),

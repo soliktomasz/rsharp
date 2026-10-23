@@ -100,8 +100,8 @@ mask and Replace in Files; Optimize Usings, Introduce Variable, Field and Parame
 Method and Inline (Roslyn's code actions by their titles), Safe Delete at a declaration, Surround With and Complete
 Current Statement; live templates (Rider's built-in ones on Tab, a variable's every use typed at once).
 Roslyn runs as Passenger runs it: the server version
-Passenger pins, its Roslyn.Extension, and each project's design-time build from its Host. Left: the dialogs the extension answers (Change Signature, Extract Interface, Move, Pull
-Members Up and Push Members Down) and Safe Delete's wider search through it; templates in completion and a person's own; and the framework
+Passenger pins, its Roslyn.Extension, and each project's design-time build from its Host. Change Signature, Extract Interface, Move, Pull Members Up and Push Members Down
+through dialogs the extension answers. Left: Safe Delete's wider search through the extension; templates in completion and a person's own; and the framework
 switcher.
 - **Roslyn in full:** Passenger's `Host` for design-time builds and `Roslyn.Extension` loaded with `--extension`, so
   projects load the way Passenger loads them.

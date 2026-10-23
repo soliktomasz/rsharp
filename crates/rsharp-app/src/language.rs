@@ -88,6 +88,11 @@ pub fn apply_workspace_edit(edit: &WorkspaceEdit, server: Option<&LanguageServer
         written.push((from.clone(), 3));
         written.push((to.clone(), 1));
     }
+    // A file made or renamed is in no design-time build the server has: its project is loaded again.
+    let new_files: Vec<PathBuf> = written.iter().filter(|(_, kind)| *kind == 1).map(|(path, _)| path.clone()).collect();
+    if let Some(server) = server.filter(|_| !new_files.is_empty()) {
+        rsharp_lsp::reload_projects_of(server, &new_files);
+    }
     if let Some(server) = server.filter(|_| !written.is_empty()) {
         let changes: Vec<Value> =
             written.iter().map(|(p, kind)| json!({ "uri": rsharp_core::paths::to_uri(p), "type": kind })).collect();
@@ -160,6 +165,8 @@ pub fn move_files(moves: &[(PathBuf, PathBuf)], server: Option<&LanguageServer>,
     }
     if let Some(server) = server.filter(|_| !changes.is_empty()) {
         server.notify("workspace/didChangeWatchedFiles", json!({ "changes": changes }));
+        let renamed: Vec<PathBuf> = moves.iter().map(|(_, to)| to.clone()).collect();
+        rsharp_lsp::reload_projects_of(server, &renamed);
     }
     Ok(())
 }

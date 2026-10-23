@@ -72,6 +72,33 @@ pub fn projects_of(folder: &Path, solution: Option<&Path>) -> Vec<PathBuf> {
     found
 }
 
+/// The project a file is in: the nearest folder up from it holding a project file.
+pub fn project_of(file: &Path) -> Option<PathBuf> {
+    file.ancestors().skip(1).find_map(|folder| {
+        let mut found: Vec<PathBuf> = std::fs::read_dir(folder)
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e.to_string_lossy().ends_with("proj")))
+            .collect();
+        found.sort();
+        found.into_iter().next()
+    })
+}
+
+/// Files made or renamed outside the server's sight (a refactoring's new file, a type's file renamed): their projects
+/// loaded again, so each one's design-time build lists them, as Passenger's folder watcher has them built again.
+// shortcut: told by the edits RSharp makes only; the folder watcher (phase 4) tells of any program's.
+pub fn reload_projects_of(server: &LanguageServer, files: &[PathBuf]) {
+    let mut projects: Vec<PathBuf> = files.iter().filter_map(|f| project_of(f)).collect();
+    projects.sort();
+    projects.dedup();
+    if !projects.is_empty() {
+        let projects: Vec<Value> = projects.iter().map(|p| json!({ "path": p })).collect();
+        server.notify("passenger/loadProjects", json!({ "projects": projects }));
+    }
+}
+
 /// The global properties a build of the solution gives its projects (a Directory.Build.props may read them), and the
 /// Razor design-time targets Roslyn's server gives its own build host.
 fn build_properties(solution: Option<&Path>, server: &Path) -> Value {

@@ -18,6 +18,7 @@ pub mod keymap;
 pub mod language;
 pub mod launch;
 pub mod projects;
+pub mod refactor_dialog;
 pub mod settings;
 pub mod settings_dialog;
 pub mod state;

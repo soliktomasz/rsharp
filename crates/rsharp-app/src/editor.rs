@@ -99,6 +99,11 @@ actions!(
         SafeDelete,
         SurroundWith,
         CompleteStatement,
+        ChangeSignature,
+        ExtractInterface,
+        MoveType,
+        PullMembersUp,
+        PushMembersDown,
     ]
 );
 
@@ -936,6 +941,11 @@ moves! {
     SafeDelete => |e, cx| e.safe_delete(cx);
     SurroundWith => |e, cx| e.open_surround(cx);
     CompleteStatement => |e, cx| e.complete_statement(cx);
+    ChangeSignature => |e, cx| e.open_refactoring(crate::refactor_dialog::Kind::ChangeSignature, cx);
+    ExtractInterface => |e, cx| e.open_refactoring(crate::refactor_dialog::Kind::ExtractInterface, cx);
+    MoveType => |e, cx| e.open_refactoring(crate::refactor_dialog::Kind::Move, cx);
+    PullMembersUp => |e, cx| e.open_refactoring(crate::refactor_dialog::Kind::PullMembersUp, cx);
+    PushMembersDown => |e, cx| e.open_refactoring(crate::refactor_dialog::Kind::PushMembersDown, cx);
 }
 
 /// An offset carried through a change: before it, kept; after it, moved by what it added; inside it, to its end.

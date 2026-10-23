@@ -2,6 +2,7 @@
 //! language server it runs for C#. No UI: events come on the reader's thread, and a request's answer is waited
 //! for off the UI thread.
 
+pub mod extension;
 mod host;
 mod protocol;
 mod roslyn;
