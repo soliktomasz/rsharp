@@ -68,6 +68,12 @@ impl Draft {
     pub fn project_name(&self) -> &str {
         self.project_name.trim()
     }
+    pub(super) fn solution_text(&self) -> &str {
+        &self.solution_name
+    }
+    pub(super) fn project_text(&self) -> &str {
+        &self.project_name
+    }
     pub fn chosen(&self) -> Option<&ProjectTemplate> {
         self.families.get(self.family?)?.types.get(self.type_index?)
     }

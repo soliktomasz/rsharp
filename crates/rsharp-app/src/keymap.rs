@@ -78,6 +78,13 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("escape", Dismiss, Some("FindAction")),
         KeyBinding::new("escape", Dismiss, Some("SettingsDialog")),
         KeyBinding::new("enter", Choose, Some("SettingsDialog")),
+        KeyBinding::new("escape", Dismiss, Some("NewProjectDialog")),
+        KeyBinding::new("enter", Choose, Some("NewProjectDialog")),
+        KeyBinding::new("up", SelectPrevious, Some("NewProjectDialog")),
+        KeyBinding::new("down", SelectNext, Some("NewProjectDialog")),
+        KeyBinding::new("tab", crate::new_project_dialog::NextField, Some("NewProjectDialog")),
+        KeyBinding::new("shift-tab", crate::new_project_dialog::PreviousField, Some("NewProjectDialog")),
+        KeyBinding::new("space", crate::new_project_dialog::ActivateControl, Some("ProjectControl")),
         // The field's editing keys are the editor's own.
         KeyBinding::new("left", Left, Some("TextField")),
         KeyBinding::new("right", Right, Some("TextField")),

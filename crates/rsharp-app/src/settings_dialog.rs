@@ -254,7 +254,7 @@ impl Render for SettingsDialog {
                 Opt::Check { label, get, set } => {
                     let checked = get(&self.draft);
                     let set = *set;
-                    checkbox(label, checked)
+                    checkbox(*label, checked)
                         .on_click(cx.listener(move |d, _: &ClickEvent, _, cx| {
                             set(&mut d.draft, !checked);
                             cx.notify()
@@ -379,10 +379,14 @@ impl Render for SettingsDialog {
     }
 }
 
-fn checkbox(label: &'static str, checked: bool) -> gpui::Stateful<gpui::Div> {
+pub(crate) fn checkbox(label: impl Into<SharedString>, checked: bool) -> gpui::Stateful<gpui::Div> {
+    let label = label.into();
     div()
-        .id(label)
-        .debug_selector(move || format!("check: {label}"))
+        .id(label.clone())
+        .debug_selector({
+            let label = label.clone();
+            move || format!("check: {label}")
+        })
         .flex()
         .items_center()
         .gap(px(8.))
@@ -403,7 +407,7 @@ fn checkbox(label: &'static str, checked: bool) -> gpui::Stateful<gpui::Div> {
 }
 
 /// A dialog button as Rider's: the default one filled with the accent, the rest outlined; a disabled one dimmed.
-fn button(label: &'static str, default: bool, enabled: bool) -> gpui::Stateful<gpui::Div> {
+pub(crate) fn button(label: &'static str, default: bool, enabled: bool) -> gpui::Stateful<gpui::Div> {
     div()
         .id(label)
         .debug_selector(move || format!("button: {label}"))
