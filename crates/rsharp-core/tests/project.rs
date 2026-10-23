@@ -103,3 +103,61 @@ fn ds_store_and_thumbs_db_never_show() {
     );
     assert_eq!(names(&ProjectFiles::new(&project).files_in("")), ["notes.md"], "the system's own files would show");
 }
+
+fn stamped(name: &str) -> (PathBuf, EvaluatedProject) {
+    let root = folder(name).join("App");
+    std::fs::write(root.join("App.csproj"), "<Project />").unwrap();
+    let mut project = project(&root, vec![]);
+    project.inputs = vec![rsharp_core::project::Stamp::file(&root.join("App.csproj"))];
+    project.folders = vec![rsharp_core::project::Stamp::folder(&root)];
+    (root, project)
+}
+
+#[test]
+fn a_fresh_evaluation_is_not_stale() {
+    let (_, project) = stamped("fresh");
+    assert!(!project.is_stale(), "a project would be evaluated again with nothing changed");
+}
+
+#[test]
+fn a_project_is_stale_once_its_project_file_changes() {
+    let (root, project) = stamped("changed");
+    std::fs::write(root.join("App.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\" />").unwrap();
+    assert!(project.is_stale(), "an edited project file would keep showing what it said before");
+}
+
+#[test]
+fn a_project_is_stale_once_a_walked_folder_gains_a_file() {
+    let (root, project) = stamped("gained");
+    std::fs::write(root.join("New.cs"), "").unwrap();
+    assert!(project.is_stale(), "a file added outside the IDE would not show");
+}
+
+#[test]
+fn a_folder_stamp_is_the_hosts_own() {
+    // Passenger.Host's Stamps.Folder over "a.cs" and "Models/": FNV-1a over each name's UTF-16 and a newline.
+    let root = folder("hash").join("App");
+    std::fs::write(root.join("a.cs"), "").unwrap();
+    std::fs::create_dir_all(root.join("Models")).unwrap();
+    std::fs::create_dir_all(root.join("bin")).unwrap();
+    let mut hash: u64 = 14695981039346656037;
+    for name in ["Models/", "a.cs"] {
+        for c in name.encode_utf16().chain(['\n' as u16]) {
+            hash = (hash ^ c as u64).wrapping_mul(1099511628211);
+        }
+    }
+    let stamp = rsharp_core::project::Stamp::folder(&root);
+    assert_eq!((stamp.ticks, stamp.length), (hash as i64, 2), "the Host's cache would always read as stale");
+}
+
+#[test]
+fn a_broken_cache_reads_as_none() {
+    let base = folder("cache");
+    let store = rsharp_core::state::StateStore::open(base.join("state"));
+    let kept = store.folder(&base);
+    std::fs::create_dir_all(&kept).unwrap();
+    std::fs::write(kept.join("projectModels.json"), r#"{"projects": 7}"#).unwrap();
+    let read: rsharp_core::project::Evaluations = store.read_for(&base);
+    assert!(read.projects.is_empty(), "a broken cache would be taken as evaluations");
+    assert!(kept.join("projectModels.json.bad").exists(), "a broken cache would be read again every start");
+}

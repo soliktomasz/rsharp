@@ -5,6 +5,7 @@ pub mod encodings;
 pub mod files;
 pub mod history;
 pub mod logs;
+pub mod nesting;
 pub mod paths;
 pub mod process;
 pub mod programs;

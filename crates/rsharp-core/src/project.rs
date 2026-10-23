@@ -166,3 +166,76 @@ fn holds_a_file(folder: &Path) -> bool {
         .flatten()
         .any(|e| e.path().is_file() || (e.path().is_dir() && holds_a_file(&e.path())))
 }
+
+/// .NET's ticks (100 ns since 0001-01-01) at the Unix epoch.
+const UNIX_EPOCH_TICKS: i64 = 621_355_968_000_000_000;
+
+/// Names in a folder that say nothing of what a project holds, as Passenger.Host's `Stamps` passes over them.
+const PASSED: &[&str] = &["bin", "obj", "node_modules", ".ds_store", "thumbs.db"];
+
+impl Stamp {
+    /// A file's last write and length as Passenger.Host's `Stamps.File` takes them; one not there has length -1.
+    pub fn file(path: &Path) -> Self {
+        let Ok(meta) = std::fs::metadata(path) else {
+            return Self { path: path.into(), ticks: 0, length: -1, folder: false };
+        };
+        let since = meta.modified().ok().and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok()).unwrap_or_default();
+        let ticks = UNIX_EPOCH_TICKS + (since.as_nanos() / 100) as i64;
+        Self { path: path.into(), ticks, length: meta.len() as i64, folder: false }
+    }
+
+    /// A folder's names hashed as Passenger.Host's `Stamps.Folder` hashes them (FNV-1a over each name's UTF-16, a
+    /// folder's with '/', and a newline), with how many there are; its own last write would change with every build.
+    pub fn folder(path: &Path) -> Self {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return Self { path: path.into(), ticks: 0, length: -1, folder: true };
+        };
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let folder = e.path().is_dir();
+                let counts = !PASSED.contains(&name.to_lowercase().as_str()) && !(folder && name.starts_with('.'));
+                counts.then(|| if folder { format!("{name}/") } else { name })
+            })
+            .collect();
+        // shortcut: sorted by UTF-8 bytes where .NET sorts by UTF-16 units, which differ only for names with characters
+        // past U+FFFF beside ones in U+E000–U+FFFF; such a folder reads as changed each start, until it is worth a sort by UTF-16.
+        names.sort();
+        let mut hash: u64 = 14695981039346656037;
+        for name in &names {
+            for unit in name.encode_utf16().chain(['\n' as u16]) {
+                hash = (hash ^ unit as u64).wrapping_mul(1099511628211);
+            }
+        }
+        Self { path: path.into(), ticks: hash as i64, length: names.len() as i64, folder: true }
+    }
+
+    /// Whether what was stamped is as it was.
+    pub fn holds(&self) -> bool {
+        *self == if self.folder { Self::folder(&self.path) } else { Self::file(&self.path) }
+    }
+}
+
+impl EvaluatedProject {
+    /// Whether anything it was evaluated from changed since: its project file, an import, or a folder its wildcards walked.
+    pub fn is_stale(&self) -> bool {
+        !self.inputs.iter().chain(&self.folders).all(Stamp::holds)
+    }
+
+    /// The file the project says `file` depends on, as a path.
+    pub fn dependent_upon(&self, file: &Path) -> Option<PathBuf> {
+        let parent = self.items.iter().find(|i| i.path == file)?.dependent_upon.as_deref()?;
+        Some(file.parent()?.join(parent.replace('\\', "/")))
+    }
+}
+
+/// The folder's last evaluations, so a window opened again shows its projects before any is evaluated again.
+#[derive(Default, Serialize, Deserialize)]
+pub struct Evaluations {
+    pub projects: Vec<EvaluatedProject>,
+}
+
+impl crate::state::StateDocument for Evaluations {
+    const FILE: &'static str = "projectModels.json";
+}
