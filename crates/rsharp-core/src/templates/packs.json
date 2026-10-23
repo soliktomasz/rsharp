@@ -1,0 +1,301 @@
+[
+  {
+    "id": "Avalonia.Templates",
+    "offer": "Install Avalonia templates for creating cross-platform desktop, mobile and browser apps",
+    "version": "12.1.4",
+    "author": "AvaloniaUI",
+    "kinds": [
+      {
+        "name": "Avalonia .NET App",
+        "short_name": "avalonia.app",
+        "is_solution": false,
+        "languages": [
+          "C#",
+          "F#"
+        ],
+        "description": "A cross-platform Avalonia UI Application targeting Desktop",
+        "classifications": [
+          "Desktop",
+          "Xaml",
+          "Avalonia",
+          "Windows",
+          "Linux",
+          "macOS"
+        ],
+        "default_name": "AvaloniaApplication"
+      },
+      {
+        "name": "Avalonia .NET MVVM App",
+        "short_name": "avalonia.mvvm",
+        "is_solution": false,
+        "languages": [
+          "C#",
+          "F#"
+        ],
+        "description": "A cross-platform Avalonia UI Application using the MVVM pattern targeting Desktop",
+        "classifications": [
+          "Desktop",
+          "Xaml",
+          "Avalonia",
+          "Windows",
+          "Linux",
+          "macOS"
+        ],
+        "default_name": "AvaloniaApplication"
+      },
+      {
+        "name": "Avalonia Cross Platform Application",
+        "short_name": "avalonia.xplat",
+        "is_solution": true,
+        "languages": [
+          "C#",
+          "F#"
+        ],
+        "description": "A cross-platform Avalonia UI Application using the MVVM pattern targeting Desktop, Mobile and Browser with WebAssembly",
+        "classifications": [
+          "Desktop",
+          "Xaml",
+          "Avalonia",
+          "Browser",
+          "Mobile",
+          "Android",
+          "iOS"
+        ],
+        "default_name": "AvaloniaApplication"
+      }
+    ]
+  },
+  {
+    "id": "Aspire.ProjectTemplates",
+    "offer": "Install Aspire templates for creating cloud-native apps",
+    "version": "13.6.1",
+    "author": "Microsoft",
+    "kinds": [
+      {
+        "name": "Aspire Starter App (ASP.NET Core/Blazor)",
+        "short_name": "aspire-starter",
+        "is_solution": true,
+        "languages": [
+          "C#"
+        ],
+        "description": "A project template for creating an Aspire app with a Blazor web frontend and web API backend service, with optional Redis caching.",
+        "classifications": [
+          "Common",
+          "Aspire",
+          "Cloud",
+          "Web",
+          "Web API",
+          "API",
+          "Service",
+          "Blazor",
+          "Test",
+          "MSTest",
+          "NUnit",
+          "xUnit"
+        ],
+        "default_name": "AspireApp"
+      },
+      {
+        "name": "Aspire Starter App (ASP.NET Core/React, C# AppHost)",
+        "short_name": "aspire-ts-cs-starter",
+        "is_solution": true,
+        "languages": [
+          "C#"
+        ],
+        "description": "A project template for creating an Aspire app with a React frontend and a C# Minimal API backend service, with optional Redis caching.",
+        "classifications": [
+          "Common",
+          "Aspire",
+          "Cloud",
+          "Web",
+          "Web API",
+          "API",
+          "Service",
+          "TypeScript",
+          "React"
+        ],
+        "default_name": "AspireApp"
+      },
+      {
+        "name": "Aspire Empty App",
+        "short_name": "aspire",
+        "is_solution": true,
+        "languages": [
+          "C#"
+        ],
+        "description": "A project template for creating an empty Aspire app.",
+        "classifications": [
+          "Common",
+          "Aspire",
+          "Cloud",
+          "Web",
+          "Web API",
+          "API",
+          "Service"
+        ],
+        "default_name": "AspireApp"
+      },
+      {
+        "name": "Aspire AppHost",
+        "short_name": "aspire-apphost",
+        "is_solution": false,
+        "languages": [
+          "C#"
+        ],
+        "description": "A project template for creating an Aspire AppHost (orchestrator) project.",
+        "classifications": [
+          "Common",
+          "Aspire",
+          "Cloud"
+        ],
+        "default_name": "AppHost"
+      },
+      {
+        "name": "Aspire Single-File App Host",
+        "short_name": "aspire-apphost-singlefile",
+        "is_solution": false,
+        "languages": [
+          "C#"
+        ],
+        "description": "A minimal Aspire AppHost for single-file scenarios (.NET 10+).",
+        "classifications": [
+          "Common",
+          "Aspire",
+          "AppHost",
+          "SingleFile"
+        ],
+        "default_name": "AspireSingleFileHost"
+      },
+      {
+        "name": "Aspire Service Defaults",
+        "short_name": "aspire-servicedefaults",
+        "is_solution": false,
+        "languages": [
+          "C#"
+        ],
+        "description": "A project template for creating an Aspire service defaults project.",
+        "classifications": [
+          "Common",
+          "Aspire",
+          "Cloud",
+          "Web",
+          "Web API",
+          "API",
+          "Service"
+        ],
+        "default_name": "ServiceDefaults"
+      },
+      {
+        "name": "Aspire Test Project (MSTest)",
+        "short_name": "aspire-mstest",
+        "is_solution": false,
+        "languages": [
+          "C#"
+        ],
+        "description": "A project that contains MSTest integration tests of an Aspire AppHost project.",
+        "classifications": [
+          "Common",
+          "Aspire",
+          "Cloud",
+          "Web",
+          "Web API",
+          "API",
+          "Service",
+          "Test",
+          "MSTest"
+        ],
+        "default_name": "Tests"
+      },
+      {
+        "name": "Aspire Test Project (NUnit)",
+        "short_name": "aspire-nunit",
+        "is_solution": false,
+        "languages": [
+          "C#"
+        ],
+        "description": "A project that contains NUnit integration tests of an Aspire AppHost project.",
+        "classifications": [
+          "Common",
+          "Aspire",
+          "Cloud",
+          "Web",
+          "Web API",
+          "API",
+          "Service",
+          "Test",
+          "NUnit"
+        ],
+        "default_name": "Tests"
+      },
+      {
+        "name": "Aspire Test Project (xUnit)",
+        "short_name": "aspire-xunit",
+        "is_solution": false,
+        "languages": [
+          "C#"
+        ],
+        "description": "A project that contains xUnit.net integration tests of an Aspire AppHost project.",
+        "classifications": [
+          "Common",
+          "Aspire",
+          "Cloud",
+          "Web",
+          "Web API",
+          "API",
+          "Service",
+          "Test",
+          "xUnit"
+        ],
+        "default_name": "Tests"
+      }
+    ]
+  },
+  {
+    "id": "Microsoft.Azure.Functions.Worker.ProjectTemplates",
+    "offer": "Install Azure Functions templates for creating serverless apps",
+    "version": "4.0.5708",
+    "author": "Microsoft",
+    "kinds": [
+      {
+        "name": "Azure Functions",
+        "short_name": "func",
+        "is_solution": false,
+        "languages": [
+          "C#",
+          "F#"
+        ],
+        "description": "Azure Functions .NET Isolated Project Template Pack for Microsoft Template Engine",
+        "classifications": [
+          "Azure Functions",
+          "Solution"
+        ],
+        "default_name": "Company.FunctionApp"
+      }
+    ]
+  },
+  {
+    "id": "Microsoft.Extensions.AI.Templates",
+    "offer": "Install Microsoft AI Extensions templates for creating and integrating AI services",
+    "version": "10.11.0-preview.3.26513.7",
+    "author": "Microsoft",
+    "kinds": [
+      {
+        "name": "AI Chat Web App",
+        "short_name": "aichatweb",
+        "is_solution": false,
+        "languages": [
+          "C#"
+        ],
+        "description": "A project template for creating an AI chat application, which uses retrieval-augmented generation (RAG) to chat with your own data.",
+        "classifications": [
+          "Common",
+          "AI",
+          "Web",
+          "Blazor",
+          "Aspire"
+        ],
+        "default_name": "ChatApp"
+      }
+    ]
+  }
+]

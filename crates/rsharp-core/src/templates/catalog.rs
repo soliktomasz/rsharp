@@ -72,12 +72,8 @@ pub fn parse_cache(path: &Path, sdk: &str, platform: TemplatePlatform) -> Result
         });
     }
     let (solution_formats, solution_format) = formats(all);
-    Ok(TemplateCatalog {
-        sdk: sdk.into(),
-        families: templates.into_iter().map(|t| TemplateFamily { name: t.name.clone(), types: vec![t] }).collect(),
-        solution_formats,
-        solution_format,
-    })
+    templates.extend(packs::offered(&templates));
+    Ok(TemplateCatalog { sdk: sdk.into(), families: families::of(templates), solution_formats, solution_format })
 }
 
 fn prop<'a>(value: &'a Value, name: &str) -> &'a Value {

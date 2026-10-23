@@ -49,6 +49,12 @@ server's project loader and refactorings with options). The Host carries Microso
 Foundation); the extension is compiled against Roslyn's server with Krafs.Publicizer (MIT, Krafs), which carries
 nothing into the output.
 
+## Ported from Passenger
+
+The project-template family rules, pack metadata and template-creation behavior in
+`crates/rsharp-core/src/templates/` are ported from Passenger's `src/Passenger.App/Templates/`
+(MIT, Copyright (c) 2026 Ted L, https://github.com/Zaneris/passenger).
+
 ## Run, not carried
 
 Roslyn's language server (`roslyn-language-server`, MIT, .NET Foundation): the version Passenger pins, which the

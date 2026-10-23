@@ -1,6 +1,9 @@
 //! dotnet new's installed templates and Rider's project families, with the options an IDE asks for.
 
 pub mod catalog;
+pub mod families;
+pub mod options;
+pub mod packs;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TemplateCatalog {
@@ -123,7 +126,7 @@ pub struct TemplateChoice {
     pub description: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct TemplatePack {
     pub id: String,
     pub offer: String,
@@ -132,7 +135,7 @@ pub struct TemplatePack {
     pub kinds: Vec<PackKind>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct PackKind {
     pub name: String,
     pub short_name: String,
