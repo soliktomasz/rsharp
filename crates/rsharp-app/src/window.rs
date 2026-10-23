@@ -147,6 +147,9 @@ pub struct MainWindow {
     reference_dialog: Option<(Entity<crate::reference_dialog::ReferenceDialog>, PathBuf)>,
     /// What Cut or Copy last put on the clipboard: its paths, whether cut, and the clipboard's text then.
     held: Option<(Vec<PathBuf>, bool, String)>,
+    /// The open folder's watcher, and the task taking its bursts to the window.
+    _watcher: Option<rsharp_core::watcher::Watcher>,
+    _watch_task: Option<Task<()>>,
     selected: Option<usize>,
     dock: DockLayout,
     /// Where a floating window was taken, from its top left (the header) or bottom right (the corner), so it
@@ -226,6 +229,8 @@ impl MainWindow {
             asked: None,
             reference_dialog: None,
             held: None,
+            _watcher: None,
+            _watch_task: None,
             selected: None,
             dock: store(cx).read::<DockLayout>().complete().clamped(),
             float_grab: Point::default(),
@@ -290,6 +295,7 @@ impl MainWindow {
             let evaluated = cached.projects.into_iter().map(|p| (p.path.clone(), p)).collect();
             SolutionTree::new(solution, evaluated, kept.open.iter().cloned().collect())
         });
+        self.start_watching(&folder, cx);
         self.workspace = Some(workspace);
         self.selected = Some(0);
         self.rebuild_rows();
@@ -1397,6 +1403,7 @@ impl MainWindow {
         self.opened_as = None;
         self.rows.clear();
         self.tree = None;
+        (self._watcher, self._watch_task) = (None, None);
         self.host = None;
         (self.evaluating, self.evaluate_again, self._evaluate_task) = (false, false, None);
         self.server = None;

@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 encoding_rs.workspace = true
 log.workspace = true
+notify.workspace = true
 quick-xml.workspace = true
 regex.workspace = true
 serde.workspace = true

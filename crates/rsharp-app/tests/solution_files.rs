@@ -438,3 +438,99 @@ fn a_folder_pasted_into_itself_is_refused(cx: &mut TestAppContext) {
     );
     assert!(!run.folder.join("Shop.App/Models/Models").exists(), "a folder would be copied into itself");
 }
+
+/// Waits in real time for the folder watcher, whose changes come on a thread of its own; false after ten seconds.
+fn heard(cx: &mut VisualTestContext, until: impl Fn(&mut VisualTestContext) -> bool) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        cx.run_until_parked();
+        if until(cx) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    false
+}
+
+/// What another program writes, once the watcher has had a moment to start.
+fn elsewhere(path: &std::path::Path, text: &str) {
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    std::fs::write(path, text).unwrap();
+}
+
+#[gpui::test]
+fn a_file_made_by_another_program_shows_in_the_tree(cx: &mut TestAppContext) {
+    let run = Run::new("sf-watch-made", &files());
+    let (main, cx) = open(&run, cx);
+    elsewhere(&run.folder.join("Shop.App/Models/Invoice.cs"), "class Invoice { }\n");
+    assert!(
+        heard(cx, |cx| rows(&main, cx).contains(&"      Invoice.cs".to_string())),
+        "a file another program made would not show: {:?}",
+        rows(&main, cx)
+    );
+}
+
+#[gpui::test]
+fn an_open_file_changed_by_another_program_shows_its_new_text_and_local_history_keeps_it(cx: &mut TestAppContext) {
+    let run = Run::new("sf-watch-open", &files());
+    let order = run.folder.join("Shop.App/Models/Order.cs");
+    let (main, cx) = open(&run, cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&order, None, window, cx));
+    cx.run_until_parked();
+    elsewhere(&order, "class Order { int Pulled; }\n");
+    assert!(
+        heard(cx, |cx| text(&main, cx).contains("Pulled")),
+        "the open tab would not show the new text: {}",
+        text(&main, cx)
+    );
+    let path = rsharp_core::paths::canonical(&order);
+    let kept = cx.update(|_, cx| {
+        let history = rsharp_app::history_window::local_history(cx);
+        history.revisions(&path).iter().any(|r| r.label.as_deref() == Some("External change"))
+    });
+    assert!(kept, "Local History would not keep the change as an External change");
+}
+
+#[gpui::test]
+fn a_file_not_open_changed_by_another_program_is_kept_in_local_history(cx: &mut TestAppContext) {
+    let run = Run::new("sf-watch-closed", &files());
+    let program = run.folder.join("Shop.App/Program.cs");
+    let (_main, cx) = open(&run, cx);
+    elsewhere(&program, "System.Console.WriteLine(\"pulled\");\n");
+    let path = rsharp_core::paths::canonical(&program);
+    let kept = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            let history = rsharp_app::history_window::local_history(cx);
+            history
+                .revisions(&path)
+                .iter()
+                .any(|r| history.content(r).is_ok_and(|b| String::from_utf8_lossy(&b).contains("pulled")))
+        })
+    };
+    assert!(heard(cx, kept), "Local History would not keep a change made by another program");
+}
+
+#[gpui::test]
+fn a_project_file_changed_by_another_program_is_evaluated_again(cx: &mut TestAppContext) {
+    let run = Run::new("sf-watch-project", &files());
+    if rsharp_lsp::SharedHost::carried(&run.folder).is_none() {
+        eprintln!("skipped: Passenger's sidecars were not built (no dotnet or no vendor/passenger at build time)");
+        return;
+    }
+    let (main, cx) = run.window(cx);
+    cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
+    let folder = run.folder.clone();
+    main.update_in(cx, |main, window, cx| main.open_workspace(&folder, window, cx));
+    let evaluated = |cx: &mut VisualTestContext| !main.read_with(cx, |m, _| m.evaluating());
+    assert!(heard(cx, evaluated), "the projects were never evaluated");
+    elsewhere(
+        &run.folder.join("Shop.App/Shop.App.csproj"),
+        "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>\n",
+    );
+    let shown = |cx: &mut VisualTestContext| rows(&main, cx).iter().any(|r| r.contains("Shop.App (net10.0)"));
+    assert!(
+        heard(cx, shown),
+        "a project file another program changed would not be evaluated again: {:?}",
+        rows(&main, cx)
+    );
+}

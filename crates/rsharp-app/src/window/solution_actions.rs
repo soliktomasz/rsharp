@@ -686,6 +686,67 @@ impl MainWindow {
         Ok(())
     }
 
+    /// Watches the open folder for what other programs change in it.
+    pub(super) fn start_watching(&mut self, folder: &Path, cx: &mut Context<Self>) {
+        let (sender, mut bursts) = futures::channel::mpsc::unbounded();
+        self._watcher = rsharp_core::watcher::watch(folder, move |paths| {
+            let _ = sender.unbounded_send(paths);
+        })
+        .map_err(|e| log::warn!("{} is not watched: {e}", folder.display()))
+        .ok();
+        self._watch_task = Some(cx.spawn(async move |this, cx| {
+            while let Some(paths) = bursts.next().await {
+                if this.update(cx, |w, cx| w.folder_changed(paths, cx)).is_err() {
+                    return;
+                }
+            }
+        }));
+    }
+
+    /// What another program changed in the folder: the tree reads those places again, an open file its text (one with
+    /// unsaved edits kept as it is), a file not open is kept in Local History as an External change, the solution is
+    /// read again when it changed, and the projects whose inputs changed are evaluated again.
+    fn folder_changed(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let solution = self.tree.as_ref().map(|t| t.solution().path.clone());
+        let mut closed = Vec::new();
+        for path in &paths {
+            if let Some(tree) = &mut self.tree {
+                tree.forget(path.parent().unwrap_or(path));
+                tree.forget(path);
+            }
+            match crate::buffer::find(path, cx) {
+                Some(open) => open.update(cx, |b, cx| b.refresh_from_disk(cx)),
+                None => closed.push(path.clone()),
+            }
+        }
+        if solution.as_ref().is_some_and(|s| paths.contains(s))
+            && let Some(read) = solution.as_deref().and_then(rsharp_core::solution::read)
+            && let Some(tree) = &mut self.tree
+        {
+            tree.set_solution(read);
+        }
+        // Read off the UI thread: a pull can change a thousand files at once.
+        let reads = cx.background_executor().spawn(async move {
+            closed
+                .into_iter()
+                .filter(|p| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.len() < 4 << 20))
+                .filter_map(|p| std::fs::read(&p).ok().map(|bytes| (p, bytes)))
+                .collect::<Vec<_>>()
+        });
+        cx.spawn(async move |_, cx| {
+            let read = reads.await;
+            let _ = cx.update(|cx| {
+                for (path, bytes) in read {
+                    crate::history_window::record(path, bytes, Some("External change"), cx);
+                }
+            });
+        })
+        .detach();
+        self.rebuild_rows();
+        self.evaluate_projects(cx);
+        cx.notify();
+    }
+
     /// The tree, the projects and Roslyn after a solution or project file changed on disk.
     pub(super) fn follow_written(&mut self, path: &Path, cx: &mut Context<Self>) {
         let is_solution = self.tree.as_ref().is_some_and(|t| t.solution().path == path);

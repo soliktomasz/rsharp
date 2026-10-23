@@ -15,3 +15,4 @@ pub mod solution;
 pub mod solution_edits;
 pub mod state;
 pub mod trash;
+pub mod watcher;

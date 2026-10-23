@@ -202,7 +202,6 @@ impl Buffer {
 
     /// The file read again if another program changed it since, while nothing here is unsaved, as Rider reloads a
     /// file it sees changed; its new content kept in Local History as an External change.
-    // shortcut: looked at only when the file is opened again; the folder watcher (phase 4) tells it as it happens.
     pub fn refresh_from_disk(&mut self, cx: &mut Context<Self>) {
         self.read_again(Some("External change"), cx);
     }
