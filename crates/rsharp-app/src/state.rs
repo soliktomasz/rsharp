@@ -58,6 +58,8 @@ pub struct FolderState {
     pub tabs: Vec<KeptTab>,
     pub active: Option<usize>,
     pub expanded: Vec<PathBuf>,
+    /// The Solution view's open nodes, by their keys, for a folder with a solution.
+    pub open: Vec<String>,
     /// The folder's tool windows, else the last layout the person left.
     pub dock: Option<crate::dock::DockLayout>,
     /// Whether Roslyn analyses every file, not only the open ones, for Problems' Solution tab.

@@ -103,3 +103,19 @@ fn find_prefers_the_solution_named_for_the_folder_then_slnx() {
         "the folder would open another solution than the one named for it"
     );
 }
+
+#[test]
+fn an_empty_folder_holds_nothing_that_follows_it() {
+    let folder = folder("empty-folder");
+    let path = folder.join("Shop.slnx");
+    std::fs::write(
+        &path,
+        "<Solution>\n  <Folder Name=\"/build/\" />\n  <Project Path=\"src/App/App.csproj\" />\n</Solution>\n",
+    )
+    .unwrap();
+    assert_eq!(
+        read(&path),
+        ["Shop", "  build/ /build/", "  App true"],
+        "a project after an empty folder would go into it"
+    );
+}

@@ -9,9 +9,10 @@ use crate::editor::{self, CodeEditor};
 use crate::editor_area::{EditorArea, Split};
 use crate::find_action::{Ended, FindActionPopup};
 use crate::find_bar::{self, FindBar};
+use crate::solution_view::{NodeKind, SolutionTree, TreeRow};
 use crate::state::{FolderState, KeptTab, RecentSolutions, store};
 use crate::theme;
-use crate::workspace::{Entry, Workspace};
+use crate::workspace::Workspace;
 use futures::StreamExt;
 use gpui::{
     App, ClickEvent, Context, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement, MouseButton,
@@ -120,17 +121,13 @@ struct Found {
     text: String,
 }
 
-struct Row {
-    entry: Entry,
-    depth: usize,
-    expanded: bool,
-}
-
 pub struct MainWindow {
     workspace: Option<Workspace>,
     branch: Option<String>,
     expanded: HashSet<PathBuf>,
-    rows: Vec<Row>,
+    rows: Vec<TreeRow>,
+    /// The solution as the Solution view shows it; none for a folder without one, which shows its files.
+    tree: Option<SolutionTree>,
     selected: Option<usize>,
     dock: DockLayout,
     /// Where a floating window was taken, from its top left (the header) or bottom right (the corner), so it
@@ -198,6 +195,7 @@ impl MainWindow {
             branch: None,
             expanded: HashSet::new(),
             rows: Vec::new(),
+            tree: None,
             selected: None,
             dock: store(cx).read::<DockLayout>().complete().clamped(),
             float_grab: Point::default(),
@@ -253,6 +251,11 @@ impl MainWindow {
         self.expanded = std::iter::once(folder.clone()).chain(kept.expanded.iter().map(|p| folder.join(p))).collect();
         self.dock = kept.dock.clone().unwrap_or_else(|| store.read::<DockLayout>()).complete().clamped();
         self.solution_wide = kept.solution_wide;
+        self.tree = workspace.solution.as_deref().and_then(rsharp_core::solution::read).map(|solution| {
+            let cached: rsharp_core::project::Evaluations = store.read_for(&folder);
+            let evaluated = cached.projects.into_iter().map(|p| (p.path.clone(), p)).collect();
+            SolutionTree::new(solution, evaluated, kept.open.iter().cloned().collect())
+        });
         self.workspace = Some(workspace);
         self.selected = Some(0);
         self.rebuild_rows();
@@ -300,7 +303,14 @@ impl MainWindow {
         let store = store(cx);
         store.write_for(
             folder,
-            &FolderState { tabs, active, expanded, dock: Some(self.dock.clone()), solution_wide: self.solution_wide },
+            &FolderState {
+                tabs,
+                active,
+                expanded,
+                open: self.tree.as_ref().map(SolutionTree::open_keys).unwrap_or_default(),
+                dock: Some(self.dock.clone()),
+                solution_wide: self.solution_wide,
+            },
         );
         store.write(&self.dock);
     }
@@ -603,66 +613,104 @@ impl MainWindow {
     }
 
     fn rebuild_rows(&mut self) {
-        let Some(workspace) = &mut self.workspace else { return };
-        let root = workspace.folder.clone();
-        let mut rows = vec![Row {
-            entry: Entry { path: root.clone(), name: workspace.name(), is_folder: true },
-            depth: 0,
-            expanded: self.expanded.contains(&root),
-        }];
-        fn walk(
-            workspace: &mut Workspace,
-            expanded: &HashSet<PathBuf>,
-            folder: &Path,
-            depth: usize,
-            rows: &mut Vec<Row>,
-        ) {
-            for entry in workspace.entries(folder).to_vec() {
-                let open = entry.is_folder && expanded.contains(&entry.path);
-                let path = entry.path.clone();
-                rows.push(Row { entry, depth, expanded: open });
-                if open {
-                    walk(workspace, expanded, &path, depth + 1, rows);
-                }
-            }
+        if let Some(tree) = &self.tree {
+            self.rows = tree.rows().to_vec();
+        } else {
+            self.rebuild_folder_rows();
         }
-        if rows[0].expanded {
-            walk(workspace, &self.expanded, &root, 1, &mut rows);
-        }
-        self.rows = rows;
         if let Some(selected) = self.selected {
             self.selected = Some(selected.min(self.rows.len().saturating_sub(1)));
         }
     }
 
+    /// A folder without a solution: its files on disk.
+    fn rebuild_folder_rows(&mut self) {
+        let Some(workspace) = &mut self.workspace else { return };
+        let root = workspace.folder.clone();
+        let row = |path: PathBuf, name: String, is_folder: bool, depth: usize, expanded: bool| TreeRow {
+            kind: if is_folder { NodeKind::Folder } else { NodeKind::File },
+            name,
+            detail: None,
+            path: Some(path),
+            depth,
+            expandable: is_folder,
+            expanded,
+            dimmed: false,
+            tip: None,
+            key: String::new(),
+        };
+        let mut rows = vec![row(root.clone(), workspace.name(), true, 0, self.expanded.contains(&root))];
+        fn walk(
+            workspace: &mut Workspace,
+            expanded: &HashSet<PathBuf>,
+            folder: &Path,
+            depth: usize,
+            rows: &mut Vec<TreeRow>,
+            row: &dyn Fn(PathBuf, String, bool, usize, bool) -> TreeRow,
+        ) {
+            for entry in workspace.entries(folder).to_vec() {
+                let open = entry.is_folder && expanded.contains(&entry.path);
+                rows.push(row(entry.path.clone(), entry.name, entry.is_folder, depth, open));
+                if open {
+                    walk(workspace, expanded, &entry.path, depth + 1, rows, row);
+                }
+            }
+        }
+        if rows[0].expanded {
+            walk(workspace, &self.expanded, &root, 1, &mut rows, &row);
+        }
+        self.rows = rows;
+    }
+
+    /// Opens or closes a row of the Solution view, as its chevron does.
+    pub fn toggle_row(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.toggle(index, None, cx);
+    }
+
     fn toggle(&mut self, index: usize, open: Option<bool>, cx: &mut Context<Self>) {
         let Some(row) = self.rows.get(index) else { return };
-        if !row.entry.is_folder {
+        if !row.expandable {
             return;
         }
-        let path = row.entry.path.clone();
-        let opening = open.unwrap_or(!row.expanded);
-        if opening {
-            if let Some(workspace) = &mut self.workspace {
-                workspace.forget(&path);
-            }
-            self.expanded.insert(path);
+        if let Some(tree) = &mut self.tree {
+            tree.toggle(index, open);
         } else {
-            self.expanded.remove(&path);
+            let path = row.path.clone().unwrap_or_default();
+            let opening = open.unwrap_or(!row.expanded);
+            if opening {
+                if let Some(workspace) = &mut self.workspace {
+                    workspace.forget(&path);
+                }
+                self.expanded.insert(path);
+            } else {
+                self.expanded.remove(&path);
+            }
         }
         self.rebuild_rows();
         self.save_state(cx);
-        cx.notify();
     }
 
-    fn activate_row(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+    /// What a double-click or Enter on a row does: a file opens, anything else opens or closes.
+    pub fn activate_row(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(row) = self.rows.get(index) else { return };
-        if row.entry.is_folder {
-            self.toggle(index, None, cx);
-        } else {
-            let path = row.entry.path.clone();
-            self.open_file(&path, None, window, cx);
+        match (&row.kind, &row.path) {
+            (NodeKind::File, Some(path)) => {
+                let path = path.clone();
+                self.open_file(&path, None, window, cx);
+            }
+            _ => self.toggle(index, None, cx),
         }
+    }
+
+    /// Each row of the Solution view as shown: indented two spaces a level, its detail after it in brackets.
+    pub fn solution_rows(&self) -> Vec<String> {
+        self.rows
+            .iter()
+            .map(|r| {
+                let detail = r.detail.as_ref().map(|d| format!(" ({d})")).unwrap_or_default();
+                format!("{}{}{detail}", "  ".repeat(r.depth), r.name)
+            })
+            .collect()
     }
 
     /// Opens a file in a tab, or shows its tab, with the caret at a line and column counted from 0.
@@ -1193,6 +1241,7 @@ impl MainWindow {
         self.workspace = None;
         self.opened_as = None;
         self.rows.clear();
+        self.tree = None;
         self.server = None;
         self.server_state = ServerState::None;
         self._server_task = None;
@@ -2218,14 +2267,19 @@ impl MainWindow {
     fn solution_row(&self, index: usize, focused: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let row = &self.rows[index];
         let selected = self.selected == Some(index);
-        let chevron = row.entry.is_folder.then(|| if row.expanded { "chevron-down" } else { "chevron-right" });
-        let kind = if index == 0 {
-            "project"
-        } else if row.entry.is_folder {
-            "folder"
-        } else {
-            file_icon(&row.entry.name)
+        let chevron = row.expandable.then(|| if row.expanded { "chevron-down" } else { "chevron-right" });
+        let kind = match row.kind {
+            NodeKind::Solution => "solution",
+            NodeKind::SolutionFolder => "solution-folder",
+            NodeKind::Project | NodeKind::ProjectReference => "project",
+            NodeKind::Dependencies => "dependencies",
+            NodeKind::Framework => "framework",
+            NodeKind::Package => "package",
+            NodeKind::Folder if index == 0 => "project",
+            NodeKind::Folder => "folder",
+            NodeKind::File => file_icon(&row.name),
         };
+        let tip = row.tip.clone();
         div()
             .id(("row", index))
             .h(px(ROW_HEIGHT))
@@ -2250,8 +2304,13 @@ impl MainWindow {
                 div()
                     .truncate()
                     .when(index == 0, |d| d.font_weight(FontWeight::SEMIBOLD))
-                    .child(row.entry.name.clone()),
+                    .when(row.dimmed, |d| d.text_color(theme::text_muted()))
+                    .child(row.name.clone()),
             )
+            .when_some(row.detail.clone(), |d, detail| {
+                d.child(div().flex_none().text_color(theme::text_secondary()).child(detail))
+            })
+            .when_some(tip, |d, tip| d.tooltip(move |_, cx| cx.new(|_| Tip(tip.clone().into())).into()))
             .on_click(cx.listener(move |w, event: &ClickEvent, window, cx| {
                 w.selected = Some(index);
                 window.focus(&w.explorer_focus);

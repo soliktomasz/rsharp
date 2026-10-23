@@ -129,6 +129,11 @@ fn attribute(element: &BytesStart, name: &[u8]) -> Option<String> {
         .map(Into::into)
 }
 
+fn folder_parts(element: &BytesStart) -> Vec<String> {
+    let name = attribute(element, b"Name").unwrap_or_default();
+    name.split('/').filter(|p| !p.is_empty()).map(str::to_string).collect()
+}
+
 fn read_slnx(text: &str, root: &Path) -> Option<Vec<SolutionEntry>> {
     let mut reader = quick_xml::Reader::from_str(text);
     let mut entries = Vec::new();
@@ -136,14 +141,13 @@ fn read_slnx(text: &str, root: &Path) -> Option<Vec<SolutionEntry>> {
     let mut folder: Vec<String> = Vec::new();
     loop {
         match reader.read_event().ok()? {
-            Event::Start(element) | Event::Empty(element) if element.name().as_ref() == b"Folder" => {
-                folder = attribute(&element, b"Name")
-                    .unwrap_or_default()
-                    .split('/')
-                    .filter(|p| !p.is_empty())
-                    .map(str::to_string)
-                    .collect();
+            Event::Start(element) if element.name().as_ref() == b"Folder" => {
+                folder = folder_parts(&element);
                 level(&mut entries, &folder, "/");
+            }
+            // An empty <Folder /> has no end, so what follows it is not in it.
+            Event::Empty(element) if element.name().as_ref() == b"Folder" => {
+                level(&mut entries, &folder_parts(&element), "/");
             }
             Event::End(element) if element.name().as_ref() == b"Folder" => folder.clear(),
             Event::Start(element) | Event::Empty(element) => {

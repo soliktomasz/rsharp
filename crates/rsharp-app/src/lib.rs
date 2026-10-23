@@ -21,6 +21,7 @@ pub mod projects;
 pub mod refactor_dialog;
 pub mod settings;
 pub mod settings_dialog;
+pub mod solution_view;
 pub mod state;
 pub mod theme;
 pub mod window;
