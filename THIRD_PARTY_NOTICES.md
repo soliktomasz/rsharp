@@ -8,6 +8,8 @@ change that brings it in.
 | Crate | Licence | Copyright |
 |---|---|---|
 | `gpui` | Apache-2.0 | Zed Industries, Inc. |
+| `async_zip` | MIT | Harry (Majored) and contributors |
+| `serde_json_lenient` | MIT OR Apache-2.0 | Google LLC; Erick Tryzelaar, David Tolnay and contributors |
 | `encoding_rs` | (Apache-2.0 OR MIT) AND BSD-3-Clause | Mozilla Foundation, Henri Sivonen; its data from the WHATWG Encoding Standard (BSD-3-Clause) |
 | `futures` | MIT OR Apache-2.0 | The futures-rs authors |
 | `imara-diff` | Apache-2.0 | Pascal Kuthe |

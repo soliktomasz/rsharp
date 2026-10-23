@@ -4623,7 +4623,9 @@ dependencies = [
 name = "rsharp-core"
 version = "0.1.0"
 dependencies = [
+ "async_zip",
  "encoding_rs",
+ "futures",
  "libc",
  "log",
  "notify",
@@ -4631,6 +4633,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "serde_json_lenient",
  "trash",
  "windows-sys 0.59.0",
 ]

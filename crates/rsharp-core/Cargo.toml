@@ -6,6 +6,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+async_zip.workspace = true
+futures.workspace = true
+serde_json_lenient.workspace = true
 encoding_rs.workspace = true
 log.workspace = true
 notify.workspace = true
