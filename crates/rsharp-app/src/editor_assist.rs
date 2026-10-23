@@ -59,6 +59,8 @@ pub struct Assist {
     pub tokens: Vec<(Range<usize>, Hsla)>,
     /// Roslyn's inlay hints for the same lines: each place, and the text set in before it there.
     pub hints: Vec<(usize, String)>,
+    /// A live template being filled in, its variables still to visit.
+    pub template: Option<super::templates::Filling>,
     tokens_for: Option<(u64, Range<usize>)>,
     token_task: Option<Task<()>>,
     /// The lines the last frame showed.
@@ -73,6 +75,11 @@ impl Assist {
         for (range, _) in &mut self.tokens {
             for change in changes {
                 *range = map_through(range.start, change)..map_through(range.end, change);
+            }
+        }
+        if let Some(filling) = &mut self.template {
+            for change in changes {
+                filling.map_through(change);
             }
         }
         // A hint inside what changed goes until asked again; the rest move with the text.

@@ -18,6 +18,8 @@ use std::path::PathBuf;
 mod assist;
 #[path = "editor_refactor.rs"]
 mod refactor;
+#[path = "editor_templates.rs"]
+mod templates;
 pub use assist::{Navigate, Said};
 
 actions!(
@@ -409,6 +411,8 @@ impl CodeEditor {
         self.set_selections(merge_overlapping(moved));
         self.autoscroll = true;
         self.close_popup(cx);
+        // The caret leaving a template ends its filling in, as Rider's does.
+        self.assist.template = None;
         cx.notify();
     }
 
@@ -633,6 +637,8 @@ impl CodeEditor {
         let primary = self.primary();
         if self.assist.popup.is_some() {
             self.close_popup(cx);
+        } else if self.assist.template.take().is_some() {
+            cx.notify();
         } else if self.carets.as_slice().len() > 1 {
             self.set_carets(vec![primary], cx);
         } else if !primary.is_empty() {
@@ -708,6 +714,7 @@ impl CodeEditor {
     fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus);
         self.close_popup(cx);
+        self.assist.template = None;
         let hit = |marks: &[(Bounds<Pixels>, FoldRegion)]| {
             marks.iter().find(|(b, _)| b.contains(&event.position)).map(|(_, fold)| fold.clone())
         };
@@ -862,7 +869,7 @@ moves! {
     Backspace => |e, cx| { let plan = backspace(&e.text, e.carets.as_slice()); e.apply(plan, cx); e.backspaced(cx) };
     Delete => |e, cx| { let plan = delete(&e.text, e.carets.as_slice()); e.apply(plan, cx) };
     Newline => |e, cx| { if e.popup_choose(cx) { return } let indent = e.buffer.read(cx).indent; let plan = newline(&e.text, e.carets.as_slice(), &indent); e.apply(plan, cx) };
-    Tab => |e, cx| { if e.popup_choose(cx) { return } let indent = e.buffer.read(cx).indent; let plan = tab(&e.text, e.carets.as_slice(), &indent); e.apply(plan, cx) };
+    Tab => |e, cx| { if e.popup_choose(cx) || e.next_template_stop(cx) || e.expand_template(cx) { return } let indent = e.buffer.read(cx).indent; let plan = tab(&e.text, e.carets.as_slice(), &indent); e.apply(plan, cx) };
     Undo => |e, cx| e.undo(false, cx);
     Redo => |e, cx| e.undo(true, cx);
     Copy => |e, cx| { let text = e.selected_text(); if !text.is_empty() { cx.write_to_clipboard(ClipboardItem::new_string(text)) } };

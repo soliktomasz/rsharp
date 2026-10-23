@@ -125,3 +125,28 @@ fn optimize_usings_encapsulate_field_and_safe_delete_change_the_code_as_roslyn_s
     let encapsulated = wait_for(cx, |cx| text(&main, cx).contains(" Count { get => count; set => count = value; }"));
     assert!(encapsulated, "Encapsulate Field made no property:\n{}", text(&main, cx));
 }
+
+#[gpui::test]
+fn a_live_template_is_written_on_tab_and_tab_goes_through_its_variables(cx: &mut TestAppContext) {
+    let run = Run::new("live-template", &[("A.cs", "class A\n{\n    void M()\n    {\n        \n    }\n}\n")]);
+    let (main, cx) = run.window(cx);
+    main.update_in(cx, |main, window, cx| {
+        main.open_workspace(&run.folder, window, cx);
+        main.open_file(&run.folder.join("A.cs"), Some((4, 8)), window, cx);
+    });
+    cx.run_until_parked();
+    cx.simulate_input("for");
+    cx.simulate_keystrokes("tab");
+    // The index is selected at its three places: typing writes all three.
+    cx.simulate_input("n");
+    cx.simulate_keystrokes("tab");
+    cx.simulate_input("count");
+    cx.simulate_keystrokes("tab");
+    cx.simulate_input("Work();");
+    cx.run_until_parked();
+    assert_eq!(
+        text(&main, cx),
+        "class A\n{\n    void M()\n    {\n        for (int n = 0; n < count; n++)\n        {\n            Work();\n        }\n    }\n}\n",
+        "the `for` template was not written at its indent, its variables typed over, and its body reached"
+    );
+}

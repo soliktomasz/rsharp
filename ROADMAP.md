@@ -98,10 +98,11 @@ server (`rsharp --mcp`) with `workspace`, `diagnostics`, `find_symbol`, `outline
 Search Everywhere (types, files, symbols), Recent Locations, and Find in Files' Solution and Directory scopes, file
 mask and Replace in Files; Optimize Usings, Introduce Variable, Field and Parameter, Encapsulate Field, Extract
 Method and Inline (Roslyn's code actions by their titles), Safe Delete at a declaration, Surround With and Complete
-Current Statement.
+Current Statement; live templates (Rider's built-in ones on Tab, a variable's every use typed at once).
 Left: Host and
 Roslyn.Extension (decision 1), which the dialogs (Change Signature, Extract Interface, Move, Pull Members Up and Push
-Members Down) and Safe Delete's wider search need; live templates; and the framework switcher.
+Members Down) and Safe Delete's wider search need; templates in completion and a person's own; and the framework
+switcher.
 - **Roslyn in full:** Passenger's `Host` for design-time builds and `Roslyn.Extension` loaded with `--extension`, so
   projects load the way Passenger loads them.
 - Semantic tokens over the syntax colours (this closes the shortcut in `rsharp-languages`), refreshed for the
