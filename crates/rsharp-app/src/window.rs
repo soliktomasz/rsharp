@@ -183,6 +183,12 @@ pub struct MainWindow {
     /// availability and keys where the person was, and what had the keys.
     main_menu: Option<(Vec<bool>, Vec<Option<SharedString>>, Option<FocusHandle>)>,
     _server_task: Option<Task<()>>,
+    /// The folder's one Passenger Host, which Roslyn's builds and the Solution view's evaluations share.
+    host: Option<rsharp_lsp::SharedHost>,
+    /// A round of evaluations is running; `evaluate_again` asks for one more after it.
+    evaluating: bool,
+    evaluate_again: bool,
+    _evaluate_task: Option<Task<()>>,
 }
 
 impl MainWindow {
@@ -230,6 +236,10 @@ impl MainWindow {
             find_bar: None,
             main_menu: None,
             _server_task: None,
+            host: None,
+            evaluating: false,
+            evaluate_again: false,
+            _evaluate_task: None,
         }
     }
 
@@ -330,6 +340,8 @@ impl MainWindow {
 
     fn start_server(&mut self, cx: &mut Context<Self>) {
         self.server = None;
+        self.host = None;
+        (self.evaluating, self.evaluate_again, self._evaluate_task) = (false, false, None);
         let Some(workspace) = &self.workspace else { return };
         if !cx.global::<crate::state::Ide>().servers {
             self.server_state = ServerState::None;
@@ -349,13 +361,16 @@ impl MainWindow {
         self.progress.clear();
         self.projects_loaded = false;
         let (folder, solution) = (workspace.folder.clone(), workspace.solution.clone());
+        self.host = rsharp_lsp::SharedHost::carried(&folder);
+        let host = self.host.clone();
+        self.evaluate_projects(cx);
         let logs = store(cx).root().join("logs").join("roslyn");
         let (sender, mut events) = futures::channel::mpsc::unbounded();
         self._server_task = Some(cx.spawn(async move |this, cx| {
             let started = cx
                 .background_executor()
                 .spawn(async move {
-                    start_roslyn(&folder, solution.as_deref(), &logs, None, move |event| {
+                    start_roslyn(&folder, solution.as_deref(), &logs, host, move |event| {
                         let _ = sender.unbounded_send(event);
                     })
                 })
@@ -660,6 +675,79 @@ impl MainWindow {
             walk(workspace, &self.expanded, &root, 1, &mut rows, &row);
         }
         self.rows = rows;
+    }
+
+    /// Evaluates, in the Host, each project of the solution never evaluated or changed since, the active file's first,
+    /// each landing in the Solution view and the folder's cache as it comes. One round runs at a time.
+    fn evaluate_projects(&mut self, cx: &mut Context<Self>) {
+        let (Some(host), Some(tree), Some(workspace)) = (self.host.clone(), &self.tree, &self.workspace) else {
+            return;
+        };
+        if self.evaluating {
+            self.evaluate_again = true;
+            return;
+        }
+        let folder = workspace.folder.clone();
+        let solution = tree.solution().path.clone();
+        let active = self.active_editor().and_then(|e| rsharp_lsp::project_of(&e.read(cx).path));
+        let mut projects: Vec<(PathBuf, Option<rsharp_core::project::EvaluatedProject>)> = tree
+            .solution()
+            .projects()
+            .into_iter()
+            .filter(|p| p.exists)
+            .map(|p| (p.path.clone(), tree.evaluated(&p.path).cloned()))
+            .collect();
+        projects.sort_by_key(|(p, _)| Some(p) != active.as_ref());
+        self.evaluating = true;
+        self._evaluate_task = Some(cx.spawn(async move |this, cx| {
+            for (project, known) in projects {
+                let (host, solution) = (host.clone(), solution.clone());
+                let evaluated = cx
+                    .background_executor()
+                    .spawn(async move {
+                        // Stamped files are read here, off the UI thread.
+                        if known.is_some_and(|k| !k.is_stale()) {
+                            return None;
+                        }
+                        Some(host.evaluate(&project, Some(&solution)))
+                    })
+                    .await;
+                let landed = this.update(cx, |w, cx| {
+                    let Some(tree) =
+                        w.tree.as_mut().filter(|_| w.workspace.as_ref().map(|ws| &ws.folder) == Some(&folder))
+                    else {
+                        return false;
+                    };
+                    match evaluated {
+                        Some(Ok(project)) => {
+                            tree.set_evaluated(project);
+                            let kept = rsharp_core::project::Evaluations { projects: tree.all_evaluated() };
+                            store(cx).write_for(&folder, &kept);
+                            w.rebuild_rows();
+                            cx.notify();
+                        }
+                        Some(Err(failed)) => log::warn!("{}", failed.0),
+                        None => {}
+                    }
+                    true
+                });
+                if !landed.unwrap_or(false) {
+                    return;
+                }
+            }
+            let _ = this.update(cx, |w, cx| {
+                w.evaluating = false;
+                if std::mem::take(&mut w.evaluate_again) {
+                    w.evaluate_projects(cx);
+                }
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Whether the Solution view is waiting on the Host for an evaluation.
+    pub fn evaluating(&self) -> bool {
+        self.evaluating
     }
 
     /// Opens or closes a row of the Solution view, as its chevron does.
@@ -1242,6 +1330,8 @@ impl MainWindow {
         self.opened_as = None;
         self.rows.clear();
         self.tree = None;
+        self.host = None;
+        (self.evaluating, self.evaluate_again, self._evaluate_task) = (false, false, None);
         self.server = None;
         self.server_state = ServerState::None;
         self._server_task = None;
@@ -1614,6 +1704,12 @@ impl Render for MainWindow {
                         }
                         w.said =
                             editor.update(cx, |e, cx| e.save(cx)).err().map(|e| format!("Could not save: {e}").into());
+                        let saved = editor.read(cx).path.extension().and_then(|e| e.to_str()).map(str::to_lowercase);
+                        if w.said.is_none()
+                            && saved.is_some_and(|e| e.ends_with("proj") || e == "props" || e == "targets")
+                        {
+                            w.evaluate_projects(cx);
+                        }
                         w.refresh_solution_problems(cx);
                         cx.notify();
                     }

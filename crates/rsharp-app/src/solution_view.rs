@@ -80,6 +80,11 @@ impl SolutionTree {
         self.evaluated.get(project)
     }
 
+    /// Every evaluation it holds, for the folder's cache.
+    pub fn all_evaluated(&self) -> Vec<EvaluatedProject> {
+        self.evaluated.values().cloned().collect()
+    }
+
     pub fn rows(&self) -> &[TreeRow] {
         &self.rows
     }

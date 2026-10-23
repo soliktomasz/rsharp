@@ -253,3 +253,107 @@ fn double_clicking_a_file_row_opens_it_in_the_editor(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(main.read_with(cx, |main, cx| main.active_tab_name(cx)).as_deref(), Some("Program.cs"));
 }
+
+/// A window on the run's folder with the Host on, once every project's evaluation has landed; none, saying why,
+/// without Passenger's sidecars.
+fn evaluated<'a>(run: &Run, cx: &'a mut TestAppContext) -> Option<(Entity<MainWindow>, &'a mut VisualTestContext)> {
+    if rsharp_lsp::SharedHost::carried(&run.folder).is_none() {
+        eprintln!("skipped: Passenger's sidecars were not built (no dotnet or no vendor/passenger at build time)");
+        return None;
+    }
+    let (main, cx) = run.window(cx);
+    cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
+    let folder = run.folder.clone();
+    main.update_in(cx, |main, window, cx| main.open_workspace(&folder, window, cx));
+    settle(&main, cx);
+    Some((main, cx))
+}
+
+/// Waits, in real time, for the Host's evaluations to land; they run on threads of their own.
+fn settle(main: &Entity<MainWindow>, cx: &mut VisualTestContext) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        cx.run_until_parked();
+        if !main.read_with(cx, |m, _| m.evaluating()) {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "the projects were never evaluated");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+const EVALUATED: &str = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    \
+    <TargetFramework>net10.0</TargetFramework>\n  </PropertyGroup>\n  <ItemGroup>\n    \
+    <Compile Remove=\"Old.cs\" />\n    <Compile Include=\"../Shared/Version.cs\" Link=\"Properties/Version.cs\" />\n  \
+    </ItemGroup>\n</Project>\n";
+
+#[gpui::test]
+fn a_solution_opened_shows_each_projects_files_as_msbuild_evaluates_them(cx: &mut TestAppContext) {
+    let run = Run::new(
+        "sv-evaluated",
+        &[
+            ("Shop.slnx", "<Solution>\n  <Project Path=\"Api/Api.csproj\" />\n</Solution>\n"),
+            ("Api/Api.csproj", EVALUATED),
+            ("Api/Program.cs", "class Program { }\n"),
+            ("Api/Old.cs", "class Old { }\n"),
+            ("Shared/Version.cs", "class Version { }\n"),
+        ],
+    );
+    let Some((main, cx)) = evaluated(&run, cx) else { return };
+    assert_eq!(rows(&main, cx)[1], "  Api (net10.0)", "the project would not show its framework once evaluated");
+    open_row(&main, cx, "Api (net10.0)");
+    open_row(&main, cx, "Properties");
+    let rows = rows(&main, cx);
+    assert!(!rows.iter().any(|r| r.trim_start() == "Old.cs"), "a file the project removes would show: {rows:?}");
+    assert!(rows.contains(&"      Version.cs".to_string()), "a linked file would not show at its Link: {rows:?}");
+    let kept: rsharp_core::project::Evaluations = cx.update(|_, cx| store(cx).read_for(&run.folder));
+    assert_eq!(kept.projects.len(), 1, "the evaluation would not be kept for the next start");
+}
+
+#[gpui::test]
+fn a_project_file_saved_in_the_ide_shows_what_it_says_now(cx: &mut TestAppContext) {
+    let run = Run::new(
+        "sv-saved",
+        &[
+            ("Shop.slnx", "<Solution>\n  <Project Path=\"Api/Api.csproj\" />\n</Solution>\n"),
+            ("Api/Api.csproj", EVALUATED),
+            ("Api/Program.cs", "class Program { }\n"),
+            ("Shared/Version.cs", "class Version { }\n"),
+        ],
+    );
+    let Some((main, cx)) = evaluated(&run, cx) else { return };
+    let project = run.folder.join("Api/Api.csproj");
+    main.update_in(cx, |main, window, cx| main.open_file(&project, Some((5, 0)), window, cx));
+    cx.simulate_input("    <PackageReference Include=\"Humanizer\" Version=\"2.14.1\" />\n");
+    cx.simulate_keystrokes("cmd-s");
+    settle(&main, cx);
+    open_row(&main, cx, "Api (net10.0)");
+    open_row(&main, cx, "Dependencies");
+    assert!(
+        rows(&main, cx).contains(&"      Humanizer (2.14.1)".to_string()),
+        "a package added and saved would not show: {:?}",
+        rows(&main, cx)
+    );
+}
+
+#[gpui::test]
+fn a_project_that_does_not_evaluate_says_so_and_the_rest_still_load(cx: &mut TestAppContext) {
+    let run = Run::new(
+        "sv-broken",
+        &[
+            (
+                "Shop.slnx",
+                "<Solution>\n  <Project Path=\"Api/Api.csproj\" />\n  <Project Path=\"Bad/Bad.csproj\" />\n</Solution>\n",
+            ),
+            ("Api/Api.csproj", EVALUATED),
+            ("Api/Program.cs", "class Program { }\n"),
+            ("Bad/Bad.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n"),
+            ("Bad/Thing.cs", "class Thing { }\n"),
+            ("Shared/Version.cs", "class Version { }\n"),
+        ],
+    );
+    let Some((main, cx)) = evaluated(&run, cx) else { return };
+    assert_eq!(rows(&main, cx)[1..], ["  Api (net10.0)", "  Bad (load failed)"], "a broken project would not say so");
+    open_row(&main, cx, "Bad (load failed)");
+    assert!(rows(&main, cx).contains(&"    Thing.cs".to_string()), "a broken project would not show its folder");
+}
