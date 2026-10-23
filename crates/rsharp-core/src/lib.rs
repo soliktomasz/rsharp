@@ -11,4 +11,5 @@ pub mod process;
 pub mod programs;
 pub mod project;
 pub mod solution;
+pub mod solution_edits;
 pub mod state;
