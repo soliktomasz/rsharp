@@ -213,10 +213,18 @@ impl Buffer {
 
     fn read_again(&mut self, external: Option<&'static str>, cx: &mut Context<Self>) {
         let now = stamp(&self.path);
-        if now.is_none() || now == self.on_disk || self.is_modified() {
+        if now.is_none() || now == self.on_disk {
             return;
         }
         let Ok(bytes) = std::fs::read(&self.path) else { return };
+        // shortcut: unsaved edits win over a change from elsewhere, which Local History keeps so the next save loses
+        // nothing for good; ask which to keep, as Rider's File Cache Conflict does, once someone meets it.
+        if self.is_modified() {
+            if external.is_some() {
+                crate::history_window::record(self.path.clone(), bytes, external, cx);
+            }
+            return;
+        }
         if external.is_some() {
             crate::history_window::record(self.path.clone(), bytes.clone(), external, cx);
         }

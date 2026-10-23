@@ -534,3 +534,108 @@ fn a_project_file_changed_by_another_program_is_evaluated_again(cx: &mut TestApp
         rows(&main, cx)
     );
 }
+
+#[gpui::test]
+fn a_change_from_elsewhere_to_a_file_with_unsaved_edits_is_kept_in_local_history(cx: &mut TestAppContext) {
+    let run = Run::new("sf-fix-unsaved", &files());
+    let order = run.folder.join("Shop.App/Models/Order.cs");
+    let (main, cx) = open(&run, cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&order, Some((4, 21)), window, cx));
+    cx.simulate_input(" // mine");
+    elsewhere(&order, "class Order { int Pulled; }\n");
+    let path = rsharp_core::paths::canonical(&order);
+    let kept = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            let history = rsharp_app::history_window::local_history(cx);
+            history
+                .revisions(&path)
+                .iter()
+                .any(|r| history.content(r).is_ok_and(|b| String::from_utf8_lossy(&b).contains("Pulled")))
+        })
+    };
+    assert!(heard(cx, kept), "a pulled change to a file with unsaved edits would be lost to the next save");
+    assert!(text(&main, cx).contains("// mine"), "the unsaved edit would be lost");
+}
+
+#[gpui::test]
+fn a_duplicate_whose_dependent_would_land_on_a_file_is_refused(cx: &mut TestAppContext) {
+    let mut files = files();
+    files.extend([
+        ("Shop.App/Form1.cs", "partial class Form1 { }\n"),
+        ("Shop.App/Form1.resx", "<root>one</root>\n"),
+        ("Shop.App/Form2.resx", "<root>two</root>\n"),
+    ]);
+    let run = Run::new("sf-fix-dependent", &files);
+    let (main, cx) = open(&run, cx);
+    choose(&main, cx, "Form1.cs", "Edit > Copy");
+    choose(&main, cx, "Shop.App", "Edit > Paste");
+    answer(&main, cx, "Form2.cs");
+    assert_eq!(
+        std::fs::read_to_string(run.folder.join("Shop.App/Form2.resx")).unwrap(),
+        "<root>two</root>\n",
+        "a copy's dependent would overwrite a file already there"
+    );
+    assert!(!run.folder.join("Shop.App/Form2.cs").exists(), "a copy whose dependent is refused would go half way");
+}
+
+#[gpui::test]
+fn a_solution_item_cannot_be_dragged_out_of_its_place(cx: &mut TestAppContext) {
+    let mut files = files();
+    files[0] = (
+        "Shop.slnx",
+        "<Solution>\n  <Folder Name=\"/Items/\">\n    <File Path=\"README.md\" />\n  </Folder>\n  <Project Path=\"Shop.App/Shop.App.csproj\" />\n</Solution>\n",
+    );
+    files.push(("README.md", "# Shop\n"));
+    let run = Run::new("sf-fix-item-drag", &files);
+    let (main, cx) = open(&run, cx);
+    let at = row(&main, cx, "Items");
+    main.update(cx, |m, cx| m.toggle_row(at, cx));
+    cx.run_until_parked();
+    let leak = |s: &str| -> &'static str { Box::leak(s.to_string().into_boxed_str()) };
+    let start = cx.debug_bounds(leak("solution row: README.md")).expect("no README.md row").center();
+    let end = cx.debug_bounds(leak("solution row: Models")).expect("no Models row").center();
+    cx.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::default());
+    for step in 1..=8 {
+        cx.simulate_mouse_move(
+            start + (end - start) * (step as f32 / 8.),
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+    }
+    cx.simulate_mouse_up(end, gpui::MouseButton::Left, gpui::Modifiers::default());
+    cx.run_until_parked();
+    assert!(run.folder.join("README.md").is_file(), "a solution item would move, leaving the solution naming nothing");
+}
+
+#[gpui::test]
+fn git_s_own_files_are_never_kept_in_local_history(cx: &mut TestAppContext) {
+    let mut files = files();
+    files.push((".git/HEAD", "ref: refs/heads/main\n"));
+    let run = Run::new("sf-fix-git", &files);
+    let (_main, cx) = open(&run, cx);
+    elsewhere(&run.folder.join(".git/index"), "DIRC binary");
+    std::fs::write(run.folder.join("Shop.App/Program.cs"), "System.Console.WriteLine(1);\n").unwrap();
+    let program = rsharp_core::paths::canonical(&run.folder.join("Shop.App/Program.cs"));
+    let seen = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| !rsharp_app::history_window::local_history(cx).revisions(&program).is_empty())
+    };
+    assert!(heard(cx, seen), "the change beside it would not be heard");
+    let index = rsharp_core::paths::canonical(&run.folder.join(".git/index"));
+    let kept = cx.update(|_, cx| rsharp_app::history_window::local_history(cx).revisions(&index).len());
+    assert_eq!(kept, 0, "Git's index would fill Local History with every git command");
+}
+
+#[gpui::test]
+fn a_file_renamed_by_letter_case_alone_is_renamed(cx: &mut TestAppContext) {
+    let run = Run::new("sf-fix-case", &files());
+    let (main, cx) = open(&run, cx);
+    choose(&main, cx, "Order.cs", "Edit > Rename...");
+    answer(&main, cx, "order.cs");
+    assert!(main.read_with(cx, |m, _| m.name_popup().is_none()), "a case-only rename would be refused");
+    let names: Vec<String> = std::fs::read_dir(run.folder.join("Shop.App/Models"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, ["order.cs"], "the file would keep its old letter case");
+}

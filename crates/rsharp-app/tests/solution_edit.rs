@@ -508,3 +508,24 @@ fn add_reference_to_a_windows_1252_project_keeps_its_other_bytes_and_local_histo
     });
     assert!(kept, "Local History would not keep the project as it was");
 }
+
+#[gpui::test]
+fn local_history_lists_what_rsharp_wrote_as_the_newest(cx: &mut TestAppContext) {
+    let run = Run::new("se-history-order", &files());
+    let solution = run.folder.join("Shop.slnx");
+    let (main, cx) = open(&run, cx);
+    for name in ["One", "Two", "Three"] {
+        choose(&main, cx, "Shop", "Add > New Solution Folder...");
+        answer(&main, cx, name);
+    }
+    let path = rsharp_core::paths::canonical(&solution);
+    let newest = cx.update(|_, cx| {
+        let history = rsharp_app::history_window::local_history(cx);
+        history.revisions(&path).last().and_then(|r| history.content(r).ok())
+    });
+    assert_eq!(
+        newest,
+        Some(std::fs::read(&solution).unwrap()),
+        "Local History's newest would not be the file as written"
+    );
+}

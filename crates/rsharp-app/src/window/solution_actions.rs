@@ -677,8 +677,7 @@ impl MainWindow {
         let bytes = rsharp_core::encodings::encode(&after, charset)
             .map_err(|c| format!("'{c}' cannot be written in {}", charset.name()))?;
         rsharp_core::files::write(&path, &bytes).map_err(|e| format!("{name} could not be written: {e}"))?;
-        crate::history_window::record(path.clone(), before, None, cx);
-        crate::history_window::record(path.clone(), bytes, None, cx);
+        crate::history_window::record_all(vec![(path.clone(), before, None), (path.clone(), bytes, None)], cx);
         if let Some(buffer) = crate::buffer::find(&path, cx) {
             buffer.update(cx, |b, cx| b.reload(cx));
         }
@@ -689,12 +688,25 @@ impl MainWindow {
     /// Watches the open folder for what other programs change in it.
     pub(super) fn start_watching(&mut self, folder: &Path, cx: &mut Context<Self>) {
         let (sender, mut bursts) = futures::channel::mpsc::unbounded();
-        self._watcher = rsharp_core::watcher::watch(folder, move |paths| {
-            let _ = sender.unbounded_send(paths);
-        })
-        .map_err(|e| log::warn!("{} is not watched: {e}", folder.display()))
-        .ok();
+        // shortcut: on Linux, notify's inotify adds a watch per folder, bin, obj and node_modules too, and a folder
+        // past max_user_watches is not watched at all; watch each counted folder alone, as Passenger does, once
+        // Linux users open large folders.
+        let watching = {
+            let folder = folder.to_path_buf();
+            // Started off the UI thread: inotify walks the whole folder before it answers.
+            cx.background_executor().spawn(async move {
+                rsharp_core::watcher::watch(&folder, move |paths| {
+                    let _ = sender.unbounded_send(paths);
+                })
+                .map_err(|e| log::warn!("{} is not watched: {e}", folder.display()))
+                .ok()
+            })
+        };
         self._watch_task = Some(cx.spawn(async move |this, cx| {
+            let watcher = watching.await;
+            if this.update(cx, |w, _| w._watcher = watcher).is_err() {
+                return;
+            }
             while let Some(paths) = bursts.next().await {
                 if this.update(cx, |w, cx| w.folder_changed(paths, cx)).is_err() {
                     return;
@@ -714,9 +726,12 @@ impl MainWindow {
                 tree.forget(path.parent().unwrap_or(path));
                 tree.forget(path);
             }
+            // Git's own files only say the folder moved: they are read again, never kept in Local History.
+            let git = path.components().any(|c| c.as_os_str() == ".git");
             match crate::buffer::find(path, cx) {
                 Some(open) => open.update(cx, |b, cx| b.refresh_from_disk(cx)),
-                None => closed.push(path.clone()),
+                None if !git => closed.push(path.clone()),
+                None => {}
             }
         }
         if solution.as_ref().is_some_and(|s| paths.contains(s))

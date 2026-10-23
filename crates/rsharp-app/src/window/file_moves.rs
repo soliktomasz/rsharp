@@ -151,7 +151,7 @@ impl MainWindow {
 
     /// A copy, a file's dependents copied with it under names that follow its own.
     fn copy_with_dependents(&mut self, from: &Path, to: &Path) -> Result<(), String> {
-        copy_on_disk(from, to).map_err(|e| format!("{} could not be copied: {e}", name_of(from)))?;
+        let mut copies = vec![(from.to_path_buf(), to.to_path_buf())];
         if from.is_file() {
             let (stem, new_stem) = (
                 from.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
@@ -163,10 +163,15 @@ impl MainWindow {
                     Some(rest) => format!("{new_stem}.{rest}"),
                     None => name,
                 };
-                let target = to.parent().unwrap_or(to).join(renamed);
-                copy_on_disk(&dependent, &target)
-                    .map_err(|e| format!("{} could not be copied: {e}", name_of(&dependent)))?;
+                copies.push((dependent, to.parent().unwrap_or(to).join(renamed)));
             }
+        }
+        // Every target checked before anything is copied, so a copy never lands on a file already there.
+        if let Some((_, taken)) = copies.iter().find(|(_, target)| target.exists()) {
+            return Err(format!("{} is already there", name_of(taken)));
+        }
+        for (from, to) in copies {
+            copy_on_disk(&from, &to).map_err(|e| format!("{} could not be copied: {e}", name_of(&from)))?;
         }
         Ok(())
     }

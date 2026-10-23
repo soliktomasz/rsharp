@@ -18,7 +18,15 @@ pub fn set_folder(folder: Option<PathBuf>) {
 /// Moves a file or folder to the Trash. A name the Trash already holds is kept: the second takes the time beside it.
 pub fn move_to_trash(path: &Path) -> std::io::Result<()> {
     let Some(bin) = FOLDER.with(|f| f.borrow().clone()) else {
-        return trash::delete(path).map_err(std::io::Error::other);
+        #[allow(unused_mut)]
+        let mut context = trash::TrashContext::default();
+        // Finder's way runs osascript, outside `process::spawn`, and asks the person to let RSharp control Finder.
+        #[cfg(target_os = "macos")]
+        {
+            use trash::macos::{DeleteMethod, TrashContextExtMacos};
+            context.set_delete_method(DeleteMethod::NsFileManager);
+        }
+        return context.delete(path).map_err(std::io::Error::other);
     };
     std::fs::create_dir_all(&bin)?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();

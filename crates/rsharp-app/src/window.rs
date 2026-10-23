@@ -2516,10 +2516,15 @@ impl MainWindow {
                 d.child(div().flex_none().text_color(theme::text_secondary()).child(detail))
             })
             .when_some(tip, |d, tip| d.tooltip(move |_, cx| cx.new(|_| Tip(tip.clone().into())).into()))
-            .when_some(row.path.clone().filter(|_| matches!(row.kind, NodeKind::File | NodeKind::Folder)), |d, path| {
-                let drag = file_moves::RowDrag { paths: vec![path], name: row.name.clone().into() };
-                d.on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
-            })
+            .when_some(
+                row.path
+                    .clone()
+                    .filter(|_| matches!(row.kind, NodeKind::File | NodeKind::Folder) && !row.key.starts_with("si:")),
+                |d, path| {
+                    let drag = file_moves::RowDrag { paths: vec![path], name: row.name.clone().into() };
+                    d.on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
+                },
+            )
             .on_drop(cx.listener(move |w, drag: &file_moves::RowDrag, window, cx| w.dropped(drag, index, window, cx)))
             .on_mouse_down(
                 MouseButton::Right,

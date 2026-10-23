@@ -30,6 +30,20 @@ pub fn record(path: PathBuf, bytes: Vec<u8>, label: Option<&'static str>, cx: &A
         .detach();
 }
 
+/// Keeps versions in the order given, off the UI thread, one after another (a file as it was, then as written).
+pub fn record_all(versions: Vec<(PathBuf, Vec<u8>, Option<&'static str>)>, cx: &App) {
+    let history = local_history(cx);
+    cx.background_executor()
+        .spawn(async move {
+            for (path, bytes, label) in versions {
+                if let Err(error) = history.record(&path, &bytes, label) {
+                    log::warn!("Local History could not keep {}: {error}", path.display());
+                }
+            }
+        })
+        .detach();
+}
+
 pub struct HistoryWindow {
     buffer: Entity<Buffer>,
     revisions: Vec<Revision>,
