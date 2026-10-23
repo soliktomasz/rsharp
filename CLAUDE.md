@@ -51,6 +51,10 @@ terminal and takes focus for a moment.
   `solution` (a .sln or .slnx as its file says: folders, items, projects), `project` (the Host's `EvaluatedProject`, its
   `Stamp`s as the Host takes them, `ProjectFiles` placing its files as Rider's Solution view does, `Evaluations` the
   folder's `projectModels.json`), `nesting` (Rider's file nesting rules and DependentUpon, one level deep),
+  `solution_edits` and `project_edits` (Rider's Solution view edits to a .sln, a .slnx and a project file, text in and
+  text out, every other byte kept: never `dotnet sln` or `dotnet add`), `trash` (the system's Trash, or a test's
+  folder), `watcher` (the folder watched through `notify`, a burst gathered for 150 ms, build output and Git's objects
+  passed over),
   `editorconfig` (the .editorconfig files over a file, its own parser and globs), `history` (Local History: each version
   of a file under `localHistory/`, content once by hash in `blobs/`, a JSON line per version in `changes.log`), `state` (the one `StateStore`: `RSHARP_STATE` or the local app data; app documents
   at its root, each folder's under `workspaces/<name>-<hash>/`; writes debounced on its own thread, merged over
@@ -100,7 +104,12 @@ terminal and takes focus for a moment.
   editor's own actions; `fuzzy.rs` how a query matches a name. `settings.rs` is `AppSettings` (`settings.json`),
   a gpui global that editors observe; `settings_dialog.rs` Rider's searchable Settings window (a new setting is
   a field, an `Opt` on a page, and what follows it). `solution_view.rs` is the Solution view's tree for a folder with a solution (only open nodes walked, each kept
-  open by its key); a folder without one shows its files. `find_bar.rs` is find and replace over the editor, one
+  open by its key); a folder without one shows its files. `solution_menu.rs` is a row's menu (Rider's items and keys)
+  and the name popup; `reference_dialog.rs` Add Reference; the window's side of changing the solution is in
+  `window/`: `solution_actions.rs` (the menu's actions, solution folders, Add Existing, Remove, Add Reference, the
+  watcher's bursts, and `write_edited`, the one way RSharp writes a solution or project file: saved first if open, the
+  old bytes kept in Local History, written in its own encoding, read back), `file_ops.rs` (New, Rename, Delete) and
+  `file_moves.rs` (Cut, Copy, Paste, drags). `find_bar.rs` is find and replace over the editor, one
   per window, following the active tab. `buffer.rs` is an open file's text, undo, tree, problems and server, shared by
   every editor of it, and how it is stored (encoding, line separator, indent from .editorconfig, the file's own lines
   or C#'s, read-only, the .editorconfig's save-time rules); `editor_area.rs` the groups of tabs, split right and down, pinned tabs and the tabs closed;
