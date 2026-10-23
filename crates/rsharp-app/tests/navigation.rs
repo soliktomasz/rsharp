@@ -214,7 +214,7 @@ fn replace_in_files_replaces_every_match_in_open_and_closed_files(cx: &mut TestA
     cx.run_until_parked();
     assert_eq!(main.read_with(cx, |m, _| m.said().map(str::to_string)), Some("Replaced 2 matches".into()));
     let open = main.read_with(cx, |m, cx| m.editor().unwrap().read(cx).text().to_string());
-    assert!(open.contains("// Bye there"), "the open file was not replaced in its tab: {open:?}");
+    assert_eq!(open, "class Greeter\n{\n    // Bye there\n}\n", "the open file was not replaced in its tab");
     let closed = std::fs::read_to_string(run.folder.join("src/Store.cs")).unwrap();
-    assert!(closed.contains("// Bye again"), "the closed file was not written: {closed:?}");
+    assert_eq!(closed, "class Store\n{\n    // Bye again\n}\n", "the closed file was not written");
 }

@@ -444,10 +444,12 @@ impl MainWindow {
                 }
                 // Roslyn's answers about the files changed (its load went on, a file on disk changed): asked again.
                 "workspace/semanticTokens/refresh" | "workspace/inlayHint/refresh" | "workspace/diagnostic/refresh" => {
+                    if method == "workspace/diagnostic/refresh" {
+                        self.refresh_solution_problems(cx);
+                    }
                     let editors: Vec<_> = self.area.editors().cloned().collect();
                     for editor in editors {
                         if method == "workspace/diagnostic/refresh" {
-                            self.refresh_solution_problems(cx);
                             editor.read(cx).buffer.clone().update(cx, |b, cx| b.check(std::time::Duration::ZERO, cx));
                         } else {
                             editor.update(cx, |e, cx| e.server_ready(cx));

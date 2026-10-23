@@ -122,6 +122,8 @@ pub struct GoToPopup {
     places: Vec<Place>,
     selected: usize,
     asking: Option<Task<()>>,
+    /// The folder's walk, apart from `asking` so a query typed meanwhile does not cancel it.
+    walking: Option<Task<()>>,
 }
 
 impl EventEmitter<Ended> for GoToPopup {}
@@ -152,10 +154,11 @@ impl GoToPopup {
             places: Vec::new(),
             selected: 0,
             asking: None,
+            walking: None,
         };
         if popup.files.is_empty() && kind.walks() {
             let folder = popup.folder.clone();
-            popup.asking = Some(cx.spawn(async move |this, cx| {
+            popup.walking = Some(cx.spawn(async move |this, cx| {
                 let files = cx.background_executor().spawn(async move { all_files(&folder, MOST_FILES) }).await;
                 let _ = this.update(cx, |popup, cx| {
                     popup.files = Arc::new(files);
@@ -318,16 +321,25 @@ impl GoToPopup {
         }
     }
 
-    /// Replace All: every match in the files found, given to the window to replace.
+    /// Replace All: every match in the files searched, found again for the query as it stands (the list is capped and
+    /// may lag the typing), given to the window to replace.
     pub fn replace_all(&mut self, cx: &mut Context<Self>) {
         let query = self.field.read(cx).text();
         if query.is_empty() {
             return;
         }
-        let mut files: Vec<PathBuf> = self.places.iter().map(|p| p.path.clone()).collect();
-        files.dedup();
         let replacement = self.replacement.read(cx).text();
-        cx.emit(Ended::ReplaceAll { query, replacement, files });
+        let (searched, open) = (self.searched_files(cx), self.open.clone());
+        self.asking = Some(cx.spawn(async move |this, cx| {
+            let found = query.clone();
+            let hits = cx
+                .background_executor()
+                .spawn(async move { find_in_files(&searched, &open, &found, usize::MAX) })
+                .await;
+            let mut files: Vec<PathBuf> = hits.into_iter().map(|h| h.path).collect();
+            files.dedup();
+            let _ = this.update(cx, |_, cx| cx.emit(Ended::ReplaceAll { query, replacement, files }));
+        }));
     }
 }
 

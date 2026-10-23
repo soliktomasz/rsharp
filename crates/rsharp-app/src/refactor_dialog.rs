@@ -324,10 +324,10 @@ impl RefactorDialog {
     fn move_parameter(&mut self, index: usize, by: isize, cx: &mut Context<Self>) {
         if let Options::Signature { parameters, .. } = &mut self.options {
             let to = index as isize + by;
-            if to >= 0 && (to as usize) < parameters.len() {
-                parameters.swap(index, to as usize);
-            } else if by == 0 {
+            if by == 0 {
                 parameters.remove(index);
+            } else if to >= 0 && (to as usize) < parameters.len() {
+                parameters.swap(index, to as usize);
             }
             cx.notify();
         }

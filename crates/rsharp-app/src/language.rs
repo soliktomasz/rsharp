@@ -84,6 +84,9 @@ pub fn apply_workspace_edit(edit: &WorkspaceEdit, server: Option<&LanguageServer
         if buffer::find(from, cx).is_some() {
             return Err(format!("{} is open, so it was not renamed to {}", name(from), name(to)));
         }
+        if to.exists() {
+            return Err(format!("{} was not renamed: {} is there already", name(from), name(to)));
+        }
         std::fs::rename(from, to).map_err(|e| format!("{} could not be renamed: {e}", name(from)))?;
         written.push((from.clone(), 3));
         written.push((to.clone(), 1));

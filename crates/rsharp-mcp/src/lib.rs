@@ -105,19 +105,19 @@ fn tools() -> Value {
         all
     };
     json!([
-        { "name": "workspace", "description": "The folder, its solution and projects, and whether Roslyn has loaded them (with the projects that would not load).",
+        { "name": "workspace", "annotations": { "readOnlyHint": true }, "description": "The folder, its solution and projects, and whether Roslyn has loaded them (with the projects that would not load).",
           "inputSchema": { "type": "object", "properties": {} } },
-        { "name": "diagnostics", "description": "Errors and warnings: a file's, or with no file the whole solution's.",
+        { "name": "diagnostics", "annotations": { "readOnlyHint": true }, "description": "Errors and warnings: a file's, or with no file the whole solution's.",
           "inputSchema": { "type": "object", "properties": { "file": { "type": "string" } } } },
-        { "name": "find_symbol", "description": "Types and members by name (their letters in order), with where each is declared.",
+        { "name": "find_symbol", "annotations": { "readOnlyHint": true }, "description": "Types and members by name (their letters in order), with where each is declared.",
           "inputSchema": { "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"] } },
-        { "name": "outline", "description": "A file's namespaces, types and members, nested, each with its line.",
+        { "name": "outline", "annotations": { "readOnlyHint": true }, "description": "A file's namespaces, types and members, nested, each with its line.",
           "inputSchema": { "type": "object", "properties": { "file": { "type": "string" } }, "required": ["file"] } },
-        { "name": "usages", "description": "Every place a symbol is used, its declaration first, each with its line's text.",
+        { "name": "usages", "annotations": { "readOnlyHint": true }, "description": "Every place a symbol is used, its declaration first, each with its line's text.",
           "inputSchema": { "type": "object", "properties": place } },
-        { "name": "rename", "description": "Renames a symbol across every file and writes them; a type's file named after it is renamed too.",
+        { "name": "rename", "annotations": { "readOnlyHint": false, "destructiveHint": true }, "description": "Renames a symbol across every file and writes them; a type's file named after it is renamed too.",
           "inputSchema": { "type": "object", "properties": with(json!({ "newName": { "type": "string" } })), "required": ["newName"] } },
-        { "name": "edit", "description": "Replaces text in a file (exactly once, unless all is true), writes it, and answers with the file's problems after.",
+        { "name": "edit", "annotations": { "readOnlyHint": false, "destructiveHint": true }, "description": "Replaces text in a file (exactly once, unless all is true), writes it, and answers with the file's problems after.",
           "inputSchema": { "type": "object", "properties": {
               "file": { "type": "string" }, "oldText": { "type": "string" }, "newText": { "type": "string" },
               "all": { "type": "boolean", "description": "Replace every copy" } },
@@ -215,17 +215,22 @@ impl Session {
         path.strip_prefix(&self.folder).unwrap_or(path).to_string_lossy().into_owned()
     }
 
-    /// A file opened in Roslyn with its text on disk, and its URI.
+    /// A file opened in Roslyn with its text on disk, and its URI; read again each time, so a write the agent made
+    /// with its own tools reaches Roslyn.
     fn opened(&mut self, path: &Path) -> Result<String, String> {
         let uri = paths::to_uri(path);
-        if !self.open.contains_key(path) {
-            let (document, _) = read(path)?;
-            let text = document.text().to_string();
-            self.ready()?.notify(
-                "textDocument/didOpen",
-                json!({ "textDocument": { "uri": uri, "languageId": "csharp", "version": 1, "text": text } }),
-            );
-            self.open.insert(path.to_path_buf(), (1, text));
+        let (document, _) = read(path)?;
+        let text = document.text().to_string();
+        match self.open.get(path) {
+            None => {
+                self.ready()?.notify(
+                    "textDocument/didOpen",
+                    json!({ "textDocument": { "uri": uri, "languageId": "csharp", "version": 1, "text": text } }),
+                );
+                self.open.insert(path.to_path_buf(), (1, text));
+            }
+            Some((_, told)) if *told != text => self.written(path, &text)?,
+            Some(_) => {}
         }
         Ok(uri)
     }
@@ -269,12 +274,23 @@ impl Session {
         let name = args["symbol"].as_str().ok_or("name a place: file, line and column, or symbol")?;
         let found = lsp::symbols(&self.ask("workspace/symbol", json!({ "query": name }))?);
         let bare = |s: &str| s.split(['(', '<']).next().unwrap_or(s).to_string();
-        let symbol = found
-            .iter()
-            .find(|s| bare(&s.name) == name)
-            .or_else(|| found.first())
-            .ok_or_else(|| format!("no symbol named {name}"))?;
-        Ok((symbol.location.path.clone(), symbol.location.span.start))
+        let named: Vec<_> = found.iter().filter(|s| bare(&s.name) == name).collect();
+        match named[..] {
+            [symbol] => Ok((symbol.location.path.clone(), symbol.location.span.start)),
+            [] if found.is_empty() => Err(format!("no symbol named {name}")),
+            _ => {
+                let candidates = if named.is_empty() { found.iter().collect() } else { named };
+                let listed: Vec<String> = candidates
+                    .iter()
+                    .take(20)
+                    .map(|s| format!("{} at {}", s.name, self.at(&s.location.path, s.location.span.start)))
+                    .collect();
+                Err(format!(
+                    "{name} names no one symbol; give the file, line and column of one of:\n{}",
+                    listed.join("\n")
+                ))
+            }
+        }
     }
 
     fn call(&mut self, tool: &str, args: &Value) -> Result<String, String> {
@@ -368,31 +384,31 @@ impl Session {
                 if edit.is_empty() {
                     return Err(format!("{old} cannot be renamed to {new_name}"));
                 }
+                // The files' new names checked before any file is written, so a clash changes nothing.
+                let moves = if types.first().is_some_and(|t| t.name == old) {
+                    lsp::files_named_after(&declared, &old, new_name)
+                } else {
+                    Vec::new()
+                };
+                if let Some((from, to)) = moves.iter().find(|(_, to)| to.exists()) {
+                    return Err(format!("{} was not renamed: {} is there already", self.shown(from), self.shown(to)));
+                }
                 let mut said = self.apply(&edit)?;
-                if types.first().is_some_and(|t| t.name == old) {
-                    for (from, to) in lsp::files_named_after(&declared, &old, new_name) {
-                        if to.exists() {
-                            return Err(format!(
-                                "{} was not renamed: {} is there already",
-                                self.shown(&from),
-                                self.shown(&to)
-                            ));
-                        }
-                        std::fs::rename(&from, &to)
-                            .map_err(|e| format!("{} could not be renamed: {e}", self.shown(&from)))?;
-                        if self.open.remove(&from).is_some() {
-                            self.ready()?.notify(
-                                "textDocument/didClose",
-                                json!({ "textDocument": { "uri": paths::to_uri(&from) } }),
-                            );
-                        }
+                for (from, to) in moves {
+                    std::fs::rename(&from, &to)
+                        .map_err(|e| format!("{} could not be renamed: {e}", self.shown(&from)))?;
+                    if self.open.remove(&from).is_some() {
                         self.ready()?.notify(
-                            "workspace/didChangeWatchedFiles",
-                            json!({ "changes": [
-                            { "uri": paths::to_uri(&from), "type": 3 }, { "uri": paths::to_uri(&to), "type": 1 } ] }),
+                            "textDocument/didClose",
+                            json!({ "textDocument": { "uri": paths::to_uri(&from) } }),
                         );
-                        said.push(format!("{} renamed to {}", self.shown(&from), self.shown(&to)));
                     }
+                    self.ready()?.notify(
+                        "workspace/didChangeWatchedFiles",
+                        json!({ "changes": [
+                            { "uri": paths::to_uri(&from), "type": 3 }, { "uri": paths::to_uri(&to), "type": 1 } ] }),
+                    );
+                    said.push(format!("{} renamed to {}", self.shown(&from), self.shown(&to)));
                 }
                 Ok(format!("Renamed {old} to {new_name}:\n{}", said.join("\n")))
             }
@@ -422,7 +438,9 @@ impl Session {
                     found.iter().map(|at| Edit { range: *at..*at + old.len(), text: new.clone() }).collect();
                 document.apply(EditPlan { edits, ..Default::default() });
                 self.store(&path, &document, charset)?;
-                let problems = self.file_problems(&path)?;
+                // The edit is written either way: a failure to read its problems is said, not made the edit's.
+                let problems =
+                    self.file_problems(&path).unwrap_or_else(|e| format!("Its problems could not be read: {e}"));
                 Ok(format!("Edited {}: {} replaced.\n{problems}", self.shown(&path), found.len()))
             }
             _ => Err(format!("no tool {tool}")),
