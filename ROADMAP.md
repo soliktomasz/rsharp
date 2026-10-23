@@ -87,7 +87,23 @@ Passenger: `Passenger.Editor`, `Passenger.Text`, `Editors/`, `History/`, `Worksp
 Done when: Passenger's editor tests, translated, pass, and the per-key allocation budget holds against a file
 10 times larger.
 
-### Phase 3: C# language service (L)
+### Phase 3: C# language service (L) — in place
+Built: the protocol's answers made plain (`rsharp-lsp`'s `protocol`, checked against the real server); semantic
+tokens for the lines on screen; completion, parameter info, Quick Documentation and the hover card, usage
+highlights; context actions and quick fixes; Rename across files; Reformat Code; Go to Declaration (and
+Cmd+click), Implementation and Type Declaration; Find Usages into a Find window; Back and Forward, Last Edit
+Location, Recent Files, Go to File, Type and Symbol, and Find in Files; inlay hints; Problems' Solution tab (with
+solution-wide analysis turned on) and Toolset tab, and project-load problems in the status bar; Base and Derived Symbols; a type's file renamed with it; and the MCP
+server (`rsharp --mcp`) with `workspace`, `diagnostics`, `find_symbol`, `outline`, `usages`, `rename` and `edit`;
+Search Everywhere (types, files, symbols), Recent Locations, and Find in Files' Solution and Directory scopes, file
+mask and Replace in Files; Optimize Usings, Introduce Variable, Field and Parameter, Encapsulate Field, Extract
+Method and Inline (Roslyn's code actions by their titles), Safe Delete at a declaration, Surround With and Complete
+Current Statement; live templates (Rider's built-in ones on Tab, a variable's every use typed at once).
+Roslyn runs as Passenger runs it: the server version
+Passenger pins, its Roslyn.Extension, and each project's design-time build from its Host. Change Signature, Extract Interface, Move, Pull Members Up and Push Members Down
+through dialogs the extension answers; Safe Delete from any use, a declaration's whole extent from the syntax, Delete
+Anyway asked over its usages; the live templates in completion; and the target framework switcher in the status bar.
+Not taken: a person's own live templates (Settings' Live Templates page); Undo of a type rename's file move.
 - **Roslyn in full:** Passenger's `Host` for design-time builds and `Roslyn.Extension` loaded with `--extension`, so
   projects load the way Passenger loads them.
 - Semantic tokens over the syntax colours (this closes the shortcut in `rsharp-languages`), refreshed for the
@@ -109,6 +125,13 @@ Passenger: `CSharp/`, `Navigation/`, `Mcp/`, `Passenger.Lsp`, `Passenger.Host`, 
 issues #174, #175, #177, #178, #181, #210.
 Done when: Passenger's C# feature tests pass against RSharp, and an agent can run `diagnostics` and `rename` on
 RSharp's own repository.
+
+Open: Roslyn 5.8 now and then ends its project load ("Loaded 1 project(s)") without loading the project or saying
+why, a sound project and a broken one alike; the status bar then stays on "Loading solution…" and the code tools
+find nothing. Starting it again in the same process stalls the same way, and turning off MSBuild's node reuse or
+file-based programs changes nothing. The window keeps what Roslyn said (`MainWindow::roslyn_said`), which the
+Roslyn window tests print when they fail; Passenger's Host (decision 1) loading the projects itself may be the way
+round it. Since the Host and the extension load the projects, the stall has not been seen; watch for it.
 
 ### Phase 4: Solution and projects (M)
 - **The Solution view as Rider's:** the solution's projects, Dependencies, solution folders, file nesting.
@@ -232,7 +255,8 @@ Phases 1–3 are sequential: each needs the one before. After phase 3, the work 
 
 ## Decisions to make before phase 1
 
-1. **How Passenger's sidecars get here.** The options:
+1. **How Passenger's sidecars get here.** Decided: a pinned git submodule (`vendor/passenger`), built by RSharp's build
+   (`crates/rsharp-lsp/build.rs`). The options were:
    - a pinned git submodule, built by RSharp's build;
    - downloaded from Passenger's GitHub releases by version;
    - copied into the repository.

@@ -280,14 +280,17 @@ impl Document {
 
     /// The offset of a line and UTF-16 column, as the language server names a place.
     pub fn offset_of_utf16(&self, line: usize, utf16_column: usize) -> usize {
-        let line = line.min(self.text.len_lines().saturating_sub(1));
-        let line_start_char = self.text.line_to_char(line);
-        let line_end_char = line_start_char + crate::line_len_chars(&self.text, line);
-        let target =
-            (self.text.char_to_utf16_cu(line_start_char) + utf16_column).min(self.text.char_to_utf16_cu(line_end_char));
-        let char = self.text.utf16_cu_to_char(target);
-        self.text.char_to_byte(char)
+        offset_of_utf16(&self.text, line, utf16_column)
     }
+}
+
+/// The offset of a line and UTF-16 column, kept on the line; a line past the end is the last.
+pub fn offset_of_utf16(text: &Rope, line: usize, utf16_column: usize) -> usize {
+    let line = line.min(text.len_lines().saturating_sub(1));
+    let line_start_char = text.line_to_char(line);
+    let line_end_char = line_start_char + crate::line_len_chars(text, line);
+    let target = (text.char_to_utf16_cu(line_start_char) + utf16_column).min(text.char_to_utf16_cu(line_end_char));
+    text.char_to_byte(text.utf16_cu_to_char(target))
 }
 
 /// A place in `text`, as each consumer counts it.

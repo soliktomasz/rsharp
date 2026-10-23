@@ -54,7 +54,18 @@ actions!(
         ExplorerDown,
         ExplorerExpand,
         ExplorerCollapse,
-        ExplorerOpen
+        ExplorerOpen,
+        Back,
+        Forward,
+        LastEditLocation,
+        RecentFiles,
+        GoToFile,
+        GoToType,
+        GoToSymbol,
+        FindInFiles,
+        SearchEverywhere,
+        RecentLocations,
+        ReplaceInFiles
     ]
 );
 
@@ -71,6 +82,42 @@ enum ServerState {
     Loading(String),
     Ready,
     Failed(String),
+}
+
+/// Problems' tabs, as Rider's: the shown file's, the whole solution's, and the toolset's (projects that would not load).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ProblemsTab {
+    File,
+    Solution,
+    Toolset,
+}
+
+/// A place the caret was: its file, line and UTF-16 column, from 0.
+// shortcut: a place keeps its line and column, so an edit above it since moves it off its code; carry it through
+// the buffer's changes, as Passenger's NavigationHistory does, once that is missed.
+#[derive(Clone, PartialEq, Debug)]
+struct Spot {
+    path: PathBuf,
+    line: usize,
+    column: usize,
+}
+
+impl Spot {
+    /// Two places in a file a few lines apart are one, as IntelliJ counts them.
+    fn near(&self, other: &Spot) -> bool {
+        self.path == other.path && self.line.abs_diff(other.line) < 5
+    }
+}
+
+/// IntelliJ's own limit on places kept each way (editor.navigation.history.stack.size).
+const HISTORY: usize = 50;
+
+/// A place in the Find window: its file, line and column (UTF-16, from 0), and its line's text.
+struct Found {
+    path: PathBuf,
+    line: usize,
+    column: usize,
+    text: String,
 }
 
 struct Row {
@@ -92,6 +139,9 @@ pub struct MainWindow {
     opened_as: Option<PathBuf>,
     explorer_focus: FocusHandle,
     problems_focus: FocusHandle,
+    find_focus: FocusHandle,
+    /// The Find window's list: what was looked for, and each place found with its line's text.
+    found: Option<(String, Vec<Found>)>,
     /// The window's own focus, where keys go when no view has them (the Welcome screen), so window-wide keys
     /// always reach the window.
     root_focus: FocusHandle,
@@ -109,6 +159,27 @@ pub struct MainWindow {
     projects_loaded: bool,
     said: Option<SharedString>,
     find_action: Option<Entity<FindActionPopup>>,
+    go_to: Option<Entity<crate::goto::GoToPopup>>,
+    refactoring: Option<Entity<crate::refactor_dialog::RefactorDialog>>,
+    problems_tab: ProblemsTab,
+    /// Roslyn's errors and warnings in every file of the solution, as last asked.
+    solution_problems: Vec<(PathBuf, Vec<rsharp_lsp::Problem>)>,
+    solution_task: Option<Task<()>>,
+    /// Rider's solution-wide analysis: every file analysed, not only the open ones; off until turned on, as it costs.
+    solution_wide: bool,
+    /// What Roslyn said last (its log, its notifications, its error output), for a failure to say where it was.
+    roslyn_said: std::collections::VecDeque<String>,
+    /// The projects Roslyn could not load whole: each project, whether it is an error, and what was wrong.
+    load_problems: Vec<(PathBuf, bool, String)>,
+    /// Back and Forward's places, the latest last.
+    back: Vec<Spot>,
+    forward: Vec<Spot>,
+    /// The places edited, the latest last, and where Last Edit Location stands among them while pressed again.
+    edits: Vec<Spot>,
+    edit_step: Option<usize>,
+    /// The files shown, the latest first, for Recent Files.
+    // shortcut: not kept with the folder; keep it in FolderState once a restart's empty list is missed.
+    recent: Vec<PathBuf>,
     /// The find bar over the editor while open, on the active tab's file.
     find_bar: Option<Entity<FindBar>>,
     /// The main menu's dropdown while open (Windows and Linux, which have no menu bar): each action's
@@ -133,6 +204,8 @@ impl MainWindow {
             opened_as: None,
             explorer_focus: cx.focus_handle(),
             problems_focus: cx.focus_handle(),
+            find_focus: cx.focus_handle(),
+            found: None,
             area: EditorArea::default(),
             tab_menu: None,
             tab_drag: None,
@@ -143,6 +216,19 @@ impl MainWindow {
             projects_loaded: false,
             said: None,
             find_action: None,
+            go_to: None,
+            refactoring: None,
+            problems_tab: ProblemsTab::File,
+            solution_problems: Vec::new(),
+            solution_task: None,
+            solution_wide: false,
+            roslyn_said: Default::default(),
+            load_problems: Vec::new(),
+            back: Vec::new(),
+            forward: Vec::new(),
+            edits: Vec::new(),
+            edit_step: None,
+            recent: Vec::new(),
             find_bar: None,
             main_menu: None,
             _server_task: None,
@@ -166,6 +252,7 @@ impl MainWindow {
         self.branch = current_branch(&folder);
         self.expanded = std::iter::once(folder.clone()).chain(kept.expanded.iter().map(|p| folder.join(p))).collect();
         self.dock = kept.dock.clone().unwrap_or_else(|| store.read::<DockLayout>()).complete().clamped();
+        self.solution_wide = kept.solution_wide;
         self.workspace = Some(workspace);
         self.selected = Some(0);
         self.rebuild_rows();
@@ -211,13 +298,20 @@ impl MainWindow {
             self.expanded.iter().filter_map(|p| relative(p)).filter(|p| !p.as_os_str().is_empty()).collect();
         expanded.sort();
         let store = store(cx);
-        store.write_for(folder, &FolderState { tabs, active, expanded, dock: Some(self.dock.clone()) });
+        store.write_for(
+            folder,
+            &FolderState { tabs, active, expanded, dock: Some(self.dock.clone()), solution_wide: self.solution_wide },
+        );
         store.write(&self.dock);
     }
 
     fn show_tab(&mut self, group: usize, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.area.current = group;
         self.area.groups[group].active = Some(index);
+        let path = self.area.groups[group].tabs[index].editor.read(cx).path.clone();
+        self.recent.retain(|p| *p != path);
+        self.recent.insert(0, path);
+        self.recent.truncate(HISTORY);
         window.focus(&self.area.groups[group].tabs[index].editor.focus_handle(cx));
         self.follow_find_bar(cx);
         self.save_state(cx);
@@ -268,6 +362,11 @@ impl MainWindow {
                 }
             };
             let _ = this.update(cx, |w, cx| {
+                if w.solution_wide {
+                    for option in rsharp_lsp::SOLUTION_WIDE {
+                        server.set_option(option, serde_json::json!("fullSolution"));
+                    }
+                }
                 w.server = Some(server.clone());
                 w.server_state = ServerState::Loading("Loading solution".into());
                 let editors: Vec<_> = w.area.editors().cloned().collect();
@@ -291,6 +390,23 @@ impl MainWindow {
     }
 
     fn on_server_event(&mut self, event: ServerEvent, cx: &mut Context<Self>) {
+        if rsharp_lsp::says_projects_loaded(&event) && !self.projects_loaded {
+            self.projects_loaded(cx);
+        }
+        let said = match &event {
+            ServerEvent::Notification { method, params } if method == "window/logMessage" => {
+                params["message"].as_str().unwrap_or_default().chars().take(300).collect()
+            }
+            ServerEvent::Notification { method, params } => {
+                format!("{method} {}", params.to_string().chars().take(160).collect::<String>())
+            }
+            ServerEvent::Stderr(line) => format!("stderr: {}", line.chars().take(300).collect::<String>()),
+            ServerEvent::Ended => "Roslyn ended".into(),
+        };
+        if self.roslyn_said.len() == 50 {
+            self.roslyn_said.pop_front();
+        }
+        self.roslyn_said.push_back(said);
         match event {
             ServerEvent::Notification { method, params } => match method.as_str() {
                 // Followed by token: Roslyn's restore can begin after it said the projects loaded.
@@ -326,17 +442,21 @@ impl MainWindow {
                         (None, false) => ServerState::Loading("Loading solution".into()),
                     };
                 }
-                "workspace/projectInitializationComplete" => {
-                    log::info!(target: "roslyn", "projects loaded");
-                    self.projects_loaded = true;
-                    if self.progress.is_empty() {
-                        self.server_state = ServerState::Ready;
+                // Roslyn's answers about the files changed (its load went on, a file on disk changed): asked again.
+                "workspace/semanticTokens/refresh" | "workspace/inlayHint/refresh" | "workspace/diagnostic/refresh" => {
+                    if method == "workspace/diagnostic/refresh" {
+                        self.refresh_solution_problems(cx);
                     }
                     let editors: Vec<_> = self.area.editors().cloned().collect();
                     for editor in editors {
-                        editor.read(cx).buffer.clone().update(cx, |b, cx| b.check(std::time::Duration::ZERO, cx));
+                        if method == "workspace/diagnostic/refresh" {
+                            editor.read(cx).buffer.clone().update(cx, |b, cx| b.check(std::time::Duration::ZERO, cx));
+                        } else {
+                            editor.update(cx, |e, cx| e.server_ready(cx));
+                        }
                     }
                 }
+                "window/logMessage" if self.read_load_report(params["message"].as_str().unwrap_or_default(), cx) => {}
                 "window/logMessage" if params["type"].as_u64().is_some_and(|t| t <= 2) => {
                     log::warn!(target: "roslyn", "{}", params["message"].as_str().unwrap_or_default());
                 }
@@ -351,6 +471,134 @@ impl MainWindow {
                 self.server = None;
                 self.server_state = ServerState::Failed("Roslyn stopped".into());
             }
+        }
+    }
+
+    /// Roslyn has the projects: each open file's problems and colours asked again.
+    fn projects_loaded(&mut self, cx: &mut Context<Self>) {
+        self.refresh_solution_problems(cx);
+        log::info!(target: "roslyn", "projects loaded");
+        self.projects_loaded = true;
+        if self.progress.is_empty() {
+            self.server_state = ServerState::Ready;
+        }
+        self.reopen_files(cx);
+    }
+
+    /// Every open file opened in Roslyn again, its problems and colours asked again: a file opened while a project
+    /// was loading sits in Roslyn's stand-in project, and with the whole solution analysed it stays there until it
+    /// is opened again.
+    fn reopen_files(&mut self, cx: &mut Context<Self>) {
+        let server = self.server.clone();
+        let editors: Vec<_> = self.area.editors().cloned().collect();
+        for editor in editors {
+            editor.read(cx).buffer.clone().update(cx, |b, cx| {
+                if let Some(server) = server.clone().filter(|_| is_csharp(&b.path)) {
+                    b.detach_server();
+                    b.attach_server(server, cx);
+                }
+                b.check(std::time::Duration::ZERO, cx)
+            });
+            editor.update(cx, |e, cx| e.server_ready(cx));
+        }
+    }
+
+    /// A line of Roslyn's log that says how a project loaded: a problem kept for Problems' Toolset, or a project
+    /// loaded whole, its problems gone. Roslyn's own stand-in for files no project holds is never one.
+    fn read_load_report(&mut self, line: &str, cx: &mut Context<Self>) -> bool {
+        if line.contains("Canonical.csproj") {
+            return false;
+        }
+        if let Some((project, error, message)) = rsharp_lsp::load_problem(line) {
+            log::warn!(target: "roslyn", "{line}");
+            let project = rsharp_core::paths::canonical(&project);
+            self.load_problems.retain(|(p, _, m)| !(*p == project && *m == message));
+            self.load_problems.push((project, error, message));
+            return true;
+        }
+        if let Some(loaded) = line.split("Successfully completed load of ").nth(1) {
+            let loaded = rsharp_core::paths::canonical(Path::new(loaded.trim()));
+            self.load_problems.retain(|(p, _, _)| *p != loaded);
+            // A project, not a file loaded as a program of its own, which reopening would load again.
+            if loaded.extension().is_some_and(|e| e.to_string_lossy().ends_with("proj")) {
+                self.reopen_files(cx);
+            }
+        }
+        false
+    }
+
+    /// Asks Roslyn for the whole solution's problems, for Problems' Solution tab.
+    fn refresh_solution_problems(&mut self, cx: &mut Context<Self>) {
+        let Some(server) = self.server.clone().filter(|_| self.solution_wide) else { return };
+        let answer =
+            crate::language::ask(&server, "workspace/diagnostic", serde_json::json!({ "previousResultIds": [] }), cx);
+        self.solution_task = Some(cx.spawn(async move |this, cx| {
+            let Some(answer) = answer.await else { return };
+            let found = cx.background_executor().spawn(async move { rsharp_lsp::workspace_problems(&answer) }).await;
+            let _ = this.update(cx, |w, cx| {
+                w.solution_problems = found;
+                w.solution_problems.sort_by(|a, b| a.0.cmp(&b.0));
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Turns solution-wide analysis on or off: Roslyn told, and the Solution tab asked again or emptied.
+    pub fn set_solution_wide(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.solution_wide = on;
+        if let Some(server) = &self.server {
+            let scope = if on { serde_json::json!("fullSolution") } else { serde_json::Value::Null };
+            for option in rsharp_lsp::SOLUTION_WIDE {
+                server.set_option(option, scope.clone());
+            }
+        }
+        self.solution_problems.clear();
+        if on {
+            self.refresh_solution_problems(cx);
+        }
+        self.save_state(cx);
+        cx.notify();
+    }
+
+    /// The Problems tab shown, as a test or a click chooses it.
+    pub fn show_problems_tab(&mut self, tab: ProblemsTab, cx: &mut Context<Self>) {
+        self.problems_tab = tab;
+        if tab == ProblemsTab::Solution {
+            self.refresh_solution_problems(cx);
+        }
+        cx.notify();
+    }
+
+    /// What a Problems tab lists, each as "file:line message", as a person reads it.
+    pub fn problems_listed(&self, tab: ProblemsTab, cx: &App) -> Vec<String> {
+        let name = |p: &Path| p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        match tab {
+            ProblemsTab::File => self
+                .active_editor()
+                .map(|e| {
+                    let buffer = e.read(cx).buffer.read(cx);
+                    buffer
+                        .diagnostics
+                        .iter()
+                        .map(|d| {
+                            format!(
+                                "{}:{} {}",
+                                name(&buffer.path),
+                                buffer.document.position(d.range.start).line + 1,
+                                d.message
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            ProblemsTab::Solution => self
+                .solution_problems
+                .iter()
+                .flat_map(|(path, found)| {
+                    found.iter().map(move |p| format!("{}:{} {}", name(path), p.span.start.line + 1, p.message))
+                })
+                .collect(),
+            ProblemsTab::Toolset => self.load_problems.iter().map(|(p, _, m)| format!("{} {m}", name(p))).collect(),
         }
     }
 
@@ -426,6 +674,201 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         let path = rsharp_core::paths::canonical(path);
+        // Leaving a place for another file, or for another part of this one, is a place Back goes to.
+        if let Some(here) = self.here(cx) {
+            let there = Spot { path: path.clone(), line: caret.map_or(usize::MAX, |c| c.0), column: 0 };
+            if !here.near(&there) {
+                self.back.push(here);
+                if self.back.len() > HISTORY {
+                    self.back.remove(0);
+                }
+                self.forward.clear();
+            }
+        }
+        self.show_file(&path, caret, window, cx);
+    }
+
+    /// Where the caret is in the editor the keys go to.
+    fn here(&self, cx: &App) -> Option<Spot> {
+        let editor = self.active_editor()?.read(cx);
+        let caret = editor.caret();
+        Some(Spot { path: editor.path.clone(), line: caret.line, column: caret.utf16_column })
+    }
+
+    /// Back (or Forward): the place left last, the place here kept the other way.
+    fn go_back(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let here = self.here(cx);
+        let (from, to) =
+            if forward { (&mut self.forward, &mut self.back) } else { (&mut self.back, &mut self.forward) };
+        let Some(spot) = from.pop() else { return };
+        to.extend(here);
+        if spot.path.is_file() {
+            self.show_file(&spot.path, Some((spot.line, spot.column)), window, cx);
+        }
+    }
+
+    /// Last Edit Location: the latest place edited away from the caret, then each before it as it is pressed again.
+    fn last_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let here = self.here(cx);
+        let from = self.edit_step.unwrap_or(self.edits.len());
+        let Some(at) = (0..from).rev().find(|&i| here.as_ref().is_none_or(|h| !self.edits[i].near(h))) else { return };
+        self.edit_step = Some(at);
+        let spot = self.edits[at].clone();
+        if spot.path.is_file() {
+            self.open_file(&spot.path, Some((spot.line, spot.column)), window, cx);
+        }
+    }
+
+    /// An edit made in `editor`: its place kept for Last Edit Location, one near the last taking its place.
+    fn edited_at(&mut self, editor: &Entity<CodeEditor>, cx: &App) {
+        let editor = editor.read(cx);
+        let caret = editor.caret();
+        let spot = Spot { path: editor.path.clone(), line: caret.line, column: caret.utf16_column };
+        if self.edits.last().is_some_and(|last| last.near(&spot)) {
+            self.edits.pop();
+        }
+        self.edits.push(spot);
+        if self.edits.len() > HISTORY {
+            self.edits.remove(0);
+        }
+        self.edit_step = None;
+    }
+
+    /// Opens a Go to popup over the window: the files it looks among, the open files' text and the server given it.
+    fn open_go_to(&mut self, kind: crate::goto::Kind, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::goto::{Ended, Given, GoToPopup, Kind};
+        let Some(folder) = self.folder().map(Path::to_path_buf) else { return };
+        let shown = self.active_editor().map(|e| e.read(cx).path.clone());
+        let mut given = Given { server: self.server.clone(), ..Default::default() };
+        given.here = shown.as_ref().and_then(|p| p.parent().map(Path::to_path_buf));
+        match kind {
+            Kind::RecentFiles => {
+                given.files = self.recent.iter().filter(|p| Some(*p) != shown.as_ref()).cloned().collect();
+            }
+            Kind::RecentLocations => given.places = self.recent_locations(cx),
+            Kind::FindInFiles | Kind::ReplaceInFiles => {
+                given.open = self
+                    .area
+                    .editors()
+                    .map(|e| {
+                        let buffer = e.read(cx).buffer.read(cx);
+                        (buffer.path.clone(), buffer.document.text().to_string())
+                    })
+                    .collect();
+            }
+            _ => {}
+        }
+        let before = window.focused(cx);
+        let popup = cx.new(|cx| GoToPopup::new(kind, folder, given, cx));
+        cx.subscribe_in(&popup, window, move |w, _, ended: &Ended, window, cx| {
+            w.go_to = None;
+            match ended {
+                Ended::Chosen(place) => w.open_file(&place.path.clone(), place.at, window, cx),
+                Ended::ReplaceAll { query, replacement, files } => {
+                    let server = w.server.clone();
+                    w.said = Some(
+                        match crate::language::replace_in_files(files, query, replacement, server.as_deref(), cx) {
+                            Ok(n) => format!("Replaced {n} {}", if n == 1 { "match" } else { "matches" }),
+                            Err(why) => why,
+                        }
+                        .into(),
+                    );
+                    w.focus_editor(window, cx);
+                }
+                Ended::Dismissed => {
+                    if let Some(before) = &before {
+                        window.focus(before);
+                    }
+                }
+            }
+            cx.notify();
+        })
+        .detach();
+        window.focus(&popup.focus_handle(cx));
+        self.go_to = Some(popup);
+        cx.notify();
+    }
+
+    /// Recent Locations' places: those left and edited, the latest first, one for each stretch of a file, each with its
+    /// line's text.
+    fn recent_locations(&self, cx: &App) -> Vec<crate::goto::Place> {
+        let mut spots: Vec<&Spot> = Vec::new();
+        for spot in self.back.iter().chain(&self.edits).rev() {
+            if spots.iter().all(|s| !s.near(spot)) {
+                spots.push(spot);
+            }
+        }
+        spots
+            .into_iter()
+            .filter(|s| s.path.is_file())
+            .map(|s| {
+                let line = match crate::buffer::find(&s.path, cx) {
+                    Some(buffer) => buffer.read(cx).document.text().line(s.line).to_string(),
+                    None => std::fs::read_to_string(&s.path)
+                        .ok()
+                        .and_then(|t| t.lines().nth(s.line).map(str::to_string))
+                        .unwrap_or_default(),
+                };
+                let file = s.path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                crate::goto::Place {
+                    name: line.trim().to_string(),
+                    detail: format!("{file}:{}", s.line + 1),
+                    path: s.path.clone(),
+                    at: Some((s.line, s.column)),
+                }
+            })
+            .collect()
+    }
+
+    /// A refactoring's dialog over the window, the keys back with the editor once it closes.
+    fn open_refactoring(
+        &mut self,
+        open: &crate::refactor_dialog::OpenRefactoring,
+        editor: Entity<CodeEditor>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::refactor_dialog::{Closed, OpenRefactoring, RefactorDialog};
+        let open = OpenRefactoring {
+            kind: open.kind,
+            described: open.described.clone(),
+            at: open.at,
+            uri: open.uri.clone(),
+            server: open.server.clone(),
+        };
+        let dialog = cx.new(|cx| RefactorDialog::new(open, cx));
+        cx.subscribe_in(&dialog, window, move |w, _, closed: &Closed, window, cx| {
+            w.refactoring = None;
+            if let Some(said) = &closed.0 {
+                w.said = Some(said.clone().into());
+            }
+            window.focus(&editor.focus_handle(cx));
+            cx.notify();
+        })
+        .detach();
+        window.focus(&dialog.focus_handle(cx));
+        self.refactoring = Some(dialog);
+        cx.notify();
+    }
+
+    /// The refactoring dialog open, for a test to set its options and press OK.
+    pub fn refactoring(&self) -> Option<Entity<crate::refactor_dialog::RefactorDialog>> {
+        self.refactoring.clone()
+    }
+
+    /// The Go to popup open, for a test to set its scope, mask or replacement.
+    pub fn go_to_popup(&self) -> Option<Entity<crate::goto::GoToPopup>> {
+        self.go_to.clone()
+    }
+
+    /// What the open Go to popup lists, as a person reads it.
+    pub fn go_to_listed(&self, cx: &App) -> Option<Vec<String>> {
+        self.go_to.as_ref().map(|p| p.read(cx).listed())
+    }
+
+    /// Shows a file in the current group, opening it there if it is not, with the caret at a line and column.
+    fn show_file(&mut self, path: &Path, caret: Option<(usize, usize)>, window: &mut Window, cx: &mut Context<Self>) {
+        let path = path.to_path_buf();
         let group = self.area.current;
         let index = match self.area.tab_of(group, &path, cx) {
             Some(index) => index,
@@ -458,6 +901,85 @@ impl MainWindow {
         self.show_tab(group, index, window, cx);
     }
 
+    /// Where Go to Declaration or Find Usages leads: the one place opened, or every place listed in the Find window.
+    fn navigate(&mut self, go: &editor::Navigate, window: &mut Window, cx: &mut Context<Self>) {
+        if let ([to], false) = (go.to.as_slice(), go.list) {
+            self.open_file(&to.path, Some((to.span.start.line, to.span.start.character)), window, cx);
+            return;
+        }
+        let found = go
+            .to
+            .iter()
+            .map(|to| {
+                let (line, column) = (to.span.start.line, to.span.start.character);
+                let text = match crate::buffer::find(&to.path, cx) {
+                    Some(buffer) => buffer.read(cx).document.text().line(line).to_string(),
+                    None => std::fs::read_to_string(&to.path)
+                        .ok()
+                        .and_then(|t| t.lines().nth(line).map(str::to_string))
+                        .unwrap_or_default(),
+                };
+                Found { path: to.path.clone(), line, column, text: text.trim().to_string() }
+            })
+            .collect();
+        self.found = Some((go.title.clone(), found));
+        if !self.dock.is_open(Tool::Find) {
+            self.toggle_tool(Tool::Find, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// The Find window's places, by file, each a row that goes there.
+    fn find_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some((_, found)) = &self.found else {
+            return empty_text("Find Usages lists the places here.").track_focus(&self.find_focus).into_any_element();
+        };
+        let folder = self.folder().map(Path::to_path_buf);
+        div()
+            .id("find-results")
+            .track_focus(&self.find_focus)
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .px(px(6.))
+            .children(found.iter().enumerate().map(|(i, place)| {
+                let (path, line, column) = (place.path.clone(), place.line, place.column);
+                let shown = folder
+                    .as_deref()
+                    .and_then(|f| path.strip_prefix(f).ok())
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .into_owned();
+                div()
+                    .id(("found", i))
+                    .debug_selector(move || format!("found: {i}"))
+                    .h(px(ROW_HEIGHT))
+                    .px(px(8.))
+                    .rounded(px(4.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .hover(|d| d.bg(theme::row_hover()))
+                    .child(icon(file_icon(&shown), 16.))
+                    .child(div().flex_none().text_color(theme::text_secondary()).child(format!("{shown}:{}", line + 1)))
+                    .child(div().truncate().font_family(theme::CODE_FONT).child(place.text.clone()))
+                    .on_click(cx.listener(move |w, _: &ClickEvent, window, cx| {
+                        w.open_file(&path, Some((line, column)), window, cx)
+                    }))
+            }))
+            .into_any_element()
+    }
+
+    /// The places the Find window lists, each as "file:line", as a person reads them.
+    pub fn found(&self) -> Option<Vec<String>> {
+        self.found.as_ref().map(|(_, found)| {
+            found
+                .iter()
+                .map(|f| format!("{}:{}", f.path.file_name().unwrap_or_default().to_string_lossy(), f.line + 1))
+                .collect()
+        })
+    }
+
     /// An editor of a buffer, whose every change the window keeps for the folder.
     fn new_editor(
         &mut self,
@@ -465,9 +987,28 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<CodeEditor> {
-        let editor = cx.new(|cx| CodeEditor::new(buffer, cx));
+        let editor = cx.new(|cx| CodeEditor::new(buffer.clone(), cx));
+        let edits_by = editor.clone();
+        cx.subscribe(&buffer, move |w, _, event: &crate::buffer::BufferEvent, cx| {
+            if let crate::buffer::BufferEvent::Edited { by, .. } = event
+                && *by == edits_by.entity_id()
+            {
+                w.edited_at(&edits_by, cx);
+            }
+        })
+        .detach();
         cx.subscribe_in(&editor, window, |_, editor, _: &editor::ReadOnlyEdit, window, cx| {
             editor::ask_clear_read_only(editor.clone(), editor::AfterClearing::Edit, window, cx)
+        })
+        .detach();
+        cx.subscribe_in(&editor, window, |w, _, go: &editor::Navigate, window, cx| w.navigate(go, window, cx)).detach();
+        cx.subscribe_in(&editor, window, |w, editor, open: &crate::refactor_dialog::OpenRefactoring, window, cx| {
+            w.open_refactoring(open, editor.clone(), window, cx)
+        })
+        .detach();
+        cx.subscribe(&editor, |w, _, said: &editor::Said, cx| {
+            w.said = Some(said.0.clone().into());
+            cx.notify()
         })
         .detach();
         cx.observe(&editor, |w, _, cx| {
@@ -805,6 +1346,27 @@ impl MainWindow {
         matches!(self.server_state, ServerState::Ready)
     }
 
+    /// What the status bar says of Roslyn.
+    pub fn server_status(&self) -> Option<String> {
+        match &self.server_state {
+            ServerState::None => None,
+            ServerState::Starting => Some("Starting Roslyn…".into()),
+            ServerState::Loading(what) => Some(format!("{what}…")),
+            ServerState::Ready => Some("Roslyn".into()),
+            ServerState::Failed(why) => Some(why.clone()),
+        }
+    }
+
+    /// Roslyn's last log messages, the latest last.
+    pub fn roslyn_said(&self) -> Vec<String> {
+        self.roslyn_said.iter().cloned().collect()
+    }
+
+    /// Whether Roslyn is starting or loading the projects.
+    pub fn server_busy(&self) -> bool {
+        matches!(self.server_state, ServerState::Starting | ServerState::Loading(_))
+    }
+
     /// Whether Roslyn could not start or stopped, with why.
     pub fn server_failed(&self) -> Option<&str> {
         match &self.server_state {
@@ -821,6 +1383,11 @@ impl MainWindow {
     /// What was opened: the solution or project file, else the folder.
     pub fn opened_as(&self) -> Option<&Path> {
         self.opened_as.as_deref()
+    }
+
+    /// The editor the keys go to, as a test reads it.
+    pub fn editor(&self) -> Option<Entity<CodeEditor>> {
+        self.area.active_editor().cloned()
     }
 
     fn active_editor(&self) -> Option<&Entity<CodeEditor>> {
@@ -950,6 +1517,40 @@ impl Render for MainWindow {
                 .on_action(cx.listener(move |_, _: &editor::Escape, _, cx| close.update(cx, |b, cx| b.close(cx))))
             })
             .map(|d| self.tab_actions(d, cx))
+            .when(self.workspace.is_some(), |d| {
+                use crate::goto::Kind;
+                d.on_action(cx.listener(|w, _: &GoToFile, window, cx| w.open_go_to(Kind::File, window, cx)))
+                    .on_action(cx.listener(|w, _: &GoToType, window, cx| w.open_go_to(Kind::Type, window, cx)))
+                    .on_action(cx.listener(|w, _: &GoToSymbol, window, cx| w.open_go_to(Kind::Symbol, window, cx)))
+                    .on_action(
+                        cx.listener(|w, _: &FindInFiles, window, cx| w.open_go_to(Kind::FindInFiles, window, cx)),
+                    )
+                    .on_action(
+                        cx.listener(|w, _: &ReplaceInFiles, window, cx| w.open_go_to(Kind::ReplaceInFiles, window, cx)),
+                    )
+                    .on_action(
+                        cx.listener(|w, _: &SearchEverywhere, window, cx| w.open_go_to(Kind::Everything, window, cx)),
+                    )
+            })
+            .when(!self.recent.is_empty(), |d| {
+                d.on_action(cx.listener(|w, _: &RecentFiles, window, cx| {
+                    w.open_go_to(crate::goto::Kind::RecentFiles, window, cx)
+                }))
+            })
+            .when(!self.back.is_empty() || !self.edits.is_empty(), |d| {
+                d.on_action(cx.listener(|w, _: &RecentLocations, window, cx| {
+                    w.open_go_to(crate::goto::Kind::RecentLocations, window, cx)
+                }))
+            })
+            .when(!self.back.is_empty(), |d| {
+                d.on_action(cx.listener(|w, _: &Back, window, cx| w.go_back(false, window, cx)))
+            })
+            .when(!self.forward.is_empty(), |d| {
+                d.on_action(cx.listener(|w, _: &Forward, window, cx| w.go_back(true, window, cx)))
+            })
+            .when(!self.edits.is_empty(), |d| {
+                d.on_action(cx.listener(|w, _: &LastEditLocation, window, cx| w.last_edit(window, cx)))
+            })
             .when(self.area.active_editor().is_some(), |d| {
                 d.on_action(cx.listener(|w, _: &CloseTab, window, cx| {
                     if let Some(active) = w.area.group().active {
@@ -964,6 +1565,7 @@ impl Render for MainWindow {
                         }
                         w.said =
                             editor.update(cx, |e, cx| e.save(cx)).err().map(|e| format!("Could not save: {e}").into());
+                        w.refresh_solution_problems(cx);
                         cx.notify();
                     }
                 }))
@@ -978,6 +1580,20 @@ impl Render for MainWindow {
             .children(self.main_menu.as_ref().map(|(available, keys, _)| self.main_menu_dropdown(available, keys, cx)))
             .children(self.tab_menu.map(|at| self.tab_menu_view(at, window, cx)))
             .children(self.status_menu.map(|kind| self.status_menu_view(kind, cx)))
+            .children(self.refactoring.clone().map(|dialog| {
+                div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(dialog)
+            }))
+            .children(self.go_to.clone().map(|popup| {
+                div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(
+                    div()
+                        .on_mouse_down_out(cx.listener(|w, _, window, cx| {
+                            if w.go_to.take().is_some() {
+                                w.focus_editor(window, cx);
+                            }
+                        }))
+                        .child(popup),
+                )
+            }))
             .children(self.find_action.clone().map(|popup| {
                 div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(
                     div()
@@ -1216,6 +1832,7 @@ impl MainWindow {
         let content = match tool {
             Tool::Solution => self.solution_content(window, cx).into_any_element(),
             Tool::Problems => self.problems_content(cx).into_any_element(),
+            Tool::Find => self.find_content(cx).into_any_element(),
         };
         island().child(header).child(content)
     }
@@ -1226,6 +1843,7 @@ impl MainWindow {
             Tool::Problems => self
                 .active_editor()
                 .map(|e| e.read(cx).path.file_name().unwrap_or_default().to_string_lossy().into_owned()),
+            Tool::Find => self.found.as_ref().map(|(title, found)| format!("{title}: {}", found.len())),
         }
     }
 
@@ -1309,6 +1927,7 @@ impl MainWindow {
         match tool {
             Tool::Solution => &self.explorer_focus,
             Tool::Problems => &self.problems_focus,
+            Tool::Find => &self.find_focus,
         }
     }
 
@@ -1386,8 +2005,170 @@ impl MainWindow {
             )
     }
 
-    /// The shown file's problems, as Problems' File tab: each a row that goes to its place.
+    /// Problems: its tabs, and the one chosen.
     fn problems_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let solution_count: usize = self.solution_problems.iter().map(|(_, p)| p.len()).sum();
+        let tab = |id: &'static str, title: String, which: ProblemsTab, cx: &mut Context<Self>| {
+            let chosen = self.problems_tab == which;
+            div()
+                .id(id)
+                .debug_selector(move || format!("problems tab: {id}"))
+                .h(px(26.))
+                .px(px(10.))
+                .rounded(px(5.))
+                .flex()
+                .items_center()
+                .when(chosen, |d| d.bg(theme::tab_selected()))
+                .when(!chosen, |d| d.text_color(theme::text_muted()).hover(|d| d.bg(theme::button_hover())))
+                .child(title)
+                .on_click(cx.listener(move |w, _: &ClickEvent, _, cx| w.show_problems_tab(which, cx)))
+        };
+        let titled = |name: &str, n: usize| if n == 0 { name.to_string() } else { format!("{name} {n}") };
+        let body = match self.problems_tab {
+            ProblemsTab::File => self.file_problems(cx).into_any_element(),
+            ProblemsTab::Solution => self.solution_problems_view(cx).into_any_element(),
+            ProblemsTab::Toolset => self.toolset_problems().into_any_element(),
+        };
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .gap(px(4.))
+                    .px(px(8.))
+                    .pb(px(4.))
+                    .child(tab("file", "File".into(), ProblemsTab::File, cx))
+                    .child(tab("solution", titled("Solution", solution_count), ProblemsTab::Solution, cx))
+                    .child(tab("toolset", titled("Toolset", self.load_problems.len()), ProblemsTab::Toolset, cx)),
+            )
+            .child(body)
+    }
+
+    /// One problem's row, going to its place when clicked.
+    fn problem_row(
+        &self,
+        id: (&'static str, usize),
+        error: bool,
+        message: String,
+        place: String,
+        go: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        div()
+            .id(id)
+            .h(px(ROW_HEIGHT))
+            .px(px(8.))
+            .rounded(px(4.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .hover(|d| d.bg(theme::row_hover()))
+            .child(icon(if error { "error" } else { "warning" }, 16.))
+            .child(div().truncate().child(message))
+            .child(div().flex_none().text_color(theme::text_secondary()).child(place))
+            .on_click(cx.listener(move |w, _: &ClickEvent, window, cx| go(w, window, cx)))
+    }
+
+    /// The whole solution's problems, by file, as Problems' Solution tab.
+    fn solution_problems_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.solution_wide {
+            return div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(8.))
+                .track_focus(&self.problems_focus)
+                .child(div().text_color(theme::text_secondary()).child("Solution-wide analysis is off."))
+                .child(
+                    widget("solution-wide-on")
+                        .debug_selector(|| "turn on solution-wide analysis".into())
+                        .text_color(theme::accent())
+                        .child("Turn On Solution-Wide Analysis")
+                        .on_click(cx.listener(|w, _: &ClickEvent, _, cx| w.set_solution_wide(true, cx))),
+                )
+                .into_any_element();
+        }
+        if self.solution_problems.is_empty() {
+            let said = if self.server.is_some() { "No problems in the solution." } else { "Roslyn is not running." };
+            return empty_text(said).track_focus(&self.problems_focus).into_any_element();
+        }
+        let mut rows = Vec::new();
+        for (path, found) in &self.solution_problems {
+            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            rows.push(
+                div()
+                    .h(px(ROW_HEIGHT))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(icon(file_icon(&name), 16.))
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child(name))
+                    .child(div().text_color(theme::text_secondary()).child(count(found.len(), "problem")))
+                    .into_any_element(),
+            );
+            for problem in found {
+                let (path, at) = (path.clone(), (problem.span.start.line, problem.span.start.character));
+                let index = rows.len();
+                rows.push(
+                    self.problem_row(
+                        ("solution-problem", index),
+                        problem.error,
+                        problem.message.clone(),
+                        format!(":{}", at.0 + 1),
+                        move |w, window, cx| w.open_file(&path, Some(at), window, cx),
+                        cx,
+                    )
+                    .pl(px(30.))
+                    .into_any_element(),
+                );
+            }
+        }
+        div()
+            .id("solution-problems")
+            .track_focus(&self.problems_focus)
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .px(px(6.))
+            .children(rows)
+            .into_any_element()
+    }
+
+    /// The projects that would not load whole, as Problems' Toolset tab.
+    fn toolset_problems(&self) -> impl IntoElement {
+        if self.load_problems.is_empty() {
+            return empty_text("Every project loaded.").track_focus(&self.problems_focus).into_any_element();
+        }
+        div()
+            .id("toolset-problems")
+            .track_focus(&self.problems_focus)
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .px(px(6.))
+            .children(self.load_problems.iter().map(|(project, error, message)| {
+                let name = project.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                div()
+                    .min_h(px(ROW_HEIGHT))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(icon(if *error { "error" } else { "warning" }, 16.))
+                    .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child(name))
+                    .child(div().child(message.clone()))
+            }))
+            .into_any_element()
+    }
+
+    /// The shown file's problems, as Problems' File tab: each a row that goes to its place.
+    fn file_problems(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(editor) = self.active_editor().cloned() else {
             return empty_text("Open a file to see its problems.").track_focus(&self.problems_focus).into_any_element();
         };
@@ -1751,6 +2532,12 @@ impl MainWindow {
             StatusMenu::Encodings => {
                 rsharp_core::encodings::LISTED.iter().map(|c| (c.name().to_string(), *c == read.charset)).collect()
             }
+            StatusMenu::TargetFramework => read
+                .contexts
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (c["_vs_label"].as_str().unwrap_or_default().to_string(), i == read.context))
+                .collect(),
         };
         let rows: Vec<_> = items
             .into_iter()
@@ -1776,6 +2563,7 @@ impl MainWindow {
                         buffer.update(cx, |b, cx| match kind {
                             StatusMenu::LineSeparators => b.set_line_ending(rsharp_text::LineEnding::ALL[i], cx),
                             StatusMenu::Encodings => b.set_charset(rsharp_core::encodings::LISTED[i], cx),
+                            StatusMenu::TargetFramework => b.choose_context(i, cx),
                         });
                         cx.notify();
                     }))
@@ -1944,13 +2732,8 @@ impl MainWindow {
                 let found = &e.buffer.read(cx).diagnostics;
                 (found.iter().filter(|d| d.error).count(), found.iter().filter(|d| !d.error).count())
             }),
-            match &self.server_state {
-                ServerState::None => None,
-                ServerState::Starting => Some(("Starting Roslyn…".to_string(), theme::text_muted())),
-                ServerState::Loading(what) => Some((format!("{what}…"), theme::text_muted())),
-                ServerState::Ready => Some(("Roslyn".to_string(), theme::text_muted())),
-                ServerState::Failed(why) => Some((why.clone(), theme::error())),
-            },
+            self.server_status()
+                .map(|said| (said, if self.server_failed().is_some() { theme::error() } else { theme::text_muted() })),
         );
         div()
             .h(px(30.))
@@ -1975,6 +2758,19 @@ impl MainWindow {
                 status_widget(format!("{}, {}", count(errors, "error"), count(warnings, "warning")))
                     .text_color(if errors > 0 { theme::error() } else { theme::warning() })
             }))
+            .children((!self.load_problems.is_empty()).then(|| {
+                let errors = self.load_problems.iter().any(|(_, e, _)| *e);
+                status_widget(count(self.load_problems.len(), "project load problem"))
+                    .id("load-problems")
+                    .text_color(if errors { theme::error() } else { theme::warning() })
+                    .hover(|d| d.bg(theme::button_hover()))
+                    .on_click(cx.listener(|w, _: &ClickEvent, window, cx| {
+                        if !w.dock.is_open(Tool::Problems) {
+                            w.toggle_tool(Tool::Problems, window, cx);
+                        }
+                        w.show_problems_tab(ProblemsTab::Toolset, cx);
+                    }))
+            }))
             .children(server.map(|(text, colour)| status_widget(text).text_color(colour)))
             .children(editor.map(|e| {
                 let caret = e.caret();
@@ -1993,9 +2789,17 @@ impl MainWindow {
                         cx.notify();
                     })
                 };
+                let framework = read.context_label();
                 div()
                     .flex()
                     .items_center()
+                    .children(framework.map(|label| {
+                        status_widget(label)
+                            .id("target-framework")
+                            .debug_selector(|| "status: target framework".into())
+                            .hover(|d| d.bg(theme::button_hover()))
+                            .on_click(menu(StatusMenu::TargetFramework))
+                    }))
                     .child(status_widget(format!("{}:{}", caret.line + 1, caret.utf16_column + 1)))
                     .child(
                         status_widget(ending.name().into())
@@ -2182,6 +2986,8 @@ impl Render for Tip {
 enum StatusMenu {
     LineSeparators,
     Encodings,
+    /// The target frameworks a multi-targeted project compiles the file for, as Rider's switcher offers them.
+    TargetFramework,
 }
 
 /// A tab on its way somewhere: its group and index, and its name for the preview under the pointer.

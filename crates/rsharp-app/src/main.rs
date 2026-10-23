@@ -32,6 +32,16 @@ fn main() {
             std::process::exit(2);
         }
     };
+    if let Some(folder) = &options.mcp {
+        rsharp_core::logs::start(&rsharp_core::state::StateStore::default_root().join("logs"));
+        let served = rsharp_mcp::serve(folder, std::io::stdin().lock(), std::io::stdout().lock());
+        rsharp_core::process::end_all();
+        if let Err(error) = served {
+            eprintln!("rsharp: MCP: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Some(path) = options.path.as_ref().filter(|p| !p.exists()) {
         eprintln!("rsharp: {} does not exist", path.display());
         std::process::exit(2);
@@ -84,6 +94,13 @@ fn main() {
         if !keystrokes.is_empty() {
             let any = window.into();
             cx.spawn(async move |cx| {
+                // Keys about the code wait for Roslyn to load the projects, at most a minute.
+                for _ in 0..240 {
+                    if !window.read_with(cx, |main, _| main.server_busy()).unwrap_or(false) {
+                        break;
+                    }
+                    cx.background_executor().timer(std::time::Duration::from_millis(250)).await;
+                }
                 // Each step waits for what the one before opened (a dialog, a popup) to draw.
                 for keystroke in keystrokes {
                     cx.background_executor().timer(std::time::Duration::from_millis(250)).await;

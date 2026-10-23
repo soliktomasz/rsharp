@@ -14,17 +14,20 @@ that makes a key cost more than what it changed needs a reason.
 ## Commands
 
 ```sh
+git submodule update --init   # vendor/passenger, Passenger's sidecars, which the build makes with dotnet
 just build                 # cargo build; warnings are errors (.cargo/config.toml)
 just run [PATH] [--file F] [--caret L:C] [--key KEYS] [--type TEXT]   # the IDE on a folder, solution or project
 just test [filter]         # every test
 just screenshot OUT.png [args]   # the real window captured on macOS (tools/screenshot.sh; WAIT=seconds,
                            # SHOT_WINDOW=Settings for another window by title; a state folder of its own)
+target/debug/rsharp --mcp [FOLDER]   # RSharp as an MCP server on standard input and output (no window)
 tools/bench.sh             # the release build on 1, 3 and 10 projects: start, load, memory, key to frame;
                            # appends bench/results.csv by commit (keep its window in front)
 ```
 
 `--key` and `--type` are steps through the window's real input once it has opened, in order, each waiting for
-what the one before opened: `--key cmd-shift-a --type clo` shows Find Action with "clo" typed. A malformed key is
+what the one before opened, and all of them for Roslyn to load the projects (at most a minute): `--key cmd-shift-a
+--type clo` shows Find Action with "clo" typed. A malformed key is
 fatal, as every malformed flag is.
 
 `just` isn't required: each recipe is one cargo command. A Debug build optimises dependencies (gpui and
@@ -63,9 +66,21 @@ terminal and takes focus for a moment.
   through a tree cursor: a node's own sibling steps find its parent from the root) and the bracket pairs come from
   the same tree. tree-sitter's incremental parse grows with the members of one class, so a file over 4 MB is parsed
   once typing pauses; `tests/budget.rs` holds the UI thread's work per key flat on a file ten times larger.
-- `crates/rsharp-lsp`: the LSP client (JSON-RPC over stdio, a reader thread, `ServerFailed` the one failure) and
-  `start_roslyn`, which runs the person's `roslyn-language-server` dotnet tool with `--clientProcessId`, so it
-  ends with the IDE even after a crash, and opens the solution (`solution/open`) or lets it find the projects.
+- `crates/rsharp-lsp`: the LSP client (JSON-RPC over stdio, a reader thread, `ServerFailed` the one failure; a
+  server's request the client answers itself, as `passenger/projectInfo`, on a thread of its own) and `start_roslyn`,
+  which runs Roslyn with `--clientProcessId`, so it ends with the IDE even after a crash. Its `build.rs` publishes
+  Passenger's sidecars from `vendor/passenger` (a pinned submodule) into `target/<profile>/sidecars`: Roslyn then runs
+  as Passenger runs it, the server version Passenger pins with its extension, the projects named in
+  `passenger/loadProjects` and each one's design-time build asked of Passenger's Host (`host.rs`, JSON lines), a
+  build's problem passed on as the project's error. Without dotnet or the submodule at build time it warns and runs
+  the person's `roslyn-language-server` tool, which opens the solution (`solution/open`) or finds the projects.
+- `crates/rsharp-mcp`: no UI. RSharp as an MCP server (`rsharp --mcp [FOLDER]`, JSON-RPC a line at a time on
+  standard input and output), Roslyn on the folder behind its tools: `workspace`, `diagnostics` (a file's, or the
+  solution's with solution-wide analysis), `find_symbol`, `outline`, `usages`, `rename` (a type's file renamed with it)
+  and `edit` (answers with the file's problems after). A place is a file, line and column from 1, or a symbol's name;
+  each tool waits for Roslyn's load, files are written in their own encoding and line separator, and Roslyn is told
+  each write (a change names the range it replaces: Roslyn crashes on one that does not). An agent adds it as a
+  stdio server: `claude mcp add rsharp -- /path/to/rsharp --mcp /path/to/folder`.
 - `crates/rsharp-app`: the shell, a library (`lib.rs`, whose `init` the executable and the tests both call) and
   `main.rs`. `window.rs` is a project window as Rider's Islands: the toolbar and status bar on the frame, a stripe
   down each side, the editor and the open tool windows as islands, the gaps between them resizing what they

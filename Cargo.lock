@@ -4480,6 +4480,7 @@ dependencies = [
  "rsharp-core",
  "rsharp-languages",
  "rsharp-lsp",
+ "rsharp-mcp",
  "rsharp-text",
  "serde",
  "serde_json",
@@ -4512,8 +4513,20 @@ dependencies = [
 name = "rsharp-lsp"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "log",
  "rsharp-core",
+ "serde_json",
+]
+
+[[package]]
+name = "rsharp-mcp"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "rsharp-core",
+ "rsharp-lsp",
+ "rsharp-text",
  "serde_json",
 ]
 

@@ -12,6 +12,8 @@ pub struct LaunchOptions {
     pub steps: Vec<Step>,
     /// Measure the start, the solution's load, memory and typing, print them as JSON and quit (`bench.rs`).
     pub bench: bool,
+    /// Serve MCP on standard input and output over this folder instead of opening a window (`rsharp-mcp`).
+    pub mcp: Option<PathBuf>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -39,11 +41,26 @@ impl LaunchOptions {
                 }
                 "--key" => options.steps.push(Step::Key(args.next().ok_or("--key needs keys, such as cmd-shift-a")?)),
                 "--bench" => options.bench = true,
+                "--mcp" => options.mcp = Some(PathBuf::new()),
                 "--type" => options.steps.push(Step::Type(args.next().ok_or("--type needs text")?)),
                 flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
                 path if options.path.is_none() => options.path = Some(path.into()),
                 extra => return Err(format!("one folder or solution at a time, not also {extra:?}")),
             }
+        }
+        // --mcp's folder is the one named, else the one it runs in.
+        if options.mcp.is_some() {
+            let folder = match options.path.take() {
+                Some(folder) => folder,
+                None => std::env::current_dir().map_err(|e| format!("--mcp has no folder: {e}"))?,
+            };
+            if !folder.is_dir() {
+                return Err(format!("--mcp takes a folder, not {}", folder.display()));
+            }
+            if options.file.is_some() || !options.steps.is_empty() || options.bench {
+                return Err("--mcp opens no window, so it takes no --file, --key, --type or --bench".into());
+            }
+            options.mcp = Some(folder);
         }
         if options.caret.is_some() && options.file.is_none() {
             return Err("--caret needs --file".into());
@@ -69,7 +86,8 @@ mod tests {
                 file: Some("Program.cs".into()),
                 caret: Some((12, 5)),
                 steps: vec![],
-                bench: false
+                bench: false,
+                mcp: None,
             })
         );
         assert!(parse(&["--caret", "12:5"]).is_err(), "a caret with no file");
@@ -82,5 +100,14 @@ mod tests {
             [Step::Key("cmd-,".into()), Step::Type("font".into())],
             "steps were not kept in the order given"
         );
+    }
+
+    #[test]
+    fn mcp_serves_the_folder_named_and_refuses_what_only_a_window_takes() {
+        let folder = std::env::temp_dir();
+        let named = parse(&["--mcp", folder.to_str().unwrap()]).unwrap();
+        assert_eq!((named.mcp, named.path), (Some(folder.clone()), None));
+        assert!(parse(&["--mcp", folder.to_str().unwrap(), "--file", "A.cs"]).is_err());
+        assert!(parse(&["--mcp", "/no/such/folder"]).is_err());
     }
 }

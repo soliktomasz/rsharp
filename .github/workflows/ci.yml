@@ -7,6 +7,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -17,8 +20,6 @@ env:
   DOTNET_NOLOGO: 1
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
   DOTNET_CLI_TELEMETRY_OPTOUT: 1
-  # Roslyn's server as a dotnet tool, for the test that runs it (it skips, saying why, without one).
-  ROSLYN_VERSION: 5.8.0-1.26266.2
 
 jobs:
   test:
@@ -32,7 +33,12 @@ jobs:
           - { name: "Windows (x64)", os: windows-2025 }
           - { name: "Linux (x64)", os: ubuntu-24.04 }
     steps:
+      # Passenger's sidecars (vendor/passenger, pinned), which the build makes with dotnet: Roslyn's server as Passenger
+      # pins it, its extension and its project host, which the Roslyn tests run.
       - uses: actions/checkout@v5
+        with:
+          submodules: true
+          persist-credentials: false
 
       - name: The libraries gpui builds against on Linux
         if: runner.os == 'Linux'
@@ -50,9 +56,6 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
-
-      - name: Roslyn's language server
-        run: dotnet tool install --global roslyn-language-server --version ${{ env.ROSLYN_VERSION }}
 
       - name: Formatting
         run: cargo fmt --all --check
