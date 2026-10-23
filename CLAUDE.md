@@ -14,6 +14,7 @@ that makes a key cost more than what it changed needs a reason.
 ## Commands
 
 ```sh
+git submodule update --init   # vendor/passenger, Passenger's sidecars, which the build makes with dotnet
 just build                 # cargo build; warnings are errors (.cargo/config.toml)
 just run [PATH] [--file F] [--caret L:C] [--key KEYS] [--type TEXT]   # the IDE on a folder, solution or project
 just test [filter]         # every test
@@ -65,9 +66,14 @@ terminal and takes focus for a moment.
   through a tree cursor: a node's own sibling steps find its parent from the root) and the bracket pairs come from
   the same tree. tree-sitter's incremental parse grows with the members of one class, so a file over 4 MB is parsed
   once typing pauses; `tests/budget.rs` holds the UI thread's work per key flat on a file ten times larger.
-- `crates/rsharp-lsp`: the LSP client (JSON-RPC over stdio, a reader thread, `ServerFailed` the one failure) and
-  `start_roslyn`, which runs the person's `roslyn-language-server` dotnet tool with `--clientProcessId`, so it
-  ends with the IDE even after a crash, and opens the solution (`solution/open`) or lets it find the projects.
+- `crates/rsharp-lsp`: the LSP client (JSON-RPC over stdio, a reader thread, `ServerFailed` the one failure; a
+  server's request the client answers itself, as `passenger/projectInfo`, on a thread of its own) and `start_roslyn`,
+  which runs Roslyn with `--clientProcessId`, so it ends with the IDE even after a crash. Its `build.rs` publishes
+  Passenger's sidecars from `vendor/passenger` (a pinned submodule) into `target/<profile>/sidecars`: Roslyn then runs
+  as Passenger runs it, the server version Passenger pins with its extension, the projects named in
+  `passenger/loadProjects` and each one's design-time build asked of Passenger's Host (`host.rs`, JSON lines), a
+  build's problem passed on as the project's error. Without dotnet or the submodule at build time it warns and runs
+  the person's `roslyn-language-server` tool, which opens the solution (`solution/open`) or finds the projects.
 - `crates/rsharp-mcp`: no UI. RSharp as an MCP server (`rsharp --mcp [FOLDER]`, JSON-RPC a line at a time on
   standard input and output), Roslyn on the folder behind its tools: `workspace`, `diagnostics` (a file's, or the
   solution's with solution-wide analysis), `find_symbol`, `outline`, `usages`, `rename` (a type's file renamed with it)

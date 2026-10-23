@@ -2,6 +2,7 @@
 //! language server it runs for C#. No UI: events come on the reader's thread, and a request's answer is waited
 //! for off the UI thread.
 
+mod host;
 mod protocol;
 mod roslyn;
 
@@ -46,6 +47,10 @@ pub enum ServerEvent {
 
 type Options = Arc<Mutex<HashMap<String, Value>>>;
 
+/// A server's request the client answers itself, given its method and params: the work that answers it, run on a
+/// thread of its own (a project host's build takes seconds, which the reader must not wait on); none for the rest.
+pub type Answers = Arc<dyn Fn(&str, &Value) -> Option<Box<dyn FnOnce() -> Value + Send>> + Send + Sync>;
+
 /// Each request unanswered, by its id, with where its answer goes.
 type Pending = Arc<Mutex<HashMap<i64, Box<dyn FnOnce(Answer) + Send>>>>;
 
@@ -62,7 +67,16 @@ pub struct LanguageServer {
 
 impl LanguageServer {
     /// Starts the server and reads it on a thread of its own, telling `events` what it says unasked.
-    pub fn start(mut command: Command, events: impl Fn(ServerEvent) + Send + Sync + 'static) -> io::Result<Self> {
+    pub fn start(command: Command, events: impl Fn(ServerEvent) + Send + Sync + 'static) -> io::Result<Self> {
+        Self::start_answering(command, events, Arc::new(|_: &str, _: &Value| None))
+    }
+
+    /// Starts the server, the requests `answers` takes answered by it.
+    pub fn start_answering(
+        mut command: Command,
+        events: impl Fn(ServerEvent) + Send + Sync + 'static,
+        answers: Answers,
+    ) -> io::Result<Self> {
         command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = process::spawn(command)?;
         let input = Arc::new(Mutex::new(child.process.stdin.take().expect("stdin was piped")));
@@ -80,9 +94,9 @@ impl LanguageServer {
         let reader_options = options.clone();
         let reader_input = input.clone();
         let reader_pending = pending.clone();
-        std::thread::Builder::new()
-            .name("lsp-reader".into())
-            .spawn(move || read(BufReader::new(output), &reader_input, &reader_pending, &reader_options, &*events))?;
+        std::thread::Builder::new().name("lsp-reader".into()).spawn(move || {
+            read(BufReader::new(output), &reader_input, &reader_pending, &reader_options, &answers, &*events)
+        })?;
         Ok(Self { input, pending, next_id: AtomicI64::new(1), options, capabilities: Value::Null, _child: child })
     }
 
@@ -134,9 +148,10 @@ fn write(input: &Mutex<ChildStdin>, message: &Value) -> io::Result<()> {
 
 fn read(
     mut output: impl BufRead,
-    input: &Mutex<ChildStdin>,
+    input: &Arc<Mutex<ChildStdin>>,
     pending: &Pending,
     options: &Options,
+    answers: &Answers,
     events: &dyn Fn(ServerEvent),
 ) {
     while let Some(message) = next_message(&mut output) {
@@ -144,6 +159,13 @@ fn read(
         match (message.get("method").and_then(Value::as_str), id) {
             (Some(method), Some(id)) => {
                 log::info!(target: "lsp", "server asks {method}: {}", message["params"]);
+                if let Some(work) = answers(method, &message["params"]) {
+                    let input = input.clone();
+                    let _ = std::thread::Builder::new().name("lsp-answer".into()).spawn(move || {
+                        let _ = write(&input, &json!({ "jsonrpc": "2.0", "id": id, "result": work() }));
+                    });
+                    continue;
+                }
                 let _ = write(
                     input,
                     &json!({ "jsonrpc": "2.0", "id": id, "result": answer_for(method, &message["params"], &options.lock().unwrap()) }),

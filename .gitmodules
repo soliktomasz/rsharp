@@ -1,0 +1,3 @@
+[submodule "vendor/passenger"]
+	path = vendor/passenger
+	url = https://github.com/Zaneris/passenger

@@ -99,9 +99,9 @@ Search Everywhere (types, files, symbols), Recent Locations, and Find in Files' 
 mask and Replace in Files; Optimize Usings, Introduce Variable, Field and Parameter, Encapsulate Field, Extract
 Method and Inline (Roslyn's code actions by their titles), Safe Delete at a declaration, Surround With and Complete
 Current Statement; live templates (Rider's built-in ones on Tab, a variable's every use typed at once).
-Left: Host and
-Roslyn.Extension (decision 1), which the dialogs (Change Signature, Extract Interface, Move, Pull Members Up and Push
-Members Down) and Safe Delete's wider search need; templates in completion and a person's own; and the framework
+Roslyn runs as Passenger runs it: the server version
+Passenger pins, its Roslyn.Extension, and each project's design-time build from its Host. Left: the dialogs the extension answers (Change Signature, Extract Interface, Move, Pull
+Members Up and Push Members Down) and Safe Delete's wider search through it; templates in completion and a person's own; and the framework
 switcher.
 - **Roslyn in full:** Passenger's `Host` for design-time builds and `Roslyn.Extension` loaded with `--extension`, so
   projects load the way Passenger loads them.
@@ -130,7 +130,7 @@ why, a sound project and a broken one alike; the status bar then stays on "Loadi
 find nothing. Starting it again in the same process stalls the same way, and turning off MSBuild's node reuse or
 file-based programs changes nothing. The window keeps what Roslyn said (`MainWindow::roslyn_said`), which the
 Roslyn window tests print when they fail; Passenger's Host (decision 1) loading the projects itself may be the way
-round it.
+round it. Since the Host and the extension load the projects, the stall has not been seen; watch for it.
 
 ### Phase 4: Solution and projects (M)
 - **The Solution view as Rider's:** the solution's projects, Dependencies, solution folders, file nesting.
@@ -254,7 +254,8 @@ Phases 1–3 are sequential: each needs the one before. After phase 3, the work 
 
 ## Decisions to make before phase 1
 
-1. **How Passenger's sidecars get here.** The options:
+1. **How Passenger's sidecars get here.** Decided: a pinned git submodule (`vendor/passenger`), built by RSharp's build
+   (`crates/rsharp-lsp/build.rs`). The options were:
    - a pinned git submodule, built by RSharp's build;
    - downloaded from Passenger's GitHub releases by version;
    - copied into the repository.

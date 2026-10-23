@@ -5,41 +5,184 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-/// Roslyn's language server as `dotnet tool install -g roslyn-language-server` puts it in place.
-// shortcut: found on the machine rather than carried beside the app (Passenger downloads it at build), so a
-// person installs the tool first; carrying it pins one version.
-pub fn roslyn_server() -> Option<PathBuf> {
-    let tools = programs::home().join(".dotnet").join("tools");
-    programs::find("roslyn-language-server", std::slice::from_ref(&tools))
-        .or_else(|| programs::find("Microsoft.CodeAnalysis.LanguageServer", &[tools]))
+/// Passenger's sidecars as RSharp's build made them (build.rs): the Roslyn server version Passenger pins, its extension
+/// compiled against that server, and its project Host.
+// shortcut: found where the build put them (compiled in), so a copy of the executable elsewhere runs the installed tool
+// instead; carry them beside the app when it ships (phase 13).
+struct Carried {
+    server: PathBuf,
+    extension: PathBuf,
+    host: PathBuf,
 }
 
-/// Starts Roslyn over `folder`, initializes it and opens `solution` (else the folder's projects, found by the
-/// server itself). Blocks until the server answers, so call it off the UI thread.
+fn carried() -> Option<Carried> {
+    let (sidecars, server) = (env!("RSHARP_SIDECARS"), env!("RSHARP_ROSLYN_SERVER"));
+    if sidecars.is_empty() {
+        return None;
+    }
+    let carried = Carried {
+        server: Path::new(server).join("Microsoft.CodeAnalysis.LanguageServer.dll"),
+        extension: Path::new(sidecars).join("roslyn-extension").join("Passenger.Roslyn.Extension.dll"),
+        host: Path::new(sidecars).join("host").join("Passenger.Host.dll"),
+    };
+    (carried.server.is_file() && carried.extension.is_file() && carried.host.is_file()).then_some(carried)
+}
+
+/// Roslyn's language server: the one Passenger pins, built with its sidecars, else the person's own
+/// `dotnet tool install -g roslyn-language-server`.
+pub fn roslyn_server() -> Option<PathBuf> {
+    carried().map(|c| c.server).or_else(|| {
+        let tools = programs::home().join(".dotnet").join("tools");
+        programs::find("roslyn-language-server", std::slice::from_ref(&tools))
+            .or_else(|| programs::find("Microsoft.CodeAnalysis.LanguageServer", &[tools]))
+    })
+}
+
+/// The projects to load: the solution's (a .slnx's or a .sln's), else every project under the folder.
+pub fn projects_of(folder: &Path, solution: Option<&Path>) -> Vec<PathBuf> {
+    if let Some(solution) = solution {
+        let text = std::fs::read_to_string(solution).unwrap_or_default();
+        let base = solution.parent().unwrap_or(folder);
+        let named: Vec<&str> = if solution.extension().is_some_and(|e| e == "slnx") {
+            text.split("Path=\"").skip(1).filter_map(|rest| rest.split('"').next()).collect()
+        } else {
+            // A .sln's `Project("{type}") = "Name", "Path\To\App.csproj", "{id}"` lines.
+            text.lines().filter(|l| l.starts_with("Project(")).filter_map(|l| l.split('"').nth(5)).collect()
+        };
+        return named
+            .into_iter()
+            .filter(|p| p.ends_with("proj"))
+            .map(|p| paths::canonical(&base.join(p.replace('\\', "/"))))
+            .filter(|p| p.is_file())
+            .collect();
+    }
+    let mut found = Vec::new();
+    let mut folders = vec![folder.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+            let (path, name) = (entry.path(), entry.file_name().to_string_lossy().into_owned());
+            if path.is_dir() && !name.starts_with('.') && !matches!(name.as_str(), "bin" | "obj" | "node_modules") {
+                folders.push(path);
+            } else if name.ends_with(".csproj") || name.ends_with(".fsproj") || name.ends_with(".vbproj") {
+                found.push(paths::canonical(&path));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// The global properties a build of the solution gives its projects (a Directory.Build.props may read them), and the
+/// Razor design-time targets Roslyn's server gives its own build host.
+fn build_properties(solution: Option<&Path>, server: &Path) -> Value {
+    let mut properties = serde_json::Map::new();
+    if let Some(solution) = solution {
+        let folder = solution.parent().unwrap_or(solution);
+        properties.insert("SolutionDir".into(), json!(format!("{}{}", folder.display(), std::path::MAIN_SEPARATOR)));
+        properties.insert("SolutionPath".into(), json!(solution));
+        properties.insert("SolutionName".into(), json!(solution.file_stem().map(|s| s.to_string_lossy())));
+        properties.insert("SolutionFileName".into(), json!(solution.file_name().map(|s| s.to_string_lossy())));
+        properties
+            .insert("SolutionExt".into(), json!(solution.extension().map(|e| format!(".{}", e.to_string_lossy()))));
+    }
+    let razor = server.parent().unwrap_or(server).join("Targets").join("Microsoft.NET.Sdk.Razor.DesignTime.targets");
+    if razor.is_file() {
+        properties.insert("RazorDesignTimeTargets".into(), json!(razor));
+    }
+    Value::Object(properties)
+}
+
+/// Starts Roslyn over `folder`, initializes it and loads `solution` (else the folder's projects). With Passenger's
+/// sidecars, the server loads them as Passenger's does: the extension named the projects, each project's design-time
+/// build asked of Passenger's Host. Blocks until the server answers, so call it off the UI thread.
 pub fn start_roslyn(
     folder: &Path,
     solution: Option<&Path>,
     log_folder: &Path,
     events: impl Fn(ServerEvent) + Send + Sync + 'static,
 ) -> Result<LanguageServer, ServerFailed> {
-    let program = roslyn_server().ok_or_else(|| {
-        ServerFailed("Roslyn's language server was not found: dotnet tool install -g roslyn-language-server".into())
-    })?;
+    let dotnet = programs::dotnet();
+    let carried = carried().filter(|_| dotnet.is_some());
+    let program = match &carried {
+        Some(_) => dotnet.clone().expect("carried needs dotnet"),
+        None => roslyn_server().ok_or_else(|| {
+            ServerFailed("Roslyn's language server was not found: dotnet tool install -g roslyn-language-server".into())
+        })?,
+    };
     let mut command = Command::new(program);
+    if let Some(carried) = &carried {
+        command.arg(&carried.server);
+    }
     command
         .args(["--stdio", "--logLevel", "Information", "--telemetryLevel", "off"])
         .arg("--extensionLogDirectory")
         .arg(log_folder)
         .args(["--clientProcessId", &std::process::id().to_string()])
         .current_dir(folder);
-    if solution.is_none() {
-        command.arg("--autoLoadProjects");
+    let mut answers: crate::Answers = std::sync::Arc::new(|_: &str, _: &Value| None);
+    match &carried {
+        Some(carried) => {
+            command.arg("--extension").arg(&carried.extension);
+            // Each server's MSBuild nodes its own, as Passenger keeps them: a node another's restore left is never
+            // taken up, and ends with the server.
+            static STARTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let started = STARTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            command.env("MSBUILDNODEHANDSHAKESALT", format!("rsharp-{}-{started}", std::process::id()));
+            // The server's own restore takes no properties: off Windows a WPF or Windows Forms project restores only with
+            // EnableWindowsTargeting, which a project with no Windows-only framework never reads.
+            if !cfg!(windows) {
+                command.env("EnableWindowsTargeting", "true");
+            }
+            let host = std::sync::Mutex::new(None::<crate::host::ProjectHost>);
+            let (dotnet, host_dll, folder) = (dotnet.clone().unwrap(), carried.host.clone(), folder.to_path_buf());
+            let properties = build_properties(solution, &carried.server);
+            let shared = std::sync::Arc::new((host, dotnet, host_dll, folder, properties));
+            answers = std::sync::Arc::new(move |method: &str, params: &Value| {
+                if method != "passenger/projectInfo" {
+                    return None;
+                }
+                let project = PathBuf::from(params["path"].as_str().unwrap_or_default());
+                let shared = shared.clone();
+                Some(Box::new(move || {
+                    let (host, dotnet, host_dll, folder, properties) = &*shared;
+                    let mut host = host.lock().unwrap();
+                    let built = match &mut *host {
+                        Some(running) => running.build(&project, properties),
+                        None => crate::host::ProjectHost::start(dotnet, host_dll, folder).and_then(|mut started| {
+                            let built = started.build(&project, properties);
+                            *host = Some(started);
+                            built
+                        }),
+                    };
+                    match built {
+                        Ok(built) => {
+                            // A build's problem (an SDK not found) goes to the server as an error of the project, which
+                            // it then reports as it reports its own build host's (Error while loading …).
+                            let mut diagnostics = built.diagnostics.as_array().cloned().unwrap_or_default();
+                            if let Some(problem) = &built.problem {
+                                diagnostics.push(json!({ "error": true, "message": problem, "project": project }));
+                            }
+                            json!({ "infos": built.infos, "problem": built.problem, "diagnostics": diagnostics })
+                        }
+                        Err(failed) => {
+                            // A host that failed is started again for the next project.
+                            *host = None;
+                            json!({ "infos": null, "problem": failed.0 })
+                        }
+                    }
+                }) as Box<dyn FnOnce() -> Value + Send>)
+            });
+        }
+        None if solution.is_none() => {
+            command.arg("--autoLoadProjects");
+        }
+        None => {}
     }
-    if let Some(dotnet) = programs::dotnet().and_then(|d| d.parent().map(Path::to_path_buf)) {
+    if let Some(dotnet) = dotnet.as_ref().and_then(|d| d.parent().map(Path::to_path_buf)) {
         command.env("DOTNET_ROOT", dotnet);
     }
-    let mut server =
-        LanguageServer::start(command, events).map_err(|e| ServerFailed(format!("Roslyn did not start: {e}")))?;
+    let mut server = LanguageServer::start_answering(command, events, answers)
+        .map_err(|e| ServerFailed(format!("Roslyn did not start: {e}")))?;
 
     let root = paths::to_uri(folder);
     let answer = server
@@ -56,8 +199,23 @@ pub fn start_roslyn(
         None => return Err(ServerFailed("Roslyn's answer to initialize named no capabilities".into())),
     }
     server.notify("initialized", json!({}));
-    if let Some(solution) = solution {
-        server.notify("solution/open", json!({ "solution": paths::to_uri(solution) }));
+    match &carried {
+        Some(carried) => {
+            // The extension's message handlers (the refactorings with options), then the projects through its loader.
+            let activated = server
+                .request("server/_vs_activateExtension", json!({ "assemblyFilePath": carried.extension }))
+                .recv_timeout(Duration::from_secs(60));
+            if !matches!(activated, Ok(Ok(_))) {
+                log::warn!(target: "roslyn", "Passenger's extension was not activated: {activated:?}");
+            }
+            let projects: Vec<Value> = projects_of(folder, solution).iter().map(|p| json!({ "path": p })).collect();
+            server.notify("passenger/loadProjects", json!({ "projects": projects, "solution": solution }));
+        }
+        None => {
+            if let Some(solution) = solution {
+                server.notify("solution/open", json!({ "solution": paths::to_uri(solution) }));
+            }
+        }
     }
     Ok(server)
 }

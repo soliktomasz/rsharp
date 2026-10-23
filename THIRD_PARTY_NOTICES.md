@@ -35,7 +35,17 @@ gpui brings about 550 crates of its own. Their notices are not yet written out: 
 
 The colours in `crates/rsharp-app/src/theme.rs` are values read from Rider's Islands Dark and Rider Dark themes.
 
+## Built from the Passenger submodule
+
+`vendor/passenger` is Passenger (MIT, Copyright (c) 2026 Ted L, https://github.com/Zaneris/passenger), pinned as a git
+submodule. RSharp's build (`crates/rsharp-lsp/build.rs`) publishes two of its projects and runs them, unchanged:
+Passenger.Host (MSBuild's design-time builds in a process of their own) and Passenger.Roslyn.Extension (Roslyn's
+server's project loader and refactorings with options). The Host carries Microsoft.Build.Locator (MIT, .NET
+Foundation); the extension is compiled against Roslyn's server with Krafs.Publicizer (MIT, Krafs), which carries
+nothing into the output.
+
 ## Run, not carried
 
-Roslyn's language server (`roslyn-language-server`, MIT, .NET Foundation) is the person's own install of the
-dotnet tool.
+Roslyn's language server (`roslyn-language-server`, MIT, .NET Foundation): the version Passenger pins, which the
+extension's build downloads into the NuGet cache and RSharp runs from there; without the submodule or dotnet at build
+time, the person's own install of the dotnet tool.
