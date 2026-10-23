@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::process::{ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 
 /// Why a request got no answer: the server refused it, or stopped. The one failure callers catch.
@@ -44,12 +44,17 @@ pub enum ServerEvent {
     Ended,
 }
 
-type Pending = Arc<Mutex<HashMap<i64, Sender<Answer>>>>;
+type Options = Arc<Mutex<HashMap<String, Value>>>;
+
+/// Each request unanswered, by its id, with where its answer goes.
+type Pending = Arc<Mutex<HashMap<i64, Box<dyn FnOnce(Answer) + Send>>>>;
 
 pub struct LanguageServer {
     input: Arc<Mutex<ChildStdin>>,
     pending: Pending,
     next_id: AtomicI64,
+    /// Options set while the server runs, by name, over Roslyn's own (`roslyn::option`).
+    options: Options,
     /// What the server said it can do, answering `initialize`.
     pub capabilities: Value,
     _child: Child,
@@ -71,27 +76,46 @@ impl LanguageServer {
             }
         })?;
         let pending: Pending = Arc::default();
+        let options: Options = Arc::default();
+        let reader_options = options.clone();
         let reader_input = input.clone();
         let reader_pending = pending.clone();
         std::thread::Builder::new()
             .name("lsp-reader".into())
-            .spawn(move || read(BufReader::new(output), &reader_input, &reader_pending, &*events))?;
-        Ok(Self { input, pending, next_id: AtomicI64::new(1), capabilities: Value::Null, _child: child })
+            .spawn(move || read(BufReader::new(output), &reader_input, &reader_pending, &reader_options, &*events))?;
+        Ok(Self { input, pending, next_id: AtomicI64::new(1), options, capabilities: Value::Null, _child: child })
     }
 
-    /// Sends a request; the answer arrives on the returned channel.
+    /// Sends a request; the answer arrives on the returned channel, for a thread that may wait on it.
     pub fn request(&self, method: &str, params: Value) -> Receiver<Answer> {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver) = mpsc::channel();
-        self.pending.lock().unwrap().insert(id, sender);
+        self.send(method, params, Box::new(move |answer| drop(sender.send(answer))));
+        receiver
+    }
+
+    /// Sends a request whose answer is awaited, holding no thread while the server takes its time (Roslyn holds a
+    /// workspace/diagnostic open until something changes). Ends with the server's failure if it stops.
+    pub fn ask(&self, method: &str, params: Value) -> impl std::future::Future<Output = Answer> + use<> {
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        self.send(method, params, Box::new(move |answer| drop(sender.send(answer))));
+        async move { receiver.await.unwrap_or_else(|_| Err(ServerFailed("the language server stopped".into()))) }
+    }
+
+    fn send(&self, method: &str, params: Value, answered: Box<dyn FnOnce(Answer) + Send>) {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.pending.lock().unwrap().insert(id, answered);
         if let Err(error) =
             write(&self.input, &json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))
+            && let Some(answered) = self.pending.lock().unwrap().remove(&id)
         {
-            if let Some(sender) = self.pending.lock().unwrap().remove(&id) {
-                let _ = sender.send(Err(ServerFailed(format!("the server could not be told {method}: {error}"))));
-            }
+            answered(Err(ServerFailed(format!("the server could not be told {method}: {error}"))));
         }
-        receiver
+    }
+
+    /// Sets an option by its name (null for the server's default) and has the server read its configuration again.
+    pub fn set_option(&self, name: &str, value: Value) {
+        self.options.lock().unwrap().insert(name.to_string(), value);
+        self.notify("workspace/didChangeConfiguration", json!({ "settings": null }));
     }
 
     pub fn notify(&self, method: &str, params: Value) {
@@ -108,7 +132,13 @@ fn write(input: &Mutex<ChildStdin>, message: &Value) -> io::Result<()> {
     input.flush()
 }
 
-fn read(mut output: impl BufRead, input: &Mutex<ChildStdin>, pending: &Pending, events: &dyn Fn(ServerEvent)) {
+fn read(
+    mut output: impl BufRead,
+    input: &Mutex<ChildStdin>,
+    pending: &Pending,
+    options: &Options,
+    events: &dyn Fn(ServerEvent),
+) {
     while let Some(message) = next_message(&mut output) {
         let id = message.get("id").and_then(Value::as_i64);
         match (message.get("method").and_then(Value::as_str), id) {
@@ -116,36 +146,51 @@ fn read(mut output: impl BufRead, input: &Mutex<ChildStdin>, pending: &Pending, 
                 log::info!(target: "lsp", "server asks {method}: {}", message["params"]);
                 let _ = write(
                     input,
-                    &json!({ "jsonrpc": "2.0", "id": id, "result": answer_for(method, &message["params"]) }),
+                    &json!({ "jsonrpc": "2.0", "id": id, "result": answer_for(method, &message["params"], &options.lock().unwrap()) }),
                 );
+                // A refresh asks the client to ask again; it reaches the client as a notification would.
+                if method.starts_with("workspace/") && method.ends_with("/refresh") {
+                    events(ServerEvent::Notification { method: method.to_string(), params: Value::Null });
+                }
             }
             (Some(method), None) => events(ServerEvent::Notification {
                 method: method.to_string(),
                 params: message.get("params").cloned().unwrap_or(Value::Null),
             }),
             (None, Some(id)) => {
-                if let Some(sender) = pending.lock().unwrap().remove(&id) {
-                    let answer = match message.get("error") {
+                // Taken out before it is answered, so what it runs never waits on the lock.
+                let answered = pending.lock().unwrap().remove(&id);
+                if let Some(answered) = answered {
+                    answered(match message.get("error") {
                         Some(error) => Err(ServerFailed(error["message"].as_str().unwrap_or("refused").to_string())),
                         None => Ok(message.get("result").cloned().unwrap_or(Value::Null)),
-                    };
-                    let _ = sender.send(answer);
+                    });
                 }
             }
             (None, None) => {}
         }
     }
-    for (_, sender) in pending.lock().unwrap().drain() {
-        let _ = sender.send(Err(ServerFailed("the language server stopped".into())));
+    let unanswered: Vec<_> = pending.lock().unwrap().drain().map(|(_, answered)| answered).collect();
+    for answered in unanswered {
+        answered(Err(ServerFailed("the language server stopped".into())));
     }
     events(ServerEvent::Ended);
 }
 
-/// What the client answers a server's own request: Passenger's settings are the server's defaults, so each
-/// configuration item is null, and every registration or progress token is simply accepted.
-fn answer_for(method: &str, params: &Value) -> Value {
+/// What the client answers a server's own request: each configuration item the option set by its name, else Roslyn's
+/// (null, its default, for the rest), and every registration or progress token simply accepted.
+fn answer_for(method: &str, params: &Value, options: &HashMap<String, Value>) -> Value {
     match method {
-        "workspace/configuration" => Value::Array(vec![Value::Null; params["items"].as_array().map_or(0, Vec::len)]),
+        "workspace/configuration" => params["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|item| {
+                let section = item["section"].as_str().unwrap_or_default();
+                let name = section.rsplit(['.', '|']).next().unwrap_or(section);
+                options.get(name).cloned().unwrap_or_else(|| roslyn::option(section))
+            })
+            .collect(),
         _ => Value::Null,
     }
 }

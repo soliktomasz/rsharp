@@ -33,17 +33,17 @@ pub fn edits(text: &Rope, edits: &[TextEdit]) -> Vec<Edit> {
     made
 }
 
-/// Asks the server off the UI thread; None when it refused or stopped, which the log says.
+/// Asks the server, its answer awaited without holding a thread; None when it refused or stopped, which the log
+/// says.
 pub fn ask(server: &LanguageServer, method: &'static str, params: Value, cx: &App) -> Task<Option<Value>> {
-    let answer = server.request(method, params);
+    let answer = server.ask(method, params);
     cx.background_executor().spawn(async move {
-        match answer.recv() {
-            Ok(Ok(value)) => Some(value),
-            Ok(Err(failed)) => {
+        match answer.await {
+            Ok(value) => Some(value),
+            Err(failed) => {
                 log::info!(target: "roslyn", "{method} refused: {failed}");
                 None
             }
-            Err(_) => None,
         }
     })
 }

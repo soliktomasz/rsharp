@@ -55,6 +55,8 @@ pub struct Assist {
     usage_task: Option<Task<()>>,
     /// Roslyn's colours over the syntax's, for the lines asked; carried through edits until asked again.
     pub tokens: Vec<(Range<usize>, Hsla)>,
+    /// Roslyn's inlay hints for the same lines: each place, and the text set in before it there.
+    pub hints: Vec<(usize, String)>,
     tokens_for: Option<(u64, Range<usize>)>,
     token_task: Option<Task<()>>,
     /// The lines the last frame showed.
@@ -71,6 +73,16 @@ impl Assist {
                 *range = map_through(range.start, change)..map_through(range.end, change);
             }
         }
+        // A hint inside what changed goes until asked again; the rest move with the text.
+        self.hints.retain_mut(|(at, _)| {
+            for change in changes {
+                if *at > change.start.offset && *at < change.old_end.offset {
+                    return false;
+                }
+                *at = map_through(*at, change);
+            }
+            true
+        });
         self.usages.clear();
     }
 }
@@ -110,6 +122,18 @@ impl CodeEditor {
             }
             _ => None,
         }
+    }
+
+    /// The inlay hints shown, each as "line:column label" (from 1), as a person reads them.
+    pub fn inlay_hints(&self) -> Vec<String> {
+        self.assist
+            .hints
+            .iter()
+            .map(|(at, label)| {
+                let place = position(&self.text, *at);
+                format!("{}:{} {}", place.line + 1, place.utf16_column + 1, label.trim())
+            })
+            .collect()
     }
 
     /// The hover card's or parameter info's text while one is open.
@@ -612,10 +636,33 @@ impl CodeEditor {
             self.assist.token_task = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(pause).await;
                 let params = json!({ "textDocument": { "uri": uri }, "range": range.to_json() });
-                let Ok(answer) = this.update(cx, |_, cx| ask(&server, "textDocument/semanticTokens/range", params, cx))
-                else {
+                let Ok((answer, hinted)) = this.update(cx, |_, cx| {
+                    let hinted = ask(&server, "textDocument/inlayHint", params.clone(), cx);
+                    (ask(&server, "textDocument/semanticTokens/range", params, cx), hinted)
+                }) else {
                     return;
                 };
+                let hint_text = text.clone();
+                let hints = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let answer = hinted.await?;
+                        let mut hints: Vec<(usize, String)> = lsp::inlay_hints(&answer)
+                            .into_iter()
+                            .map(|h| {
+                                let label = format!(
+                                    "{}{}{}",
+                                    if h.pad_left { " " } else { "" },
+                                    h.label,
+                                    if h.pad_right { " " } else { "" }
+                                );
+                                (offset(&hint_text, h.at), label)
+                            })
+                            .collect();
+                        hints.sort_by_key(|(at, _)| *at);
+                        Some(hints)
+                    })
+                    .await;
                 let legend = rsharp_lsp::token_legend(&server);
                 let tokens = cx
                     .background_executor()
@@ -633,10 +680,16 @@ impl CodeEditor {
                     })
                     .await;
                 let _ = this.update(cx, |e, cx| {
-                    if let Some(tokens) = tokens.filter(|_| e.version == version) {
-                        e.assist.tokens = tokens;
-                        cx.notify();
+                    if e.version != version {
+                        return;
                     }
+                    if let Some(tokens) = tokens {
+                        e.assist.tokens = tokens;
+                    }
+                    if let Some(hints) = hints {
+                        e.assist.hints = hints;
+                    }
+                    cx.notify();
                 });
             }));
         }

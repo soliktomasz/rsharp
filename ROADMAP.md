@@ -92,8 +92,9 @@ Built: the protocol's answers made plain (`rsharp-lsp`'s `protocol`, checked aga
 tokens for the lines on screen; completion, parameter info, Quick Documentation and the hover card, usage
 highlights; context actions and quick fixes; Rename across files; Reformat Code; Go to Declaration (and
 Cmd+click), Implementation and Type Declaration; Find Usages into a Find window; Back and Forward, Last Edit
-Location, Recent Files, Go to File, Type and Symbol, and Find in Files. Left: Host and Roslyn.Extension
-(decision 1), inlay hints, the Problems window's Solution and Toolset tabs, a type's file renamed with it, Base
+Location, Recent Files, Go to File, Type and Symbol, and Find in Files; inlay hints; Problems' Solution tab (with
+solution-wide analysis turned on) and Toolset tab, and project-load problems in the status bar. Left: Host and
+Roslyn.Extension (decision 1), a type's file renamed with it, Base
 and Derived, the named refactorings and their dialogs, live templates, the framework switcher, Search Everywhere, Recent
 Locations, Find in Files' scopes and Replace in Files, and the MCP server.
 - **Roslyn in full:** Passenger's `Host` for design-time builds and `Roslyn.Extension` loaded with `--extension`, so

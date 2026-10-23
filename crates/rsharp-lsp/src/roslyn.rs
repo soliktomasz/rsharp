@@ -74,6 +74,9 @@ fn client_capabilities() -> Value {
             "workspaceEdit": { "documentChanges": true, "resourceOperations": ["create", "rename", "delete"] },
             "didChangeWatchedFiles": { "dynamicRegistration": false },
             "symbol": {},
+            "semanticTokens": { "refreshSupport": true },
+            "inlayHint": { "refreshSupport": true },
+            "diagnostics": { "refreshSupport": true },
         },
         "textDocument": {
             "synchronization": { "didSave": true },
@@ -143,6 +146,59 @@ pub fn says_projects_loaded(event: &ServerEvent) -> bool {
     }
 }
 
+/// The options that turn on Rider's solution-wide analysis: the compiler's and the analyzers' problems for every file,
+/// not only the open ones, so `workspace/diagnostic` answers for the whole solution.
+pub const SOLUTION_WIDE: &[&str] = &["dotnet_compiler_diagnostics_scope", "dotnet_analyzer_diagnostics_scope"];
+
+/// Roslyn's option for a configuration section ("csharp|inlay_hints.csharp_enable_inlay_hints_for_types"), by
+/// its last name: the inlay hints Passenger turns on, as Rider shows them, and a project's files kept in the project;
+/// null leaves the rest at Roslyn's default.
+pub fn option(section: &str) -> Value {
+    let name = section.rsplit(['.', '|']).next().unwrap_or(section);
+    match name {
+        "dotnet_enable_inlay_hints_for_parameters"
+        | "dotnet_enable_inlay_hints_for_literal_parameters"
+        | "dotnet_enable_inlay_hints_for_indexer_parameters"
+        | "dotnet_suppress_inlay_hints_for_parameters_that_differ_only_by_suffix"
+        | "dotnet_suppress_inlay_hints_for_parameters_that_match_method_intent"
+        | "dotnet_suppress_inlay_hints_for_parameters_that_match_argument_name"
+        | "csharp_enable_inlay_hints_for_types"
+        | "csharp_enable_inlay_hints_for_implicit_variable_types"
+        | "csharp_enable_inlay_hints_for_lambda_parameter_types"
+        | "csharp_enable_inlay_hints_for_implicit_object_creation" => Value::Bool(true),
+        "dotnet_enable_inlay_hints_for_object_creation_parameters"
+        | "dotnet_enable_inlay_hints_for_other_parameters"
+        | "csharp_enable_inlay_hints_for_collection_expressions" => Value::Bool(false),
+        // A .cs file a project could hold is the project's, never a file-based program of its own (.NET 10's `dotnet
+        // run file.cs`): opened while its project loads, Roslyn otherwise makes it one, cut off from the project.
+        "dotnet_enable_file_based_programs_when_ambiguous" => Value::Bool(false),
+        _ => Value::Null,
+    }
+}
+
+/// A project Roslyn could not load whole, from a line of its log ("Warning while loading /a/B.csproj: …"): the
+/// project, whether it is an error, and what was wrong.
+pub fn load_problem(line: &str) -> Option<(PathBuf, bool, String)> {
+    // Roslyn's log lines may lead with bracketed tags ("[LanguageServerProjectLoader]").
+    let mut line = line.trim_start();
+    while let Some(rest) = line.strip_prefix('[').and_then(|l| l.split_once(']')).map(|(_, rest)| rest) {
+        line = rest.trim_start();
+    }
+    let (error, rest) = if let Some(rest) = line.strip_prefix("Error while loading ") {
+        (true, rest)
+    } else {
+        (false, line.strip_prefix("Warning while loading ")?)
+    };
+    let (path, message) = rest.split_once(": ")?;
+    let path = path.trim();
+    if !path.ends_with("proj") && !path.ends_with(".cs") {
+        return None;
+    }
+    // MSBuild ends a problem with the project it came from, which the line named already.
+    let message = message.trim().strip_suffix(path).unwrap_or(message).trim();
+    Some((PathBuf::from(path), error, message.split_whitespace().collect::<Vec<_>>().join(" ")))
+}
+
 /// The kinds Roslyn names its semantic tokens by, in its legend's order.
 pub fn token_legend(server: &LanguageServer) -> Vec<String> {
     server.capabilities["semanticTokensProvider"]["legend"]["tokenTypes"]
@@ -151,4 +207,30 @@ pub fn token_legend(server: &LanguageServer) -> Vec<String> {
         .flatten()
         .filter_map(|t| t.as_str().map(str::to_string))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_load_problem_is_read_from_roslyns_log_line_without_its_tags_or_its_project_again() {
+        let line = "[LanguageServerProjectLoader] Error while loading /a/App.csproj: The SDK 'Nope' was not found.  /a/App.csproj";
+        assert_eq!(
+            load_problem(line),
+            Some((PathBuf::from("/a/App.csproj"), true, "The SDK 'Nope' was not found.".to_string()))
+        );
+        assert_eq!(load_problem("Warning while loading /a/B.fsproj: old").map(|p| p.1), Some(false));
+        assert_eq!(load_problem("Successfully completed load of /a/App.csproj"), None);
+    }
+
+    #[test]
+    fn roslyns_inlay_hint_options_are_answered_and_the_rest_left_to_it() {
+        assert_eq!(option("csharp|inlay_hints.csharp_enable_inlay_hints_for_types"), Value::Bool(true));
+        assert_eq!(
+            option("visual_basic|inlay_hints.dotnet_enable_inlay_hints_for_other_parameters"),
+            Value::Bool(false)
+        );
+        assert_eq!(option("projects.dotnet_binary_log_path"), Value::Null);
+    }
 }

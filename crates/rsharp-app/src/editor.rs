@@ -204,7 +204,7 @@ struct Layout {
     char_width: Pixels,
     viewport: Bounds<Pixels>,
     first_row: usize,
-    lines: Vec<ShapedLine>,
+    lines: Vec<Shaped>,
     /// The gutter's chevrons and the folded regions' placeholders, each with the fold it stands for.
     chevrons: Vec<(Bounds<Pixels>, FoldRegion)>,
     placeholders: Vec<(Bounds<Pixels>, FoldRegion)>,
@@ -1078,7 +1078,7 @@ struct EditorElement {
 }
 
 struct Prepainted {
-    lines: Vec<ShapedLine>,
+    lines: Vec<Shaped>,
     rows: Vec<Row>,
     first_row: usize,
     text_origin: Point<Pixels>,
@@ -1213,7 +1213,15 @@ impl Element for EditorElement {
             for row in &shown {
                 let content: String = text.byte_slice(row.start..row.end).to_string();
                 let runs = runs_for(&content, row.start, &colours, &code_font);
-                lines.push(window.text_system().shape_line(content.into(), font_size, &runs, None));
+                // The hints on the row, a wrapped row's last place being the next row's first.
+                let hints: Vec<(usize, &str)> = editor
+                    .assist
+                    .hints
+                    .iter()
+                    .filter(|(at, _)| (row.start..row.end).contains(at) || (*at == row.end && row.last))
+                    .map(|(at, label)| (at - row.start, label.as_str()))
+                    .collect();
+                lines.push(Shaped::new(&content, runs, &hints, font_size, &code_font, window));
                 let number = (row.first && settings.show_line_numbers).then(|| {
                     let number = (row.line + 1).to_string();
                     let colour = if caret_lines.binary_search(&row.line).is_ok() {
@@ -1316,6 +1324,13 @@ impl Element for EditorElement {
                         colour,
                     ));
                 };
+                for (x0, x1) in shaped.hint_spans() {
+                    let chip = Bounds::from_corners(
+                        point(left + x0 - px(1.), top + px(3.)),
+                        point(left + x1 + px(1.), top + line_height - px(3.)),
+                    );
+                    window.paint_quad(fill(chip, theme::editor::inlay_hint_background()).corner_radii(px(3.)));
+                }
                 for m in matches.iter().filter(|m| m.start <= end && m.end >= start && !m.is_empty()) {
                     let (x0, x1) =
                         (shaped.x_for_index(m.start.max(start) - start), shaped.x_for_index(m.end.min(end) - start));
@@ -1435,6 +1450,103 @@ impl Element for EditorElement {
     }
 }
 
+/// A row as shaped: its text with the inlay hints set in it, and where each hint went (its byte in the row and
+/// its length), so a place in the text finds its place on screen past them; the line's own fields and painting are
+/// the shaped line's.
+struct Shaped {
+    line: ShapedLine,
+    hints: Vec<(usize, usize)>,
+}
+
+impl std::ops::Deref for Shaped {
+    type Target = ShapedLine;
+    fn deref(&self) -> &ShapedLine {
+        &self.line
+    }
+}
+
+impl Shaped {
+    fn new(
+        content: &str,
+        runs: Vec<TextRun>,
+        hints: &[(usize, &str)],
+        size: Pixels,
+        font: &gpui::Font,
+        window: &mut Window,
+    ) -> Self {
+        if hints.is_empty() {
+            let line = window.text_system().shape_line(content.to_string().into(), size, &runs, None);
+            return Self { line, hints: Vec::new() };
+        }
+        let colour: Hsla = theme::editor::inlay_hint().into();
+        let (mut shown, mut shown_runs, mut placed) = (String::new(), Vec::new(), Vec::new());
+        let mut runs = runs.into_iter();
+        let mut current = runs.next();
+        let mut at = 0;
+        for &(hint_at, label) in hints.iter().chain(std::iter::once(&(content.len(), ""))) {
+            // The text up to the hint, its runs cut where the hint falls.
+            while at < hint_at {
+                let Some(mut run) = current.take() else { break };
+                let take = run.len.min(hint_at - at);
+                shown_runs.push(TextRun { len: take, ..run.clone() });
+                run.len -= take;
+                at += take;
+                current = if run.len > 0 { Some(run) } else { runs.next() };
+            }
+            shown.push_str(&content[shown.len() - placed.iter().map(|(_, l)| l).sum::<usize>()..hint_at]);
+            if !label.is_empty() {
+                placed.push((hint_at, label.len()));
+                shown.push_str(label);
+                shown_runs.push(run(label.len(), colour, font));
+            }
+        }
+        let line = window.text_system().shape_line(shown.into(), size, &shown_runs, None);
+        Self { line, hints: placed }
+    }
+
+    /// Where a byte of the row is drawn: past every hint before it or at it.
+    fn x_for_index(&self, index: usize) -> Pixels {
+        let past: usize = self.hints.iter().filter(|(at, _)| *at <= index).map(|(_, len)| len).sum();
+        self.line.x_for_index(index + past)
+    }
+
+    /// The byte of the row a place on the shaped line stands for; a place inside a hint is the hint's own byte.
+    fn text_index(&self, shown: usize) -> usize {
+        let mut past = 0;
+        for &(at, len) in &self.hints {
+            if shown < at + past {
+                break;
+            }
+            if shown < at + past + len {
+                return at;
+            }
+            past += len;
+        }
+        shown - past
+    }
+
+    fn closest_index_for_x(&self, x: Pixels) -> usize {
+        self.text_index(self.line.closest_index_for_x(x))
+    }
+
+    fn index_for_x(&self, x: Pixels) -> Option<usize> {
+        self.line.index_for_x(x).map(|i| self.text_index(i))
+    }
+
+    /// Each hint's span on screen, for its chip.
+    fn hint_spans(&self) -> Vec<(Pixels, Pixels)> {
+        let mut past = 0;
+        self.hints
+            .iter()
+            .map(|&(at, len)| {
+                let span = (self.line.x_for_index(at + past), self.line.x_for_index(at + past + len));
+                past += len;
+                span
+            })
+            .collect()
+    }
+}
+
 fn run(len: usize, color: Hsla, font: &gpui::Font) -> TextRun {
     TextRun { len, font: font.clone(), color, background_color: None, underline: None, strikethrough: None }
 }
@@ -1462,4 +1574,18 @@ fn runs_for(content: &str, line_start: usize, colours: &[(Range<usize>, Hsla)], 
         runs.push(run(content.len() - at, plain, font));
     }
     runs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_place_on_a_hinted_line_is_its_byte_past_the_hints_before_it() {
+        // "var text": a 7-byte hint ("string ") set in before `text`, at byte 4.
+        let shaped = Shaped { line: ShapedLine::default(), hints: vec![(4, 7)] };
+        assert_eq!(shaped.text_index(2), 2, "a place before the hint moved");
+        assert_eq!(shaped.text_index(6), 4, "a place inside the hint is not the hint's own byte");
+        assert_eq!(shaped.text_index(12), 5, "a place past the hint is not shifted back by its length");
+    }
 }

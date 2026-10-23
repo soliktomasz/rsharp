@@ -125,6 +125,40 @@ pub struct CodeAction {
     pub raw: Value,
 }
 
+/// A problem the server found in a file: where, how bad (an error, else a warning) and what.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Problem {
+    pub span: Span,
+    pub error: bool,
+    pub message: String,
+}
+
+/// A diagnostic report's errors and warnings, the rest (hints, suggestions) left out as Rider's Problems leaves them.
+pub fn problems(items: &Value) -> Vec<Problem> {
+    items
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|d| d["severity"].as_u64().is_some_and(|s| s <= 2))
+        .map(|d| Problem {
+            span: Span::from(&d["range"]),
+            error: d["severity"] == 1,
+            message: d["message"].as_str().unwrap_or_default().to_string(),
+        })
+        .collect()
+}
+
+/// A workspace diagnostic report: each file's problems, files with none left out.
+pub fn workspace_problems(answer: &Value) -> Vec<(PathBuf, Vec<Problem>)> {
+    answer["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|report| Some((path_of(&report["uri"])?, problems(&report["items"]))))
+        .filter(|(_, found)| !found.is_empty())
+        .collect()
+}
+
 /// A symbol `workspace/symbol` found: its name, what holds it, its kind and where it is.
 #[derive(Clone, Debug)]
 pub struct Symbol {

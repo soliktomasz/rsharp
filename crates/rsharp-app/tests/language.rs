@@ -5,7 +5,7 @@
 mod support;
 
 use gpui::{Entity, TestAppContext, VisualTestContext};
-use rsharp_app::window::MainWindow;
+use rsharp_app::window::{MainWindow, ProblemsTab};
 use std::time::{Duration, Instant};
 use support::Run;
 
@@ -14,10 +14,14 @@ const GREETER: &str =
     "namespace Demo;\n\npublic class Greeter\n{\n    public string Greet(string name) => \"Hello \" + name;\n}\n";
 const PROGRAM: &str = "namespace Demo;\n\npublic static class Program\n{\n    public static void Main()\n    {\n        var greeter = new Greeter();\n        System.Console.WriteLine(greeter.Greet(\"you\"));\n    }\n}\n";
 
+const BROKEN: &str = "namespace Demo;\n\nclass Broken\n{\n    int M() => \"no\";\n}\n";
+
 /// Waits, in real time, for what Roslyn does on threads of its own to reach the window; false after three minutes.
 fn wait_for(cx: &mut VisualTestContext, until: impl Fn(&mut VisualTestContext) -> bool) -> bool {
     let deadline = Instant::now() + Duration::from_secs(180);
     while Instant::now() < deadline {
+        // The editor's pauses (before it asks for colours and hints) pass in the test's own time.
+        cx.executor().advance_clock(Duration::from_millis(50));
         cx.run_until_parked();
         if until(cx) {
             return true;
@@ -41,7 +45,10 @@ fn declaration_completion_rename_and_usages_work_against_roslyn(cx: &mut TestApp
         eprintln!("skipped: Roslyn's language server is not installed");
         return;
     }
-    let run = Run::new("language", &[("Demo.csproj", PROJECT), ("Greeter.cs", GREETER), ("Program.cs", PROGRAM)]);
+    let run = Run::new(
+        "language",
+        &[("Demo.csproj", PROJECT), ("Greeter.cs", GREETER), ("Program.cs", PROGRAM), ("Broken.cs", BROKEN)],
+    );
     let (main, cx) = run.window(cx);
     cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
     // The caret on `Greeter` in `new Greeter()`.
@@ -72,8 +79,9 @@ fn declaration_completion_rename_and_usages_work_against_roslyn(cx: &mut TestApp
     };
     if !wait_for(cx, opened) {
         panic!(
-            "Go to Declaration did not open Greeter.cs; the status bar says {:?}",
-            main.read_with(cx, |m, _| m.said().map(str::to_string))
+            "Go to Declaration did not open Greeter.cs; the status bar says {:?}; Roslyn's log ends:\n{}",
+            main.read_with(cx, |m, _| m.said().map(str::to_string)),
+            main.read_with(cx, |m, _| m.roslyn_said().join("\n"))
         );
     }
     let caret = main.read_with(cx, |m, cx| m.editor().unwrap().read(cx).caret());
@@ -129,5 +137,24 @@ fn declaration_completion_rename_and_usages_work_against_roslyn(cx: &mut TestApp
     wait(cx, "Go to Symbol finding the method", |cx| {
         cx.executor().advance_clock(Duration::from_millis(200));
         listed(cx).iter().any(|l| l.starts_with("Welcome"))
+    });
+
+    // With solution-wide analysis turned on, Problems' Solution tab lists the error in a file never opened.
+    cx.simulate_keystrokes("escape");
+    main.update(cx, |m, cx| {
+        m.show_problems_tab(ProblemsTab::Solution, cx);
+        m.set_solution_wide(true, cx);
+    });
+    wait(cx, "the Solution tab listing Broken.cs's error", |cx| {
+        main.read_with(cx, |m, cx| m.problems_listed(ProblemsTab::Solution, cx))
+            .iter()
+            .any(|p| p.starts_with("Broken.cs:5"))
+    });
+
+    // The parameter's name before the call's literal argument, as an inlay hint.
+    main.update_in(cx, |main, window, cx| main.open_file(&run.folder.join("Program.cs"), Some((0, 0)), window, cx));
+    let editor = main.read_with(cx, |m, _| m.editor().unwrap());
+    wait(cx, "the literal argument's parameter hint", |cx| {
+        editor.read_with(cx, |e, _| e.inlay_hints()).iter().any(|h| h.starts_with("8:") && h.ends_with(" name:"))
     });
 }

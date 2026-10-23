@@ -333,8 +333,8 @@ impl Buffer {
         let version = self.document.version();
         self.checking = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(after).await;
-            let answer = server.request("textDocument/diagnostic", json!({ "textDocument": { "uri": uri } }));
-            let Ok(Ok(report)) = cx.background_executor().spawn(async move { answer.recv() }).await else { return };
+            let answer = server.ask("textDocument/diagnostic", json!({ "textDocument": { "uri": uri } }));
+            let Ok(report) = answer.await else { return };
             let _ = this.update(cx, |buffer, cx| {
                 if buffer.document.version() != version {
                     return;

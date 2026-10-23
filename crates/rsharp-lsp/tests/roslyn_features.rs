@@ -55,6 +55,7 @@ fn roslyn_answers_what_the_editor_asks_in_the_form_the_editor_reads() {
     std::fs::create_dir_all(&folder).unwrap();
     std::fs::write(folder.join("Demo.csproj"), r#"<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><OutputType>Exe</OutputType><Nullable>enable</Nullable></PropertyGroup></Project>"#).unwrap();
     std::fs::write(folder.join("Program.cs"), PROGRAM).unwrap();
+    std::fs::write(folder.join("Broken.cs"), "namespace Demo;\n\nclass Broken { int M() => \"no\"; }\n").unwrap();
     let folder = rsharp_core::paths::canonical(&folder);
     let file = folder.join("Program.cs");
     let uri = rsharp_core::paths::to_uri(&file);
@@ -163,8 +164,36 @@ fn roslyn_answers_what_the_editor_asks_in_the_form_the_editor_reads() {
     );
 
     // Go to Symbol finds the class by name.
-    let found = symbols(&ask(&server, "workspace/symbol", json!({ "query": "Greeter" })));
-    assert!(found.iter().any(|s| s.name == "Greeter" && s.location.path == file), "Go to Symbol found {found:?}");
+    // Roslyn indexes the project's symbols after it says it has loaded, so the query is asked again meanwhile.
+    let has = |found: &[Symbol]| found.iter().any(|s| s.name == "Greeter" && s.location.path == file);
+    let mut found = Vec::new();
+    for _ in 0..20 {
+        found = symbols(&ask(&server, "workspace/symbol", json!({ "query": "Greeter" })));
+        if has(&found) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert!(has(&found), "Go to Symbol found {found:?}");
+
+    // Inlay hints: the local's type before its name (`var string? text`), the parameter's name before a literal argument.
+    let whole = Span { start: Point::new(0, 0), end: find("}\n}", 0) };
+    let hints = inlay_hints(&ask(
+        &server,
+        "textDocument/inlayHint",
+        json!({ "textDocument": { "uri": uri }, "range": whole.to_json() }),
+    ));
+    let at = |p: Point| hints.iter().filter(|h| h.at == p).map(|h| h.label.trim().to_string()).collect::<Vec<_>>();
+    assert_eq!(at(find("text = greeter", 0)), ["string?"], "the local's type hint; all hints: {hints:?}");
+    assert_eq!(at(find("\"you\"", 0)), ["name:"], "the literal argument's parameter hint; all hints: {hints:?}");
+
+    // The Solution's problems, with solution-wide analysis on: a file not open, with its error.
+    for option in SOLUTION_WIDE {
+        server.set_option(option, json!("fullSolution"));
+    }
+    let found = workspace_problems(&ask(&server, "workspace/diagnostic", json!({ "previousResultIds": [] })));
+    let broken = found.iter().find(|(p, _)| p.ends_with("Broken.cs"));
+    assert!(broken.is_some_and(|(_, p)| p.iter().any(|p| p.error)), "the solution's problems were {found:?}");
 
     drop(server);
     let _ = std::fs::remove_dir_all(&folder);

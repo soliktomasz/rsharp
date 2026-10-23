@@ -81,6 +81,14 @@ enum ServerState {
     Failed(String),
 }
 
+/// Problems' tabs, as Rider's: the shown file's, the whole solution's, and the toolset's (projects that would not load).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ProblemsTab {
+    File,
+    Solution,
+    Toolset,
+}
+
 /// A place the caret was: its file, line and UTF-16 column, from 0.
 // shortcut: a place keeps its line and column, so an edit above it since moves it off its code; carry it through
 // the buffer's changes, as Passenger's NavigationHistory does, once that is missed.
@@ -149,6 +157,16 @@ pub struct MainWindow {
     said: Option<SharedString>,
     find_action: Option<Entity<FindActionPopup>>,
     go_to: Option<Entity<crate::goto::GoToPopup>>,
+    problems_tab: ProblemsTab,
+    /// Roslyn's errors and warnings in every file of the solution, as last asked.
+    solution_problems: Vec<(PathBuf, Vec<rsharp_lsp::Problem>)>,
+    solution_task: Option<Task<()>>,
+    /// Rider's solution-wide analysis: every file analysed, not only the open ones; off until turned on, as it costs.
+    solution_wide: bool,
+    /// Roslyn's last log messages, every level, for a failure to say where Roslyn was.
+    roslyn_said: std::collections::VecDeque<String>,
+    /// The projects Roslyn could not load whole: each project, whether it is an error, and what was wrong.
+    load_problems: Vec<(PathBuf, bool, String)>,
     /// Back and Forward's places, the latest last.
     back: Vec<Spot>,
     forward: Vec<Spot>,
@@ -195,6 +213,12 @@ impl MainWindow {
             said: None,
             find_action: None,
             go_to: None,
+            problems_tab: ProblemsTab::File,
+            solution_problems: Vec::new(),
+            solution_task: None,
+            solution_wide: false,
+            roslyn_said: Default::default(),
+            load_problems: Vec::new(),
             back: Vec::new(),
             forward: Vec::new(),
             edits: Vec::new(),
@@ -223,6 +247,7 @@ impl MainWindow {
         self.branch = current_branch(&folder);
         self.expanded = std::iter::once(folder.clone()).chain(kept.expanded.iter().map(|p| folder.join(p))).collect();
         self.dock = kept.dock.clone().unwrap_or_else(|| store.read::<DockLayout>()).complete().clamped();
+        self.solution_wide = kept.solution_wide;
         self.workspace = Some(workspace);
         self.selected = Some(0);
         self.rebuild_rows();
@@ -268,7 +293,10 @@ impl MainWindow {
             self.expanded.iter().filter_map(|p| relative(p)).filter(|p| !p.as_os_str().is_empty()).collect();
         expanded.sort();
         let store = store(cx);
-        store.write_for(folder, &FolderState { tabs, active, expanded, dock: Some(self.dock.clone()) });
+        store.write_for(
+            folder,
+            &FolderState { tabs, active, expanded, dock: Some(self.dock.clone()), solution_wide: self.solution_wide },
+        );
         store.write(&self.dock);
     }
 
@@ -329,6 +357,11 @@ impl MainWindow {
                 }
             };
             let _ = this.update(cx, |w, cx| {
+                if w.solution_wide {
+                    for option in rsharp_lsp::SOLUTION_WIDE {
+                        server.set_option(option, serde_json::json!("fullSolution"));
+                    }
+                }
                 w.server = Some(server.clone());
                 w.server_state = ServerState::Loading("Loading solution".into());
                 let editors: Vec<_> = w.area.editors().cloned().collect();
@@ -354,6 +387,14 @@ impl MainWindow {
     fn on_server_event(&mut self, event: ServerEvent, cx: &mut Context<Self>) {
         if rsharp_lsp::says_projects_loaded(&event) && !self.projects_loaded {
             self.projects_loaded(cx);
+        }
+        if let ServerEvent::Notification { method, params } = &event
+            && method == "window/logMessage"
+        {
+            if self.roslyn_said.len() == 50 {
+                self.roslyn_said.pop_front();
+            }
+            self.roslyn_said.push_back(params["message"].as_str().unwrap_or_default().chars().take(300).collect());
         }
         match event {
             ServerEvent::Notification { method, params } => match method.as_str() {
@@ -390,6 +431,19 @@ impl MainWindow {
                         (None, false) => ServerState::Loading("Loading solution".into()),
                     };
                 }
+                // Roslyn's answers about the files changed (its load went on, a file on disk changed): asked again.
+                "workspace/semanticTokens/refresh" | "workspace/inlayHint/refresh" | "workspace/diagnostic/refresh" => {
+                    let editors: Vec<_> = self.area.editors().cloned().collect();
+                    for editor in editors {
+                        if method == "workspace/diagnostic/refresh" {
+                            self.refresh_solution_problems(cx);
+                            editor.read(cx).buffer.clone().update(cx, |b, cx| b.check(std::time::Duration::ZERO, cx));
+                        } else {
+                            editor.update(cx, |e, cx| e.server_ready(cx));
+                        }
+                    }
+                }
+                "window/logMessage" if self.read_load_report(params["message"].as_str().unwrap_or_default(), cx) => {}
                 "window/logMessage" if params["type"].as_u64().is_some_and(|t| t <= 2) => {
                     log::warn!(target: "roslyn", "{}", params["message"].as_str().unwrap_or_default());
                 }
@@ -409,15 +463,129 @@ impl MainWindow {
 
     /// Roslyn has the projects: each open file's problems and colours asked again.
     fn projects_loaded(&mut self, cx: &mut Context<Self>) {
+        self.refresh_solution_problems(cx);
         log::info!(target: "roslyn", "projects loaded");
         self.projects_loaded = true;
         if self.progress.is_empty() {
             self.server_state = ServerState::Ready;
         }
+        self.reopen_files(cx);
+    }
+
+    /// Every open file opened in Roslyn again, its problems and colours asked again: a file opened while a project
+    /// was loading sits in Roslyn's stand-in project, and with the whole solution analysed it stays there until it
+    /// is opened again.
+    fn reopen_files(&mut self, cx: &mut Context<Self>) {
+        let server = self.server.clone();
         let editors: Vec<_> = self.area.editors().cloned().collect();
         for editor in editors {
-            editor.read(cx).buffer.clone().update(cx, |b, cx| b.check(std::time::Duration::ZERO, cx));
+            editor.read(cx).buffer.clone().update(cx, |b, cx| {
+                if let Some(server) = server.clone().filter(|_| is_csharp(&b.path)) {
+                    b.detach_server();
+                    b.attach_server(server, cx);
+                }
+                b.check(std::time::Duration::ZERO, cx)
+            });
             editor.update(cx, |e, cx| e.server_ready(cx));
+        }
+    }
+
+    /// A line of Roslyn's log that says how a project loaded: a problem kept for Problems' Toolset, or a project
+    /// loaded whole, its problems gone. Roslyn's own stand-in for files no project holds is never one.
+    fn read_load_report(&mut self, line: &str, cx: &mut Context<Self>) -> bool {
+        if line.contains("Canonical.csproj") {
+            return false;
+        }
+        if let Some((project, error, message)) = rsharp_lsp::load_problem(line) {
+            log::warn!(target: "roslyn", "{line}");
+            let project = rsharp_core::paths::canonical(&project);
+            self.load_problems.retain(|(p, _, m)| !(*p == project && *m == message));
+            self.load_problems.push((project, error, message));
+            return true;
+        }
+        if let Some(loaded) = line.split("Successfully completed load of ").nth(1) {
+            let loaded = rsharp_core::paths::canonical(Path::new(loaded.trim()));
+            self.load_problems.retain(|(p, _, _)| *p != loaded);
+            // A project, not a file loaded as a program of its own, which reopening would load again.
+            if loaded.extension().is_some_and(|e| e.to_string_lossy().ends_with("proj")) {
+                self.reopen_files(cx);
+            }
+        }
+        false
+    }
+
+    /// Asks Roslyn for the whole solution's problems, for Problems' Solution tab.
+    fn refresh_solution_problems(&mut self, cx: &mut Context<Self>) {
+        let Some(server) = self.server.clone().filter(|_| self.solution_wide) else { return };
+        let answer =
+            crate::language::ask(&server, "workspace/diagnostic", serde_json::json!({ "previousResultIds": [] }), cx);
+        self.solution_task = Some(cx.spawn(async move |this, cx| {
+            let Some(answer) = answer.await else { return };
+            let found = cx.background_executor().spawn(async move { rsharp_lsp::workspace_problems(&answer) }).await;
+            let _ = this.update(cx, |w, cx| {
+                w.solution_problems = found;
+                w.solution_problems.sort_by(|a, b| a.0.cmp(&b.0));
+                cx.notify();
+            });
+        }));
+    }
+
+    /// Turns solution-wide analysis on or off: Roslyn told, and the Solution tab asked again or emptied.
+    pub fn set_solution_wide(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.solution_wide = on;
+        if let Some(server) = &self.server {
+            let scope = if on { serde_json::json!("fullSolution") } else { serde_json::Value::Null };
+            for option in rsharp_lsp::SOLUTION_WIDE {
+                server.set_option(option, scope.clone());
+            }
+        }
+        self.solution_problems.clear();
+        if on {
+            self.refresh_solution_problems(cx);
+        }
+        self.save_state(cx);
+        cx.notify();
+    }
+
+    /// The Problems tab shown, as a test or a click chooses it.
+    pub fn show_problems_tab(&mut self, tab: ProblemsTab, cx: &mut Context<Self>) {
+        self.problems_tab = tab;
+        if tab == ProblemsTab::Solution {
+            self.refresh_solution_problems(cx);
+        }
+        cx.notify();
+    }
+
+    /// What a Problems tab lists, each as "file:line message", as a person reads it.
+    pub fn problems_listed(&self, tab: ProblemsTab, cx: &App) -> Vec<String> {
+        let name = |p: &Path| p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        match tab {
+            ProblemsTab::File => self
+                .active_editor()
+                .map(|e| {
+                    let buffer = e.read(cx).buffer.read(cx);
+                    buffer
+                        .diagnostics
+                        .iter()
+                        .map(|d| {
+                            format!(
+                                "{}:{} {}",
+                                name(&buffer.path),
+                                buffer.document.position(d.range.start).line + 1,
+                                d.message
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            ProblemsTab::Solution => self
+                .solution_problems
+                .iter()
+                .flat_map(|(path, found)| {
+                    found.iter().map(move |p| format!("{}:{} {}", name(path), p.span.start.line + 1, p.message))
+                })
+                .collect(),
+            ProblemsTab::Toolset => self.load_problems.iter().map(|(p, _, m)| format!("{} {m}", name(p))).collect(),
         }
     }
 
@@ -1088,6 +1256,11 @@ impl MainWindow {
         }
     }
 
+    /// Roslyn's last log messages, the latest last.
+    pub fn roslyn_said(&self) -> Vec<String> {
+        self.roslyn_said.iter().cloned().collect()
+    }
+
     /// Whether Roslyn is starting or loading the projects.
     pub fn server_busy(&self) -> bool {
         matches!(self.server_state, ServerState::Starting | ServerState::Loading(_))
@@ -1280,6 +1453,7 @@ impl Render for MainWindow {
                         }
                         w.said =
                             editor.update(cx, |e, cx| e.save(cx)).err().map(|e| format!("Could not save: {e}").into());
+                        w.refresh_solution_problems(cx);
                         cx.notify();
                     }
                 }))
@@ -1716,8 +1890,170 @@ impl MainWindow {
             )
     }
 
-    /// The shown file's problems, as Problems' File tab: each a row that goes to its place.
+    /// Problems: its tabs, and the one chosen.
     fn problems_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let solution_count: usize = self.solution_problems.iter().map(|(_, p)| p.len()).sum();
+        let tab = |id: &'static str, title: String, which: ProblemsTab, cx: &mut Context<Self>| {
+            let chosen = self.problems_tab == which;
+            div()
+                .id(id)
+                .debug_selector(move || format!("problems tab: {id}"))
+                .h(px(26.))
+                .px(px(10.))
+                .rounded(px(5.))
+                .flex()
+                .items_center()
+                .when(chosen, |d| d.bg(theme::tab_selected()))
+                .when(!chosen, |d| d.text_color(theme::text_muted()).hover(|d| d.bg(theme::button_hover())))
+                .child(title)
+                .on_click(cx.listener(move |w, _: &ClickEvent, _, cx| w.show_problems_tab(which, cx)))
+        };
+        let titled = |name: &str, n: usize| if n == 0 { name.to_string() } else { format!("{name} {n}") };
+        let body = match self.problems_tab {
+            ProblemsTab::File => self.file_problems(cx).into_any_element(),
+            ProblemsTab::Solution => self.solution_problems_view(cx).into_any_element(),
+            ProblemsTab::Toolset => self.toolset_problems().into_any_element(),
+        };
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .gap(px(4.))
+                    .px(px(8.))
+                    .pb(px(4.))
+                    .child(tab("file", "File".into(), ProblemsTab::File, cx))
+                    .child(tab("solution", titled("Solution", solution_count), ProblemsTab::Solution, cx))
+                    .child(tab("toolset", titled("Toolset", self.load_problems.len()), ProblemsTab::Toolset, cx)),
+            )
+            .child(body)
+    }
+
+    /// One problem's row, going to its place when clicked.
+    fn problem_row(
+        &self,
+        id: (&'static str, usize),
+        error: bool,
+        message: String,
+        place: String,
+        go: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        div()
+            .id(id)
+            .h(px(ROW_HEIGHT))
+            .px(px(8.))
+            .rounded(px(4.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .hover(|d| d.bg(theme::row_hover()))
+            .child(icon(if error { "error" } else { "warning" }, 16.))
+            .child(div().truncate().child(message))
+            .child(div().flex_none().text_color(theme::text_secondary()).child(place))
+            .on_click(cx.listener(move |w, _: &ClickEvent, window, cx| go(w, window, cx)))
+    }
+
+    /// The whole solution's problems, by file, as Problems' Solution tab.
+    fn solution_problems_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.solution_wide {
+            return div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(8.))
+                .track_focus(&self.problems_focus)
+                .child(div().text_color(theme::text_secondary()).child("Solution-wide analysis is off."))
+                .child(
+                    widget("solution-wide-on")
+                        .debug_selector(|| "turn on solution-wide analysis".into())
+                        .text_color(theme::accent())
+                        .child("Turn On Solution-Wide Analysis")
+                        .on_click(cx.listener(|w, _: &ClickEvent, _, cx| w.set_solution_wide(true, cx))),
+                )
+                .into_any_element();
+        }
+        if self.solution_problems.is_empty() {
+            let said = if self.server.is_some() { "No problems in the solution." } else { "Roslyn is not running." };
+            return empty_text(said).track_focus(&self.problems_focus).into_any_element();
+        }
+        let mut rows = Vec::new();
+        for (path, found) in &self.solution_problems {
+            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            rows.push(
+                div()
+                    .h(px(ROW_HEIGHT))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(icon(file_icon(&name), 16.))
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child(name))
+                    .child(div().text_color(theme::text_secondary()).child(count(found.len(), "problem")))
+                    .into_any_element(),
+            );
+            for problem in found {
+                let (path, at) = (path.clone(), (problem.span.start.line, problem.span.start.character));
+                let index = rows.len();
+                rows.push(
+                    self.problem_row(
+                        ("solution-problem", index),
+                        problem.error,
+                        problem.message.clone(),
+                        format!(":{}", at.0 + 1),
+                        move |w, window, cx| w.open_file(&path, Some(at), window, cx),
+                        cx,
+                    )
+                    .pl(px(30.))
+                    .into_any_element(),
+                );
+            }
+        }
+        div()
+            .id("solution-problems")
+            .track_focus(&self.problems_focus)
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .px(px(6.))
+            .children(rows)
+            .into_any_element()
+    }
+
+    /// The projects that would not load whole, as Problems' Toolset tab.
+    fn toolset_problems(&self) -> impl IntoElement {
+        if self.load_problems.is_empty() {
+            return empty_text("Every project loaded.").track_focus(&self.problems_focus).into_any_element();
+        }
+        div()
+            .id("toolset-problems")
+            .track_focus(&self.problems_focus)
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .px(px(6.))
+            .children(self.load_problems.iter().map(|(project, error, message)| {
+                let name = project.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                div()
+                    .min_h(px(ROW_HEIGHT))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(icon(if *error { "error" } else { "warning" }, 16.))
+                    .child(div().flex_none().font_weight(FontWeight::SEMIBOLD).child(name))
+                    .child(div().child(message.clone()))
+            }))
+            .into_any_element()
+    }
+
+    /// The shown file's problems, as Problems' File tab: each a row that goes to its place.
+    fn file_problems(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(editor) = self.active_editor().cloned() else {
             return empty_text("Open a file to see its problems.").track_focus(&self.problems_focus).into_any_element();
         };
@@ -2299,6 +2635,19 @@ impl MainWindow {
             .children(problems.filter(|(e, w)| e + w > 0).map(|(errors, warnings)| {
                 status_widget(format!("{}, {}", count(errors, "error"), count(warnings, "warning")))
                     .text_color(if errors > 0 { theme::error() } else { theme::warning() })
+            }))
+            .children((!self.load_problems.is_empty()).then(|| {
+                let errors = self.load_problems.iter().any(|(_, e, _)| *e);
+                status_widget(count(self.load_problems.len(), "project load problem"))
+                    .id("load-problems")
+                    .text_color(if errors { theme::error() } else { theme::warning() })
+                    .hover(|d| d.bg(theme::button_hover()))
+                    .on_click(cx.listener(|w, _: &ClickEvent, window, cx| {
+                        if !w.dock.is_open(Tool::Problems) {
+                            w.toggle_tool(Tool::Problems, window, cx);
+                        }
+                        w.show_problems_tab(ProblemsTab::Toolset, cx);
+                    }))
             }))
             .children(server.map(|(text, colour)| status_widget(text).text_color(colour)))
             .children(editor.map(|e| {
