@@ -392,3 +392,119 @@ fn delete_on_a_project_in_its_own_folder_moves_that_folder_to_the_trash_only_onc
     assert_eq!(on_disk(&run.folder.join("Shop.slnx")), "<Solution>\n  <Project Path=\"Shop.csproj\" />\n</Solution>\n");
     rsharp_core::trash::set_folder(None);
 }
+
+const EXECUTABLE: &str = "\u{feff}<Project Sdk=\"Microsoft.NET.Sdk\">\r\n\r\n  <PropertyGroup>\r\n    <OutputType>Exe</OutputType>\r\n    <TargetFramework>net10.0</TargetFramework>\r\n  </PropertyGroup>\r\n\r\n</Project>\r\n";
+
+fn referencing() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (
+            "Shop.slnx",
+            "<Solution>\n  <Project Path=\"Shop.App/Shop.App.csproj\" />\n  <Project Path=\"Shop.Core/Shop.Core.csproj\" />\n</Solution>\n",
+        ),
+        ("Shop.App/Shop.App.csproj", EXECUTABLE),
+        ("Shop.Core/Shop.Core.csproj", PROJECT),
+    ]
+}
+
+#[gpui::test]
+fn add_reference_adds_one_and_remove_takes_it_out_leaving_the_project_file_as_it_was(cx: &mut TestAppContext) {
+    let run = Run::new("se-reference", &referencing());
+    let (app, core) = (run.folder.join("Shop.App/Shop.App.csproj"), run.folder.join("Shop.Core/Shop.Core.csproj"));
+    let original = std::fs::read(&app).unwrap();
+    let (main, cx) = open(&run, cx);
+    choose(&main, cx, "Shop.App", "Add > Reference...");
+    let dialog = main.read_with(cx, |m, _| m.reference_dialog()).expect("Add Reference would open no dialog");
+    let offered = dialog.read_with(cx, |d, _| d.choices());
+    assert_eq!(
+        offered,
+        [("Shop.Core".to_string(), true, false)],
+        "the dialog would not offer the other project, unticked"
+    );
+    dialog.update(cx, |d, cx| d.toggle(0, cx));
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(main.read_with(cx, |m, _| m.reference_dialog().is_none()), "OK would leave the dialog open");
+    assert_eq!(
+        on_disk(&app),
+        "\u{feff}<Project Sdk=\"Microsoft.NET.Sdk\">\r\n\r\n  <PropertyGroup>\r\n    <OutputType>Exe</OutputType>\r\n    <TargetFramework>net10.0</TargetFramework>\r\n  </PropertyGroup>\r\n\r\n  <ItemGroup>\r\n    <ProjectReference Include=\"..\\Shop.Core\\Shop.Core.csproj\" />\r\n  </ItemGroup>\r\n\r\n</Project>\r\n",
+        "the reference would not be written as Rider writes it"
+    );
+    // Its Dependencies list it once the project is evaluated, which with servers off a test gives the window itself.
+    let evaluated = rsharp_core::project::EvaluatedProject {
+        path: rsharp_core::paths::canonical(&app),
+        complete: true,
+        target_frameworks: vec!["net10.0".into()],
+        dependencies: vec![rsharp_core::project::FrameworkDependencies {
+            projects: vec![rsharp_core::paths::canonical(&core)],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    main.update(cx, |m, cx| m.set_evaluated(evaluated, cx));
+    open_row(&main, cx, "Shop.App (net10.0)");
+    open_row(&main, cx, "Dependencies");
+    choose(&main, cx, "Shop.Core", "Remove...");
+    assert_eq!(
+        main.read_with(cx, |m, _| m.asked().map(str::to_string)).as_deref(),
+        Some("Remove the reference to Shop.Core from Shop.App?")
+    );
+    cx.simulate_prompt_answer("Remove");
+    cx.run_until_parked();
+    assert_eq!(
+        std::fs::read(&app).unwrap(),
+        original,
+        "with the reference removed, the project file would not be as it was"
+    );
+}
+
+#[gpui::test]
+fn a_project_that_depends_on_this_one_cannot_be_ticked(cx: &mut TestAppContext) {
+    let mut files = referencing();
+    files[2] = (
+        "Shop.Core/Shop.Core.csproj",
+        "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <ProjectReference Include=\"..\\Shop.App\\Shop.App.csproj\" />\n  </ItemGroup>\n</Project>\n",
+    );
+    let run = Run::new("se-reference-cycle", &files);
+    let (main, cx) = open(&run, cx);
+    choose(&main, cx, "Shop.App", "Add > Reference...");
+    let dialog = main.read_with(cx, |m, _| m.reference_dialog()).expect("no dialog");
+    assert_eq!(
+        dialog.read_with(cx, |d, _| d.choices()),
+        [("Shop.Core".to_string(), false, false)],
+        "a project that references this one would be offered, which would make a cycle"
+    );
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(main.read_with(cx, |m, _| m.reference_dialog().is_none()), "Escape would leave the dialog open");
+}
+
+#[gpui::test]
+fn add_reference_to_a_windows_1252_project_keeps_its_other_bytes_and_local_history_keeps_it_as_it_was(
+    cx: &mut TestAppContext,
+) {
+    let mut files = referencing();
+    files.remove(1);
+    let run = Run::new("se-reference-1252", &files);
+    let (app, core) = (run.folder.join("Shop.App/Shop.App.csproj"), run.folder.join("Shop.Core/Shop.Core.csproj"));
+    let text = "<Project Sdk=\"Microsoft.NET.Sdk\">\r\n  <!-- Caf\u{e9} \u{2013} -->\r\n  <PropertyGroup>\r\n    <OutputType>Exe</OutputType>\r\n  </PropertyGroup>\r\n</Project>\r\n";
+    let original = encoding_rs::WINDOWS_1252.encode(text).0.into_owned();
+    std::fs::create_dir_all(app.parent().unwrap()).unwrap();
+    std::fs::write(&app, &original).unwrap();
+    let (main, cx) = open(&run, cx);
+    let set = main.update(cx, |m, cx| m.set_references(&app, vec![core.clone()], cx));
+    assert_eq!(set, Ok(()));
+    cx.run_until_parked();
+    let bytes = std::fs::read(&app).unwrap();
+    let (written, _, _) = encoding_rs::WINDOWS_1252.decode(&bytes);
+    let without = written.replace(
+        "  <ItemGroup>\r\n    <ProjectReference Include=\"..\\Shop.Core\\Shop.Core.csproj\" />\r\n  </ItemGroup>\r\n",
+        "",
+    );
+    assert_eq!(without, text, "another byte of the Windows-1252 project would change");
+    let path = rsharp_core::paths::canonical(&app);
+    let kept = cx.update(|_, cx| {
+        let history = rsharp_app::history_window::local_history(cx);
+        history.revisions(&path).iter().any(|r| history.content(r).is_ok_and(|b| b == original))
+    });
+    assert!(kept, "Local History would not keep the project as it was");
+}

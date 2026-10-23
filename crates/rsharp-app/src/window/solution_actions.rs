@@ -138,6 +138,17 @@ impl MainWindow {
             }
             (NodeKind::Project, "Remove...") => self.remove_project(&found, window, cx),
             (NodeKind::File, "Remove...") => self.remove_item(&found, window, cx),
+            (NodeKind::Project, "Reference...") => {
+                if let Some(project) = found.path.clone() {
+                    self.open_add_reference(&project, window, cx);
+                }
+            }
+            (NodeKind::Dependencies, "Add Reference...") => {
+                if let Some(project) = self.project_of_key(&found.key, "d:") {
+                    self.open_add_reference(&project, window, cx);
+                }
+            }
+            (NodeKind::ProjectReference, "Remove...") => self.remove_reference(&found, window, cx),
             (_, "Copy Path") => {
                 if let Some(path) = &found.path {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(path.display().to_string()));
@@ -514,6 +525,134 @@ impl MainWindow {
             let Some((group, index)) = found else { return };
             self.close_tab(group, index, window, cx);
         }
+    }
+
+    /// The project a Dependencies or reference row belongs to, from its key ("d:{project}…", "ref:d:{project}|…").
+    fn project_of_key(&self, key: &str, prefix: &str) -> Option<PathBuf> {
+        let base = key.strip_prefix(prefix)?.split('|').next()?;
+        let root = self.tree.as_ref()?.solution().path.parent()?.to_path_buf();
+        Some(rsharp_core::paths::canonical(&root.join(base)))
+    }
+
+    /// The projects a project file references, as it says now.
+    fn references_of(project: &Path) -> Vec<PathBuf> {
+        let Ok(bytes) = std::fs::read(project) else { return Vec::new() };
+        let (text, _) = rsharp_core::encodings::decode(&bytes, None);
+        rsharp_core::project_edits::references(project, &text)
+    }
+
+    pub fn reference_dialog(&self) -> Option<Entity<crate::reference_dialog::ReferenceDialog>> {
+        self.reference_dialog.as_ref().map(|(dialog, _)| dialog.clone())
+    }
+
+    /// Rider's Add Reference: the solution's other projects, those referenced ticked, those that reference this one
+    /// (directly or through others) refused, as a reference to them would make a cycle.
+    fn open_add_reference(&mut self, project: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::reference_dialog::{Choice, Ended, ReferenceDialog};
+        let Some(tree) = &self.tree else { return };
+        let projects: Vec<(String, PathBuf)> =
+            tree.solution().projects().iter().filter(|p| p.exists).map(|p| (p.name.clone(), p.path.clone())).collect();
+        let references: Vec<(PathBuf, Vec<PathBuf>)> =
+            projects.iter().map(|(_, p)| (p.clone(), Self::references_of(p))).collect();
+        // Every project that reaches this one through its references.
+        let mut dependents: Vec<PathBuf> = vec![project.to_path_buf()];
+        let mut more = true;
+        while more {
+            more = false;
+            for (p, refs) in &references {
+                if !dependents.contains(p) && refs.iter().any(|r| dependents.contains(r)) {
+                    dependents.push(p.clone());
+                    more = true;
+                }
+            }
+        }
+        let current = Self::references_of(project);
+        let choices = projects
+            .into_iter()
+            .filter(|(_, p)| p != project)
+            .map(|(name, path)| Choice {
+                chosen: current.contains(&path),
+                refused: dependents.contains(&path).then(|| "references this project".to_string()),
+                name,
+                path,
+            })
+            .collect();
+        let name = project.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let dialog = cx.new(|cx| ReferenceDialog::new(name, choices, cx));
+        let project = project.to_path_buf();
+        cx.subscribe_in(&dialog, window, move |w, _, ended: &Ended, window, cx| {
+            if let Ended::Chosen(wanted) = ended
+                && let Err(why) = w.set_references(&project, wanted.clone(), cx)
+            {
+                w.said = Some(why.into());
+            }
+            w.reference_dialog = None;
+            window.focus(&w.explorer_focus);
+            cx.notify();
+        })
+        .detach();
+        window.focus(&dialog.focus_handle(cx));
+        self.reference_dialog = Some((dialog, PathBuf::new()));
+        cx.notify();
+    }
+
+    /// What OK does with the boxes ticked: references added and taken out in one write, the project read again.
+    pub fn set_references(
+        &mut self,
+        project: &Path,
+        wanted: Vec<PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let project = rsharp_core::paths::canonical(project);
+        let wanted: Vec<PathBuf> = wanted.iter().map(|p| rsharp_core::paths::canonical(p)).collect();
+        let current = Self::references_of(&project);
+        let (added, removed): (Vec<&PathBuf>, Vec<&PathBuf>) = (
+            wanted.iter().filter(|p| !current.contains(p)).collect(),
+            current.iter().filter(|p| !wanted.contains(p)).collect(),
+        );
+        if added.is_empty() && removed.is_empty() {
+            return Ok(());
+        }
+        let named = |p: &PathBuf| p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = named(&project);
+        self.write_edited(
+            &project,
+            |text| {
+                let mut text = text.to_string();
+                for reference in &added {
+                    text = rsharp_core::project_edits::add_reference(&project, &text, reference)?;
+                }
+                for reference in &removed {
+                    text = rsharp_core::project_edits::remove_reference(&project, &text, reference)?;
+                }
+                Ok(text)
+            },
+            cx,
+        )?;
+        self.said = Some(
+            match (added.as_slice(), removed.as_slice()) {
+                ([one], []) => format!("Added a reference to {} to {name}", named(one)),
+                ([], [one]) => format!("Removed the reference to {} from {name}", named(one)),
+                _ => format!("Changed the references of {name}"),
+            }
+            .into(),
+        );
+        Ok(())
+    }
+
+    /// Remove on a project reference row, once asked.
+    fn remove_reference(&mut self, row: &TreeRow, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(referenced), Some(project)) = (row.path.clone(), self.project_of_key(&row.key, "ref:d:")) else {
+            return;
+        };
+        let name = project.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let question = format!("Remove the reference to {} from {name}?", row.name);
+        self.confirm("Remove Reference", question, "Remove", window, cx, move |w, _, cx| {
+            let wanted: Vec<PathBuf> = Self::references_of(&project).into_iter().filter(|p| *p != referenced).collect();
+            if let Err(why) = w.set_references(&project, wanted, cx) {
+                w.said = Some(why.into());
+            }
+        });
     }
 
     /// Writes a solution or project file through `change`: an open one saved first, so its edits are kept; the bytes

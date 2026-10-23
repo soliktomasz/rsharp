@@ -283,7 +283,8 @@ fn a_file_renamed_after_its_type_offers_to_rename_the_type(cx: &mut TestAppConte
         main.open_workspace(&folder, window, cx);
         main.open_file(&folder.join("Shop.App/Order.cs"), None, window, cx);
     });
-    let loaded = |cx: &mut VisualTestContext| main.read_with(cx, |m, _| m.server_ready() || m.server_failed().is_some());
+    let loaded =
+        |cx: &mut VisualTestContext| main.read_with(cx, |m, _| m.server_ready() || m.server_failed().is_some());
     assert!(wait_for(cx, loaded), "Roslyn never loaded the project");
     assert_eq!(main.read_with(cx, |m, _| m.server_failed().map(str::to_string)), None, "Roslyn failed");
     let at = row(&main, cx, "Shop.App (net10.0)");

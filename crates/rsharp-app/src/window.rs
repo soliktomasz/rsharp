@@ -143,6 +143,7 @@ pub struct MainWindow {
     solution_menu_open: Option<SolutionMenu>,
     name_popup: Option<(Entity<crate::solution_menu::NamePopup>, NameFor)>,
     asked: Option<String>,
+    reference_dialog: Option<(Entity<crate::reference_dialog::ReferenceDialog>, PathBuf)>,
     selected: Option<usize>,
     dock: DockLayout,
     /// Where a floating window was taken, from its top left (the header) or bottom right (the corner), so it
@@ -220,6 +221,7 @@ impl MainWindow {
             solution_menu_open: None,
             name_popup: None,
             asked: None,
+            reference_dialog: None,
             selected: None,
             dock: store(cx).read::<DockLayout>().complete().clamped(),
             float_grab: Point::default(),
@@ -1800,6 +1802,16 @@ impl Render for MainWindow {
                 )
             }))
             .children(self.solution_menu_view(cx))
+            .children(self.reference_dialog.as_ref().map(|(dialog, _)| {
+                div()
+                    .absolute()
+                    .top(px(TOOLBAR_HEIGHT + 60.))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(dialog.clone())
+            }))
             .children(self.name_popup.as_ref().map(|(popup, _)| {
                 div()
                     .absolute()

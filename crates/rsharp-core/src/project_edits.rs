@@ -285,3 +285,8 @@ pub fn move_items(project: &Path, text: &str, moves: &[(PathBuf, PathBuf)]) -> O
     }
     Some(out)
 }
+
+/// The projects a project file references, outside comments, in the file's order.
+pub fn references(project: &Path, text: &str) -> Vec<PathBuf> {
+    groups_and_references(project, text).1.into_iter().map(|r| r.path).collect()
+}
