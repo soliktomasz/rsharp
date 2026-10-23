@@ -28,6 +28,8 @@ pub enum Popup {
     Actions { actions: Vec<CodeAction>, selected: usize },
     /// Rename's field over the word being renamed.
     Rename { field: Entity<TextField>, word: Range<usize> },
+    /// Surround With's constructs, the chosen one.
+    Surround { selected: usize },
 }
 
 /// Go to Declaration's or Find Usages' places, for the window to open: one is gone to, several are listed.
@@ -48,7 +50,7 @@ pub struct Assist {
     pub popup: Option<Popup>,
     /// Where the popup hangs: the word's start, or the caret.
     pub popup_at: usize,
-    popup_task: Option<Task<()>>,
+    pub(super) popup_task: Option<Task<()>>,
     /// The usages of what the caret is on, each written or only read; asked for the text's version and caret.
     pub usages: Vec<(Range<usize>, bool)>,
     usages_for: Option<(u64, usize)>,
@@ -136,6 +138,14 @@ impl CodeEditor {
             .collect()
     }
 
+    /// The context actions' titles while their list is open.
+    pub fn actions_shown(&self) -> Option<Vec<String>> {
+        match &self.assist.popup {
+            Some(Popup::Actions { actions, .. }) => Some(actions.iter().map(|a| a.title.clone()).collect()),
+            _ => None,
+        }
+    }
+
     /// The hover card's or parameter info's text while one is open.
     pub fn popup_text(&self) -> Option<String> {
         match &self.assist.popup {
@@ -152,7 +162,7 @@ impl CodeEditor {
         cx.notify();
     }
 
-    fn server(&self, cx: &App) -> Option<(std::sync::Arc<rsharp_lsp::LanguageServer>, String)> {
+    pub(super) fn server(&self, cx: &App) -> Option<(std::sync::Arc<rsharp_lsp::LanguageServer>, String)> {
         self.buffer.read(cx).server()
     }
 
@@ -163,7 +173,7 @@ impl CodeEditor {
         }
     }
 
-    fn show(&mut self, popup: Popup, at: usize, cx: &mut Context<Self>) {
+    pub(super) fn show(&mut self, popup: Popup, at: usize, cx: &mut Context<Self>) {
         self.assist.popup = Some(popup);
         self.assist.popup_at = at;
         cx.notify();
@@ -273,6 +283,7 @@ impl CodeEditor {
         let (selected, len) = match &mut self.assist.popup {
             Some(Popup::Completion { selected, shown, .. }) => (selected, shown.len()),
             Some(Popup::Actions { selected, actions }) => (selected, actions.len()),
+            Some(Popup::Surround { selected }) => (selected, super::refactor::SURROUNDS.len()),
             _ => return false,
         };
         if len > 0 {
@@ -287,6 +298,11 @@ impl CodeEditor {
         match &self.assist.popup {
             Some(Popup::Completion { shown, .. }) if !shown.is_empty() => self.accept_completion(cx),
             Some(Popup::Actions { .. }) => self.choose_action(cx),
+            Some(Popup::Surround { selected }) => {
+                let chosen = *selected;
+                self.assist.popup = None;
+                self.surround(chosen, cx);
+            }
             _ => return false,
         }
         true
@@ -408,8 +424,10 @@ impl CodeEditor {
         }
         self.assist.hover_at = at;
         self.assist.hover_task = None;
-        let busy =
-            matches!(self.assist.popup, Some(Popup::Completion { .. } | Popup::Actions { .. } | Popup::Rename { .. }));
+        let busy = matches!(
+            self.assist.popup,
+            Some(Popup::Completion { .. } | Popup::Actions { .. } | Popup::Rename { .. } | Popup::Surround { .. })
+        );
         if let Some(at) = at.filter(|_| !busy) {
             self.request_hover(at, true, cx);
         }
@@ -590,8 +608,12 @@ impl CodeEditor {
     /// The chosen action resolved and made; one that holds others (Roslyn's nested actions) lists them instead.
     fn choose_action(&mut self, cx: &mut Context<Self>) {
         let Some(Popup::Actions { actions, selected }) = self.assist.popup.take() else { return };
+        self.run_action(actions[selected].clone(), cx);
+    }
+
+    /// A code action resolved and made; one that holds others (Roslyn's nested actions) lists them instead.
+    pub(super) fn run_action(&mut self, action: CodeAction, cx: &mut Context<Self>) {
         let Some((server, _)) = self.server(cx) else { return };
-        let action = actions[selected].clone();
         let answer = ask(&server, "codeAction/resolve", action.raw.clone(), cx);
         let head = self.primary().head;
         self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
@@ -880,6 +902,14 @@ impl CodeEditor {
                     })
                     .collect();
                 frame().left(below.x).top(below.y).w(px(420.)).py(px(4.)).children(rows).into_any_element()
+            }
+            Popup::Surround { selected } => {
+                let rows: Vec<_> = super::refactor::SURROUNDS
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (name, _))| row((*name).to_string(), String::new(), i == *selected))
+                    .collect();
+                frame().left(below.x).top(below.y).w(px(240.)).py(px(4.)).children(rows).into_any_element()
             }
             Popup::Card { text, .. } => frame()
                 .left(below.x)

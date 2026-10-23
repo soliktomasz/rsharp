@@ -16,6 +16,8 @@ use std::path::PathBuf;
 
 #[path = "editor_assist.rs"]
 mod assist;
+#[path = "editor_refactor.rs"]
+mod refactor;
 pub use assist::{Navigate, Said};
 
 actions!(
@@ -85,6 +87,16 @@ actions!(
         BaseSymbols,
         DerivedSymbols,
         FindUsages,
+        OptimizeUsings,
+        IntroduceVariable,
+        IntroduceField,
+        IntroduceParameter,
+        EncapsulateField,
+        ExtractMethod,
+        Inline,
+        SafeDelete,
+        SurroundWith,
+        CompleteStatement,
     ]
 );
 
@@ -907,6 +919,16 @@ moves! {
     FindUsages => |e, cx| e.find_usages(cx);
     BaseSymbols => |e, cx| e.go_to_related(true, cx);
     DerivedSymbols => |e, cx| e.go_to_related(false, cx);
+    OptimizeUsings => |e, cx| e.named_refactoring("Optimize Usings", &[&["Remove unnecessary usings"], &["Sort Usings"]], cx);
+    IntroduceVariable => |e, cx| e.named_refactoring("Introduce Variable", &[&["Introduce local"]], cx);
+    IntroduceField => |e, cx| e.named_refactoring("Introduce Field", &[&["Introduce field", "Introduce constant"]], cx);
+    IntroduceParameter => |e, cx| e.named_refactoring("Introduce Parameter", &[&["Introduce parameter"]], cx);
+    EncapsulateField => |e, cx| e.named_refactoring("Encapsulate Field", &[&["Encapsulate field"]], cx);
+    ExtractMethod => |e, cx| e.named_refactoring("Extract Method", &[&["Extract method"]], cx);
+    Inline => |e, cx| e.named_refactoring("Inline", &[&["Inline"]], cx);
+    SafeDelete => |e, cx| e.safe_delete(cx);
+    SurroundWith => |e, cx| e.open_surround(cx);
+    CompleteStatement => |e, cx| e.complete_statement(cx);
 }
 
 /// An offset carried through a change: before it, kept; after it, moved by what it added; inside it, to its end.

@@ -15,6 +15,10 @@ use crate::editor::{
     Complete, FindUsages, GoToDeclaration, GoToImplementation, GoToTypeDeclaration, ParameterInfo, QuickDocumentation,
     Reformat, Rename, ShowContextActions,
 };
+use crate::editor::{
+    CompleteStatement, EncapsulateField, ExtractMethod, Inline, IntroduceField, IntroduceParameter, IntroduceVariable,
+    OptimizeUsings, SafeDelete, SurroundWith,
+};
 use crate::find_bar::{Find, FindNext, FindPrevious, Replace};
 use crate::keymap::{OpenSettings, Quit};
 use crate::window::{Back, FindInFiles, Forward, GoToFile, GoToSymbol, GoToType, LastEditLocation, RecentFiles};
@@ -111,6 +115,16 @@ pub static ALL: &[IdeAction] = &[
     ide!("Show Context Actions", "Code", ["quick fix", "intentions", "alt enter", "code actions"], ShowContextActions),
     ide!("Reformat Code", "Code", ["format", "format document", "reformat"], Reformat),
     ide!("Rename…", "Refactor", ["rename symbol", "refactor"], Rename),
+    ide!("Safe Delete…", "Refactor", ["delete symbol", "remove unused"], SafeDelete),
+    ide!("Introduce Variable…", "Refactor", ["extract variable", "introduce local"], IntroduceVariable),
+    ide!("Introduce Field…", "Refactor", ["extract field", "introduce constant"], IntroduceField),
+    ide!("Introduce Parameter…", "Refactor", ["extract parameter"], IntroduceParameter),
+    ide!("Encapsulate Field…", "Refactor", ["property from field", "encapsulate"], EncapsulateField),
+    ide!("Extract Method…", "Refactor", ["extract function"], ExtractMethod),
+    ide!("Inline…", "Refactor", ["inline variable", "inline method"], Inline),
+    ide!("Optimize Usings", "Code", ["optimize imports", "remove unused usings", "sort usings"], OptimizeUsings),
+    ide!("Surround With…", "Code", ["wrap with", "surround"], SurroundWith),
+    ide!("Complete Current Statement", "Code", ["complete statement", "smart enter"], CompleteStatement),
     ide!("Expand", "Code", ["unfold", "folding"], ExpandRegion),
     ide!("Collapse", "Code", ["fold", "folding"], CollapseRegion),
     ide!("Expand All", "Code", ["unfold all", "folding"], ExpandAll),
