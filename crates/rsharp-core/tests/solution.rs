@@ -128,3 +128,12 @@ fn a_windows_1252_sln_reads() {
     std::fs::write(&path, encoding_rs::WINDOWS_1252.encode(text).0).unwrap();
     assert_eq!(read(&path), ["Shop", "  App true"], "a .sln in the system's code page would not read");
 }
+
+#[test]
+fn a_file_that_is_no_solution_reads_as_none() {
+    let folder = folder("not-a-solution");
+    assert!(
+        solution::read(&folder.join("src/App/App.csproj")).is_none(),
+        "a project file would read as an empty solution"
+    );
+}

@@ -131,10 +131,15 @@ pub fn add_reference(project: &Path, text: &str, referenced: &Path) -> Result<St
     let element = format!("<ProjectReference Include=\"{include}\" />");
     // Beside the project's other references, in an item group of no condition.
     if let Some(last) = references.iter().rev().find(|r| r.group.is_some_and(|g| !groups[g].conditioned)) {
-        let at = text[last.end..].find('\n').map_or(text.len(), |i| last.end + i + 1);
         let indent = &text[line_start(text, last.start)..last.start];
         let mut out = text.to_string();
-        out.insert_str(at, &format!("{indent}{element}{eol}"));
+        if indent.trim().is_empty() {
+            let at = text[last.end..].find('\n').map_or(text.len(), |i| last.end + i + 1);
+            out.insert_str(at, &format!("{indent}{element}{eol}"));
+        } else {
+            // A reference sharing its line with what comes before it: the new one goes right after it, on that line.
+            out.insert_str(last.end, &element);
+        }
         return Ok(out);
     }
     let close = text.rfind("</Project>").ok_or_else(|| format!("{} is not a project file", stem(project)))?;
@@ -148,7 +153,12 @@ pub fn add_reference(project: &Path, text: &str, referenced: &Path) -> Result<St
         if spaced { eol } else { "" }
     );
     let mut out = text.to_string();
-    out.insert_str(close_line, &group);
+    if text[close_line..close].trim().is_empty() {
+        out.insert_str(close_line, &group);
+    } else {
+        // `</Project>` shares its line with what comes before it: the group goes on lines of its own just before it.
+        out.insert_str(close, &format!("{eol}{group}"));
+    }
     Ok(out)
 }
 

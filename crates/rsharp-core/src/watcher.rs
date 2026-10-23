@@ -1,12 +1,16 @@
 //! Watches a folder for what other programs change in it (a terminal's `git pull`, an agent's edits, `dotnet new`), as
 //! Rider's fsnotifier does, through the `notify` crate. Changes are gathered for a moment and handed over together.
 
+use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How long a burst of changes is gathered before it is handed over (Passenger's `Gather`).
 const GATHER: Duration = Duration::from_millis(150);
+
+/// The longest a burst is gathered, so writes that never pause (a build's log, a long checkout) still reach the window.
+const LONGEST: Duration = Duration::from_secs(1);
 
 /// Folders whose changes say nothing a person sees: build output, dependencies, and Git's own store.
 const PASSED: &[&str] = &["bin", "obj", "node_modules", ".git", ".vs", ".idea"];
@@ -49,15 +53,19 @@ pub fn watch(folder: &Path, changed: impl Fn(Vec<PathBuf>) + Send + 'static) -> 
             // Ends as the watcher is dropped, which drops the sender.
             while let Ok(first) = events.recv() {
                 let mut paths: Vec<PathBuf> = Vec::new();
+                let mut seen: HashSet<PathBuf> = HashSet::new();
                 let mut take = |event: notify::Result<notify::Event>| {
                     for path in event.map(|e| e.paths).unwrap_or_default() {
-                        if counts(&folder, &path) && !paths.contains(&path) {
+                        if counts(&folder, &path) && seen.insert(path.clone()) {
                             paths.push(path);
                         }
                     }
                 };
                 take(first);
-                while let Ok(more) = events.recv_timeout(GATHER) {
+                let started = Instant::now();
+                while started.elapsed() < LONGEST
+                    && let Ok(more) = events.recv_timeout(GATHER.min(LONGEST.saturating_sub(started.elapsed())))
+                {
                     take(more);
                 }
                 if !paths.is_empty() {

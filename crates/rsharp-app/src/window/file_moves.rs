@@ -32,11 +32,19 @@ fn name_of(path: &Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-/// Copies a file, or a folder with all it holds.
+/// Copies a file, or a folder with all it holds. A link is passed over, never followed: one to the folder itself, or
+/// above it, would copy without end, and one elsewhere would copy what is not the folder's.
 fn copy_on_disk(from: &Path, to: &Path) -> std::io::Result<()> {
-    if from.is_dir() {
+    let kind = std::fs::symlink_metadata(from)?.file_type();
+    if kind.is_symlink() {
+        // shortcut: a link inside a copied folder is left out of the copy; make it again as a link, as Rider's copy
+        // does, once someone keeps links in a project.
+        return Ok(());
+    }
+    if kind.is_dir() {
         std::fs::create_dir_all(to)?;
-        for entry in std::fs::read_dir(from)?.flatten() {
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
             copy_on_disk(&entry.path(), &to.join(entry.file_name()))?;
         }
         Ok(())
@@ -153,16 +161,8 @@ impl MainWindow {
     fn copy_with_dependents(&mut self, from: &Path, to: &Path) -> Result<(), String> {
         let mut copies = vec![(from.to_path_buf(), to.to_path_buf())];
         if from.is_file() {
-            let (stem, new_stem) = (
-                from.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
-                to.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
-            );
             for dependent in self.dependents_of(from) {
-                let name = name_of(&dependent);
-                let renamed = match name.strip_prefix(&format!("{stem}.")) {
-                    Some(rest) => format!("{new_stem}.{rest}"),
-                    None => name,
-                };
+                let renamed = super::file_ops::renamed_dependent(&dependent, from, to);
                 copies.push((dependent, to.parent().unwrap_or(to).join(renamed)));
             }
         }

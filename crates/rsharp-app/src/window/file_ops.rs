@@ -219,8 +219,10 @@ impl MainWindow {
             return Ok(());
         }
         let folder = path.parent().unwrap_or(path).to_path_buf();
-        // A name that differs only in letter case is the same file renamed, not one taken.
-        if !name.eq_ignore_ascii_case(&old) && taken(&folder, name) {
+        // On macOS and Windows a name that differs only in letter case is the same file renamed, not one taken; on
+        // Linux it is another name, which may be taken.
+        let same = !cfg!(target_os = "linux") && name.eq_ignore_ascii_case(&old);
+        if !same && taken(&folder, name) {
             return Err(format!("{name} is already there"));
         }
         let to = folder.join(name);
@@ -374,7 +376,7 @@ impl MainWindow {
 /// A dependent's name once its parent is renamed: the part named after the parent (its name without its extension)
 /// takes the new one's, Counter.razor.cs going with Counter.razor to Clicker.razor.cs; a name that does not begin with
 /// it is kept.
-fn renamed_dependent(dependent: &Path, parent: &Path, renamed: &Path) -> String {
+pub(super) fn renamed_dependent(dependent: &Path, parent: &Path, renamed: &Path) -> String {
     let name = dependent.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let stem = parent.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let new_stem = renamed.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -393,7 +395,9 @@ fn move_folder(
     cx: &mut App,
 ) -> Result<(), String> {
     let name = from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    if to.exists() && !to.to_string_lossy().eq_ignore_ascii_case(&from.to_string_lossy()) {
+    // Only macOS and Windows take a name differing in letter case alone for the same folder.
+    let same = !cfg!(target_os = "linux") && to.to_string_lossy().eq_ignore_ascii_case(&from.to_string_lossy());
+    if to.exists() && !same {
         return Err(format!("{name} was not moved: {} is there already", to.display()));
     }
     let moved: Vec<PathBuf> = crate::workspace::all_files(from, 100_000);

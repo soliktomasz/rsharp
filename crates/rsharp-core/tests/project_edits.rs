@@ -98,3 +98,25 @@ fn moving_a_file_the_project_holds_by_glob_changes_nothing() {
     let moves = [(PathBuf::from("/Shop/A.cs"), PathBuf::from("/Shop/B.cs"))];
     assert_eq!(move_items(project, text, &moves), None, "a glob would be rewritten");
 }
+
+#[test]
+fn a_reference_beside_others_on_one_line_goes_inside_their_group() {
+    let root = folder("one-line-refs");
+    let (app, core) = (root.join("Shop.App/Shop.App.csproj"), root.join("Shop.Core/Shop.Core.csproj"));
+    let text = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup><ProjectReference Include=\"..\\Data\\Data.csproj\" /></ItemGroup>\n</Project>\n";
+    assert_eq!(
+        add_reference(&app, text, &core).unwrap(),
+        "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup><ProjectReference Include=\"..\\Data\\Data.csproj\" /><ProjectReference Include=\"..\\Shop.Core\\Shop.Core.csproj\" /></ItemGroup>\n</Project>\n",
+        "a reference would land outside its group, or copy what stood before it on its line"
+    );
+}
+
+#[test]
+fn a_reference_to_a_project_written_on_one_line_goes_inside_it() {
+    let root = folder("one-line-project");
+    let (app, core) = (root.join("Shop.App/Shop.App.csproj"), root.join("Shop.Core/Shop.Core.csproj"));
+    let added = add_reference(&app, "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>\n", &core).unwrap();
+    assert!(added.starts_with("<Project Sdk=\"Microsoft.NET.Sdk\">"), "the group would go before <Project>: {added:?}");
+    assert!(added.ends_with("</ItemGroup>\n</Project>\n"), "the group would not go inside the project: {added:?}");
+    assert_eq!(remove_reference(&app, &added, &core).unwrap().matches("<Project").count(), 1);
+}

@@ -391,12 +391,24 @@ impl MainWindow {
         self.progress.clear();
         self.projects_loaded = false;
         let (folder, solution) = (workspace.folder.clone(), workspace.solution.clone());
-        self.host = rsharp_lsp::SharedHost::carried(&folder);
-        let host = self.host.clone();
-        self.evaluate_projects(cx);
         let logs = store(cx).root().join("logs").join("roslyn");
         let (sender, mut events) = futures::channel::mpsc::unbounded();
         self._server_task = Some(cx.spawn(async move |this, cx| {
+            // Found off the UI thread, as finding dotnet looks along PATH; the evaluations and Roslyn share it.
+            let host = {
+                let folder = folder.clone();
+                cx.background_executor().spawn(async move { rsharp_lsp::SharedHost::carried(&folder) }).await
+            };
+            let given = host.clone();
+            if this
+                .update(cx, |w, cx| {
+                    w.host = given;
+                    w.evaluate_projects(cx);
+                })
+                .is_err()
+            {
+                return;
+            }
             let started = cx
                 .background_executor()
                 .spawn(async move {

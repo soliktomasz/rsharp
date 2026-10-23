@@ -59,3 +59,27 @@ fn bin_obj_and_git_objects_are_passed_over_but_git_head_is_not() {
     assert!(!paths.iter().any(|p| p.starts_with(folder.join(".git/objects"))), "Git's objects heard: {paths:?}");
     assert!(paths.contains(&folder.join(".git/HEAD")), "Git's HEAD would not be heard: {paths:?}");
 }
+
+#[test]
+fn writes_that_never_pause_are_still_handed_over() {
+    let folder = folder("busy");
+    let (sender, bursts) = mpsc::channel();
+    let _watcher = watch(&folder, move |paths| {
+        let _ = sender.send(paths);
+    })
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    // A write every 50 ms for three seconds: never the 150 ms quiet a burst waits for.
+    let writer = {
+        let folder = folder.clone();
+        std::thread::spawn(move || {
+            for i in 0..60 {
+                std::fs::write(folder.join("src/busy.log"), format!("{i}")).unwrap();
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        })
+    };
+    let first = bursts.recv_timeout(Duration::from_millis(2500));
+    writer.join().unwrap();
+    assert!(first.is_ok(), "a folder written to without a pause would never hand over its changes");
+}

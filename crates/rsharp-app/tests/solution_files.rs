@@ -639,3 +639,21 @@ fn a_file_renamed_by_letter_case_alone_is_renamed(cx: &mut TestAppContext) {
         .collect();
     assert_eq!(names, ["order.cs"], "the file would keep its old letter case");
 }
+
+#[cfg(unix)]
+#[gpui::test]
+fn a_folder_holding_a_link_to_itself_is_copied_without_following_it(cx: &mut TestAppContext) {
+    let run = Run::new("sf-fix-link", &two_projects());
+    let models = run.folder.join("Shop.App/Models");
+    std::os::unix::fs::symlink(&models, models.join("loop")).unwrap();
+    let (main, cx) = open_both(&run, cx);
+    choose(&main, cx, "Models", "Edit > Copy");
+    choose(&main, cx, "Shop.Core", "Edit > Paste");
+    let copied = run.folder.join("Shop.Core/Models");
+    assert!(
+        copied.join("Order.cs").is_file(),
+        "the folder would not be copied: {:?}",
+        main.read_with(cx, |m, _| m.said().map(str::to_string))
+    );
+    assert!(!copied.join("loop").exists(), "the link would be followed into the folder it points at");
+}
