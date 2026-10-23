@@ -41,19 +41,12 @@ pub fn roslyn_server() -> Option<PathBuf> {
 /// The projects to load: the solution's (a .slnx's or a .sln's), else every project under the folder.
 pub fn projects_of(folder: &Path, solution: Option<&Path>) -> Vec<PathBuf> {
     if let Some(solution) = solution {
-        let text = std::fs::read_to_string(solution).unwrap_or_default();
-        let base = solution.parent().unwrap_or(folder);
-        let named: Vec<&str> = if solution.extension().is_some_and(|e| e == "slnx") {
-            text.split("Path=\"").skip(1).filter_map(|rest| rest.split('"').next()).collect()
-        } else {
-            // A .sln's `Project("{type}") = "Name", "Path\To\App.csproj", "{id}"` lines.
-            text.lines().filter(|l| l.starts_with("Project(")).filter_map(|l| l.split('"').nth(5)).collect()
-        };
-        return named
+        let Some(solution) = rsharp_core::solution::read(solution) else { return Vec::new() };
+        return solution
+            .projects()
             .into_iter()
-            .filter(|p| p.ends_with("proj"))
-            .map(|p| paths::canonical(&base.join(p.replace('\\', "/"))))
-            .filter(|p| p.is_file())
+            .filter(|p| p.exists && p.path.extension().is_some_and(|e| e.to_string_lossy().ends_with("proj")))
+            .map(|p| p.path.clone())
             .collect();
     }
     let mut found = Vec::new();

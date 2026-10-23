@@ -8,4 +8,5 @@ pub mod logs;
 pub mod paths;
 pub mod process;
 pub mod programs;
+pub mod solution;
 pub mod state;
