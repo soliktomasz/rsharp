@@ -8,6 +8,9 @@ use crate::solution_view::{NodeKind, TreeRow};
 use crate::theme;
 use gpui::{Context, Entity, EventEmitter, FocusHandle, Focusable, SharedString, Window, div, prelude::*, px};
 
+/// Rider's kinds of C# type in its New Class/Interface popup, in its order.
+pub const TYPE_KINDS: [&str; 5] = ["Class", "Interface", "Record", "Struct", "Enum"];
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum MenuItem {
     /// A title, and the keys shown beside it.

@@ -20,6 +20,7 @@ rsharp-core.workspace = true
 rsharp-languages.workspace = true
 rsharp-lsp.workspace = true
 rsharp-mcp.workspace = true
+regex.workspace = true
 rsharp-text.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -20,6 +20,10 @@ pub(super) struct SolutionMenu {
 pub(super) enum NameFor {
     NewSolutionFolder { parent: Option<String> },
     RenameSolutionFolder { folder: String },
+    NewFile { into: PathBuf },
+    NewFolder { into: PathBuf },
+    NewType { into: PathBuf },
+    Rename { path: PathBuf },
 }
 
 /// Names in a sentence, as Rider's questions list them: "a", "a and b", "a, b and c".
@@ -139,7 +143,11 @@ impl MainWindow {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(path.display().to_string()));
                 }
             }
-            (_, title) => self.said = Some(format!("{title} is not in RSharp yet").into()),
+            (_, title) => {
+                if !self.choose_file_operation(&found, title, window, cx) {
+                    self.said = Some(format!("{title} is not in RSharp yet").into());
+                }
+            }
         }
         cx.notify();
     }
@@ -183,13 +191,17 @@ impl MainWindow {
         &mut self,
         purpose: NameFor,
         name: String,
-        _kind: Option<&'static str>,
-        _window: &mut Window,
+        kind: Option<&'static str>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
         let name = name.trim().to_string();
         let solution = self.tree.as_ref().map(|t| t.solution().path.clone()).ok_or("There is no solution")?;
         match purpose {
+            NameFor::NewFile { into } => return self.make(&into, &name, None, false, window, cx),
+            NameFor::NewFolder { into } => return self.make(&into, &name, None, true, window, cx),
+            NameFor::NewType { into } => return self.make(&into, &name, kind, false, window, cx),
+            NameFor::Rename { path } => return self.rename_path(&path, &name, window, cx),
             NameFor::NewSolutionFolder { parent } => {
                 let edit = SolutionEdit::AddFolder { parent: parent.as_deref(), name: &name };
                 self.write_edited(&solution, |text| solution_edits::edit(&solution, text, edit), cx)?;
@@ -371,7 +383,7 @@ impl MainWindow {
     }
 
     /// Asks a question before a change, and runs `then` in the window once its first answer is chosen.
-    fn confirm(
+    pub(super) fn confirm(
         &mut self,
         title: &str,
         question: String,

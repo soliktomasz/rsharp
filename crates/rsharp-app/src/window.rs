@@ -76,6 +76,7 @@ actions!(
     ]
 );
 
+mod file_ops;
 mod solution_actions;
 
 use solution_actions::{NameFor, SolutionMenu};

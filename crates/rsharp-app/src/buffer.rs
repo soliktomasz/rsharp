@@ -335,6 +335,12 @@ impl Buffer {
     /// editor of it told. Refused, with nothing changed, when the rename fails.
     pub fn move_to(&mut self, to: PathBuf, cx: &mut Context<Self>) -> std::io::Result<()> {
         std::fs::rename(&self.path, &to)?;
+        self.moved(to, cx);
+        Ok(())
+    }
+
+    /// The file is at `to` now, moved with the folder it was in: the buffer goes by its new path, its text kept.
+    pub fn moved(&mut self, to: PathBuf, cx: &mut Context<Self>) {
         let server = self.server.as_ref().map(|(s, _)| s.clone());
         self.detach_server();
         let me = cx.entity().downgrade();
@@ -348,7 +354,6 @@ impl Buffer {
         }
         cx.emit(BufferEvent::Moved(to));
         cx.notify();
-        Ok(())
     }
 
     /// The server the file is open in, and its URI there.

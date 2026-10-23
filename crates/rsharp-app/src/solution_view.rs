@@ -115,6 +115,43 @@ impl SolutionTree {
         self.rebuild();
     }
 
+    /// Opens the project and the folders down to a file or folder of it, on disk or as the project holds it.
+    pub fn reveal_path(&mut self, path: &Path) {
+        fn holding(entries: &[SolutionEntry], above: &mut Vec<String>, found: &mut Vec<(Vec<String>, PathBuf)>) {
+            for entry in entries {
+                match entry {
+                    SolutionEntry::Folder { path, children, .. } => {
+                        above.push(format!("sf:{path}"));
+                        holding(children, above, found);
+                        above.pop();
+                    }
+                    SolutionEntry::Project(project) => found.push((above.clone(), project.path.clone())),
+                    SolutionEntry::Item { .. } => {}
+                }
+            }
+        }
+        let mut projects = Vec::new();
+        holding(&self.solution.entries, &mut Vec::new(), &mut projects);
+        let mut keys = Vec::new();
+        for (folders, project) in projects {
+            let Some(folder) = project.parent() else { continue };
+            let Ok(inside) = path.strip_prefix(folder) else { continue };
+            let base = self.relative(&project);
+            keys.extend(folders);
+            keys.push(format!("p:{base}"));
+            let mut at = folder.to_path_buf();
+            let parts: Vec<_> = inside.components().collect();
+            for (i, part) in parts.iter().enumerate().take(parts.len().saturating_sub(1)) {
+                at.push(part);
+                let inner: Vec<String> =
+                    parts[..=i].iter().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+                keys.push(format!("pf:{base}|{}", inner.join("/")));
+                keys.push(format!("df:{}", self.relative(&at)));
+            }
+        }
+        self.reveal(&keys);
+    }
+
     pub fn is_open(&self, key: &str) -> bool {
         self.open.contains(key)
     }
