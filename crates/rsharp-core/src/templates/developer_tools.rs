@@ -25,20 +25,15 @@ pub fn take_out(folder: &Path) -> Result<Vec<PathBuf>, String> {
             _ => continue,
         };
         let bytes = std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))?;
-        let text = std::str::from_utf8(&bytes).map_err(|e| format!("{}: {e}", file.display()))?;
-        let mut edited = text.to_string();
-        let marked = edited.starts_with('\u{feff}');
-        if marked {
-            edited.remove(0);
-        }
+        let (text, charset) = crate::encodings::decode(&bytes, None);
+        let mut edited = text.clone();
         for edit in edits {
             edited = edit.replace_all(&edited, "").into_owned();
         }
-        if marked {
-            edited.insert(0, '\u{feff}');
-        }
         if edited != text {
-            crate::files::write(&file, edited.as_bytes()).map_err(|e| format!("{}: {e}", file.display()))?;
+            let bytes = crate::encodings::encode(&edited, charset)
+                .map_err(|c| format!("{}: {c} cannot be written back", file.display()))?;
+            crate::files::write(&file, &bytes).map_err(|e| format!("{}: {e}", file.display()))?;
             changed.push(file);
         }
     }

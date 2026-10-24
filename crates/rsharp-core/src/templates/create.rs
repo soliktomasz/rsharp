@@ -388,6 +388,40 @@ mod tests {
     }
 
     #[test]
+    fn successful_later_stages_never_claim_unrelated_destination_files_or_edits() {
+        for edit in [false, true] {
+            let (root, env, catalog, request) = setup(if edit { "concurrent-edit" } else { "concurrent-file" }, false);
+            let destination = root.join("Greeter");
+            let kept = destination.join(if edit { "Greeter.slnx" } else { "notes.txt" });
+            let result = create_with(
+                &env,
+                &catalog,
+                &request,
+                &AtomicBool::new(false),
+                &mut |_| {},
+                &mut |cmd, limit, cancel, output| {
+                    let restore = cmd.get_args().next().unwrap() == "restore";
+                    let result = fake(cmd, limit, cancel, output);
+                    if restore {
+                        std::fs::create_dir_all(&destination).unwrap();
+                        std::fs::write(&kept, "a person's work").unwrap();
+                    }
+                    result
+                },
+            );
+            if let Ok(made) = result {
+                let _ = made.discard();
+            }
+            assert_eq!(
+                std::fs::read_to_string(&kept).unwrap(),
+                "a person's work",
+                "a successful later stage adopted and deleted unrelated destination data"
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
     fn a_completed_result_dropped_before_handoff_is_cleaned() {
         let (root, env, catalog, request) = setup("dropped-result", false);
         let made = create_with(&env, &catalog, &request, &AtomicBool::new(false), &mut |_| {}, &mut fake).unwrap();

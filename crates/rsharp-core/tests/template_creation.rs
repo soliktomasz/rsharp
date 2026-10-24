@@ -6,6 +6,23 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[test]
+fn take_out_accepts_utf16_and_preserves_unchanged_bytes() {
+    let f = Fixture::new();
+    for encoding in ["utf-16le", "utf-16be", "latin1"] {
+        let charset = rsharp_core::encodings::Charset::from_editorconfig(encoding).unwrap();
+        let bytes = rsharp_core::encodings::encode("// café\r\nclass C {}\r\n", charset).unwrap();
+        let file = f.root.join("Program.cs");
+        std::fs::write(&file, &bytes).unwrap();
+        assert!(rsharp_core::templates::developer_tools::take_out(&f.root).unwrap().is_empty());
+        assert_eq!(std::fs::read(&file).unwrap(), bytes, "unchanged {encoding} source was rewritten");
+        let bytes = rsharp_core::encodings::encode("// café\r\n    .WithDeveloperTools()\r\n", charset).unwrap();
+        std::fs::write(&file, &bytes).unwrap();
+        rsharp_core::templates::developer_tools::take_out(&f.root).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), rsharp_core::encodings::encode("// café\r\n", charset).unwrap());
+    }
+}
+
 struct Fixture {
     root: PathBuf,
     catalog: TemplateCatalog,

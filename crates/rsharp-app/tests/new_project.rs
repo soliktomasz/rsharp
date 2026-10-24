@@ -136,6 +136,31 @@ fn choices_and_checkboxes_work_by_keyboard_without_stealing_field_spaces(cx: &mu
 }
 
 #[gpui::test]
+fn arrows_never_press_buttons_or_toggle_checkboxes(cx: &mut TestAppContext) {
+    let run = Run::new("new-project-arrow-safety", &[]);
+    let (_, main) = run.window(cx);
+    let (handle, mut cx) = open(main, &run);
+    click(&mut cx, "option: UseProgramMain");
+    let before = handle.read_with(&cx, |d, _| d.draft().option_value("UseProgramMain").map(str::to_string)).unwrap();
+    cx.simulate_keystrokes("down");
+    cx.run_until_parked();
+    assert_eq!(
+        handle.read_with(&cx, |d, _| d.draft().option_value("UseProgramMain").map(str::to_string)).unwrap(),
+        before,
+        "Down toggled a checkbox"
+    );
+    // Shift-Tab from Create reaches Cancel without pressing either button.
+    click(&mut cx, "field: Solution name");
+    cx.simulate_keystrokes("shift-tab");
+    cx.simulate_keystrokes("shift-tab");
+    cx.simulate_keystrokes("shift-tab");
+    cx.simulate_keystrokes("shift-tab");
+    cx.simulate_keystrokes("down");
+    cx.run_until_parked();
+    assert!(handle.read_with(&cx, |_, _| ()).is_ok(), "Down pressed Cancel");
+}
+
+#[gpui::test]
 fn a_small_window_keeps_the_footer_below_long_labels_and_errors(cx: &mut TestAppContext) {
     let run = Run::new("new-project-minimum", &[]);
     let (_, main) = run.window(cx);

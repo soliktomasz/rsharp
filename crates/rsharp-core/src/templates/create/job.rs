@@ -110,7 +110,7 @@ pub(super) fn create_with(
             if !made.status.success() {
                 return Err(format!("The solution could not be created: {}", made.said()));
             }
-            owned.capture()?;
+            owned.capture(&|_| true, &[])?;
         }
         let made = invoke(
             environment.new_command(&arguments(request, Some(&plan.project_folder))?, &plan.root),
@@ -119,7 +119,7 @@ pub(super) fn create_with(
         if !made.status.success() {
             return Err(format!("{} could not be created: {}", request.name_given(), made.said()));
         }
-        owned.capture()?;
+        owned.capture(&|_| true, &[])?;
         let mut projects = projects_in(&plan.project_folder, request.name_given())?;
         if projects.is_empty() {
             return Err(format!(
@@ -128,8 +128,8 @@ pub(super) fn create_with(
                 plan.project_folder.display()
             ));
         }
-        developer_tools::take_out(&plan.project_folder)?;
-        owned.capture()?;
+        let edited = developer_tools::take_out(&plan.project_folder)?;
+        owned.capture(&|_| false, &edited)?;
         let mut warnings = Vec::new();
         if request.variant().skip_restore_option.is_some() {
             for project in &projects {
@@ -137,7 +137,17 @@ pub(super) fn create_with(
                 let restored = invoke(
                     environment.command(&args, &plan.root),
                     format!("Restoring {}…", project.file_stem().unwrap_or_default().to_string_lossy()),
+                );
+                // Restore writes only build output; anything else appearing meanwhile is someone else's.
+                owned.capture(
+                    &|p| {
+                        p.strip_prefix(&plan.root).is_ok_and(|p| {
+                            p.components().any(|c| matches!(c.as_os_str().to_str(), Some("obj" | "bin")))
+                        })
+                    },
+                    &[],
                 )?;
+                let restored = restored?;
                 if !restored.status.success() {
                     warnings.push(format!("{} could not be restored: {}", project.display(), restored.said()));
                 }
@@ -154,7 +164,7 @@ pub(super) fn create_with(
                 if !made.status.success() {
                     return Err(format!("The solution could not be created: {}", made.said()));
                 }
-                owned.capture()?;
+                owned.capture(&|_| true, &[])?;
                 plan.solution.clone()
             }
         } else {
@@ -163,7 +173,6 @@ pub(super) fn create_with(
         if cancel.load(Ordering::Acquire) {
             return Err("Cancelled".into());
         }
-        owned.capture()?;
         for project in &mut projects {
             *project = crate::paths::canonical(project);
         }
@@ -309,12 +318,20 @@ impl OwnedOutput {
         std::fs::symlink_metadata(&self.root)
             .is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink() && identity(&m) == self.root_identity)
     }
-    fn capture(&mut self) -> Result<(), String> {
+    /// Owns what is new and `claim` accepts, and re-marks only `edited`: an owned file changed by anyone else stays
+    /// changed, so cleanup leaves it.
+    fn capture(&mut self, claim: &dyn Fn(&Path) -> bool, edited: &[PathBuf]) -> Result<(), String> {
         if !self.same_root() {
             return Err(format!("The destination {} changed during creation", self.root.display()));
         }
+        for path in edited {
+            if self.files.contains_key(path) {
+                self.files.insert(path.clone(), mark(path)?);
+            }
+        }
         fn visit(
             folder: &Path,
+            claim: &dyn Fn(&Path) -> bool,
             files: &mut BTreeMap<PathBuf, FileMark>,
             dirs: &mut BTreeMap<PathBuf, Identity>,
         ) -> Result<(), String> {
@@ -323,15 +340,20 @@ impl OwnedOutput {
                 let path = e.path();
                 let meta = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
                 if meta.is_dir() && !meta.file_type().is_symlink() {
-                    dirs.insert(path.clone(), identity(&meta));
-                    visit(&path, files, dirs)?;
-                } else {
+                    if !dirs.contains_key(&path) {
+                        if !claim(&path) {
+                            continue;
+                        }
+                        dirs.insert(path.clone(), identity(&meta));
+                    }
+                    visit(&path, claim, files, dirs)?;
+                } else if !files.contains_key(&path) && claim(&path) {
                     files.insert(path.clone(), mark(&path)?);
                 }
             }
             Ok(())
         }
-        visit(&self.root, &mut self.files, &mut self.dirs)
+        visit(&self.root.clone(), claim, &mut self.files, &mut self.dirs)
     }
     fn cleanup(&self) -> Result<(), String> {
         if !self.root.exists() {

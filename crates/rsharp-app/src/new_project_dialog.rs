@@ -506,7 +506,8 @@ impl NewProjectDialog {
                 self.draft.choose_family(*i);
                 self.list_scroll.scroll_to_item(next);
             }
-        } else if let Some(key) = self.focused_control(window) {
+        } else if let Some(key) = self.focused_control(window).filter(|key| !self.choices(key).is_empty()) {
+            // Arrows open a choice's list; buttons and checkboxes answer only Space and Enter.
             self.activate(&key, window, cx);
         }
         cx.notify();
@@ -664,9 +665,8 @@ impl NewProjectDialog {
                 })
             });
             if cancel.load(Ordering::Acquire) {
-                if let Ok(created) = &result {
-                    created.discard()?;
-                }
+                // A failed run's own error carries any cleanup it could not finish.
+                result?.discard()?;
                 return Err("Cancelled".into());
             }
             result.map(Some)
