@@ -8,6 +8,7 @@ pub mod configuration;
 pub mod link;
 pub mod plan;
 pub mod profile;
+pub mod watch;
 
 pub use configuration::RunConfiguration;
 pub use plan::{BuildStep, LaunchPlan, Properties};

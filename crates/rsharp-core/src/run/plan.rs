@@ -145,6 +145,59 @@ impl LaunchPlan {
         file.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default()
     }
 
+    /// `dotnet watch`'s command for this plan, as Rider's Hot Reload runs it: the project for its framework, no launch
+    /// profile (the plan holds its values already), and the program's own arguments after `--`. It runs in the plan's
+    /// working folder, which [`LaunchPlan::make_working_folder`] makes when the project was never built. It is
+    /// `--non-interactive` because the Run console takes no input: a question watch asked could never be answered, so
+    /// what happens to a change the runtime cannot apply is `restart_on_rude_edit`'s, as watch reports it.
+    pub fn watching(&self, restart_on_rude_edit: bool) -> Result<Command, String> {
+        let dotnet = crate::programs::dotnet()
+            .ok_or_else(|| "No .NET command line found: install the .NET SDK, or set DOTNET_ROOT".to_string())?;
+        let mut arguments: Vec<String> = vec![
+            "watch".into(),
+            "--non-interactive".into(),
+            "run".into(),
+            "--project".into(),
+            self.project.to_string_lossy().into_owned(),
+            "--no-launch-profile".into(),
+        ];
+        if let Some(framework) = &self.framework {
+            arguments.push("--framework".into());
+            arguments.push(framework.clone());
+        }
+        arguments.push("--".into());
+        // The assembly the plan runs under `dotnet` is watch's to build: the program's own arguments are what follows.
+        let runs_assembly = self
+            .arguments
+            .first()
+            .is_some_and(|first| self.built.as_ref().is_some_and(|built| Path::new(first) == built.as_path()));
+        arguments.extend(self.arguments.iter().skip(usize::from(runs_assembly)).cloned());
+        let mut command = crate::dotnet::command(&dotnet, &arguments, &self.working_directory);
+        for (name, value) in &self.environment {
+            command.env(name, value);
+        }
+        // Rider's and Passenger's: no emoji in the console; and with the setting on, a change the runtime cannot apply
+        // restarts the program instead of being reported as one that needs a restart. Nothing is asked either way, the
+        // console having no input to answer with until the terminal (Phase 6).
+        command.env("DOTNET_WATCH_SUPPRESS_EMOJIS", "1");
+        if restart_on_rude_edit {
+            command.env("DOTNET_WATCH_RESTART_ON_RUDE_EDIT", "true");
+        }
+        Ok(command)
+    }
+
+    /// The folder `dotnet watch` starts in, made when it is not there: a project never built has no output folder, and
+    /// watch's own first build makes it where the IDE has not.
+    pub fn make_working_folder(&self) -> Result<(), String> {
+        std::fs::create_dir_all(&self.working_directory).map_err(|error| {
+            format!(
+                "Could not run {}: its working folder {} could not be made: {error}",
+                self.program_name(),
+                self.working_directory.display()
+            )
+        })
+    }
+
     /// The program's command: its arguments, working folder and environment, over the IDE's own.
     pub fn command(&self) -> Command {
         let mut command = Command::new(&self.program);
@@ -155,22 +208,30 @@ impl LaunchPlan {
         command
     }
 
-    /// None when the plan can launch now, its build done; else why not, in the person's words.
-    pub fn why_not(&self, verb: &str) -> Option<String> {
-        if let Some(built) = &self.built
-            && !built.exists()
+    /// None when the plan can launch now, its build done — `built: false` for a run under `dotnet watch`, whose first
+    /// build is watch's, so nothing checks the assembly before it; else why not, in the person's words.
+    pub fn why_not(&self, verb: &str, built: bool) -> Option<String> {
+        if let Some(file) = self.built.as_ref().filter(|_| built)
+            && !file.exists()
         {
-            let file = built.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let file = file.file_name().unwrap_or_default().to_string_lossy().into_owned();
             return Some(format!("Could not {verb} {}: {file} has not been built", self.program_name()));
         }
-        if !self.working_directory.is_dir() {
-            return Some(format!(
-                "Could not {verb} {}: its working folder {} does not exist",
-                self.program_name(),
-                self.working_directory.display()
-            ));
+        // A run under watch starts where the build puts the program, which watch's own first build makes.
+        if self.working_directory.is_dir() || (!built && self.works_where_built()) {
+            return None;
         }
-        None
+        Some(format!(
+            "Could not {verb} {}: its working folder {} does not exist",
+            self.program_name(),
+            self.working_directory.display()
+        ))
+    }
+
+    /// Whether the program runs in the folder its build puts it in, which a project never built lacks until its first
+    /// build makes it — watch's, for a run with Hot Reload.
+    pub fn works_where_built(&self) -> bool {
+        self.built.as_ref().and_then(|built| built.parent()).is_some_and(|folder| folder == self.working_directory)
     }
 }
 
@@ -392,10 +453,10 @@ mod tests {
             &properties("/nowhere/Shop.dll"),
         )
         .unwrap();
-        let missing = plan.why_not("run").unwrap();
+        let missing = plan.why_not("run", true).unwrap();
         assert!(missing.starts_with("Could not run Shop: Shop.dll has not been built"), "{missing}");
         let built = LaunchPlan { built: None, ..plan };
-        let no_folder = built.why_not("run").unwrap();
+        let no_folder = built.why_not("run", true).unwrap();
         assert!(no_folder.contains("working folder"), "{no_folder}");
     }
 
@@ -416,6 +477,93 @@ mod tests {
         let needed = needed_properties(&configuration);
         assert_eq!(needed[..3], ["TargetPath", "ProjectDir", "OutputType"]);
         assert!(needed.contains(&"TargetDir".to_string()));
+    }
+
+    #[test]
+    fn a_run_under_watch_is_the_projects_own_arguments_after_a_plain_watch_command() {
+        // Rider's Hot Reload runs `dotnet watch run` with no launch profile: the plan already holds the profile's values.
+        let watched = RunConfiguration { framework: Some("net10.0".into()), ..configuration("--seed 3 one") };
+        let plan = LaunchPlan::resolve(
+            &watched,
+            &project("/work/Shop/Shop.csproj"),
+            &properties("/work/Shop/bin/Debug/net10.0/Shop.dll"),
+        )
+        .unwrap();
+        let command = plan.watching(true).unwrap();
+        assert_eq!(
+            Path::new(command.get_program()).file_stem().map(|stem| stem.to_string_lossy().into_owned()).as_deref(),
+            Some("dotnet"),
+            "watch runs through the .NET command line the IDE builds with"
+        );
+        let arguments: Vec<String> = command.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(
+            arguments,
+            [
+                "watch",
+                "--non-interactive",
+                "run",
+                "--project",
+                "/work/Shop/Shop.csproj",
+                "--no-launch-profile",
+                "--framework",
+                "net10.0",
+                "--",
+                "--seed",
+                "3",
+                "one",
+            ],
+            "the assembly is watch's, and the program's own arguments follow --"
+        );
+        assert_eq!(command.get_current_dir(), Some(Path::new("/work/Shop/bin/Debug/net10.0")));
+        let env = |name: &str| {
+            command.get_envs().find(|(key, _)| *key == std::ffi::OsStr::new(name)).and_then(|(_, value)| value)
+        };
+        assert_eq!(env("DOTNET_WATCH_SUPPRESS_EMOJIS"), Some(std::ffi::OsStr::new("1")));
+        assert_eq!(
+            env("DOTNET_WATCH_RESTART_ON_RUDE_EDIT"),
+            Some(std::ffi::OsStr::new("true")),
+            "a change the runtime cannot apply restarts the program unless the person turned that off"
+        );
+        let gentle = plan.watching(false).unwrap();
+        assert!(!gentle.get_envs().any(|(key, _)| key == std::ffi::OsStr::new("DOTNET_WATCH_RESTART_ON_RUDE_EDIT")));
+
+        let without_framework = LaunchPlan::resolve(
+            &configuration(""),
+            &project("/work/Shop/Shop.csproj"),
+            &properties("/work/Shop/bin/Debug/net10.0/Shop.dll"),
+        )
+        .unwrap();
+        let plain: Vec<String> =
+            without_framework.watching(true).unwrap().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(plain.last().map(String::as_str), Some("--"), "a program with no arguments is given none");
+    }
+
+    #[test]
+    fn watch_starts_in_a_working_folder_that_may_yet_have_to_be_made() {
+        // A project never built has no output folder: watch's first build makes it, and the run makes it where it must.
+        let root = std::env::temp_dir().join(format!("rsharp-watch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let target = root.join("bin/Debug/net10.0/Shop.dll");
+        let plan = LaunchPlan::resolve(
+            &configuration(""),
+            &project("/work/Shop.csproj"),
+            &properties(&target.to_string_lossy()),
+        )
+        .unwrap();
+        assert!(!plan.working_directory.exists());
+        assert_eq!(
+            plan.why_not("run", true).as_deref().map(|why| why.contains("has not been built")),
+            Some(true),
+            "a plain run refuses a program that was never built"
+        );
+        assert_eq!(plan.why_not("run", false), None, "a run under watch builds it itself");
+        plan.make_working_folder().unwrap();
+        assert!(plan.working_directory.is_dir(), "the folder watch starts in was not made");
+        assert!(
+            plan.why_not("run", true).is_some_and(|why| why.contains("has not been built")),
+            "a plain run still refuses the program watch has yet to build"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

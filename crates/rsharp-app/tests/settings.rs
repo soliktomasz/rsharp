@@ -51,6 +51,36 @@ fn a_setting_found_by_search_and_ticked_off_is_in_force_and_kept(cx: &mut TestAp
 }
 
 #[gpui::test]
+fn the_hot_reload_page_is_found_by_search_and_its_checks_are_kept(cx: &mut TestAppContext) {
+    // Rider's Build, Execution, Deployment | Hot Reload: the two switches a run under dotnet watch follows.
+    let run = Run::new("settings-hot-reload", &[]);
+    let (_, main_cx) = run.window(cx);
+    let mut dialog_cx = open_settings(main_cx);
+
+    dialog_cx.simulate_input("hot reload");
+    assert_eq!(
+        dialog(&mut dialog_cx, |d, cx| d.page_names(cx)),
+        ["Hot Reload"],
+        "searching 'hot reload' left other pages"
+    );
+    assert!(!main_cx.update(|_, cx| settings(cx).hot_reload), "Hot Reload is on before it was asked for");
+    click(&mut dialog_cx, "check: Run with Hot Reload (dotnet watch)");
+    click(&mut dialog_cx, "check: Always restart for a change it cannot apply");
+    click(&mut dialog_cx, "button: OK");
+
+    assert!(main_cx.update(|_, cx| settings(cx).hot_reload), "OK did not put Hot Reload in force");
+    assert!(
+        !main_cx.update(|_, cx| settings(cx).hot_reload_restart_on_rude_edit),
+        "OK did not put the restart switch off as it was ticked"
+    );
+    main_cx.update(|_, cx| rsharp_app::state::store(cx).flush());
+    let kept: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(run.state.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(kept["hotReload"], true, "Hot Reload was not written to settings.json");
+    assert_eq!(kept["hotReloadRestartOnRudeEdit"], false);
+}
+
+#[gpui::test]
 fn a_number_out_of_range_blocks_ok_and_says_why(cx: &mut TestAppContext) {
     let run = Run::new("settings-number", &[]);
     let (_, main_cx) = run.window(cx);

@@ -22,11 +22,11 @@ use crate::editor::{
 };
 use crate::find_bar::{Find, FindNext, FindPrevious, Replace};
 use crate::keymap::{OpenSettings, Quit};
-use crate::window::{Back, FindInFiles, Forward, GoToFile, GoToSymbol, GoToType, LastEditLocation, RecentFiles};
 use crate::window::{
-    BuildSelected, BuildSolution, CleanSelected, CleanSolution, EditRunConfigurations, RebuildSelected,
-    RebuildSolution, RerunProgram, RunProgram, Stop, ToggleBuild, ToggleRun,
+    ApplyHotReloadChanges, BuildSelected, BuildSolution, CleanSelected, CleanSolution, EditRunConfigurations,
+    RebuildSelected, RebuildSolution, RerunProgram, RunProgram, Stop, ToggleBuild, ToggleRun,
 };
+use crate::window::{Back, FindInFiles, Forward, GoToFile, GoToSymbol, GoToType, LastEditLocation, RecentFiles};
 use crate::window::{
     CloseAllButPinned, CloseAllTabs, CloseOtherTabs, CloseTabsToLeft, CloseTabsToRight, FileEncoding, LineSeparators,
     OpenTabInNewWindow, PinTab, ReopenClosedTab, ShowHistory, SplitDown, SplitRight, Unsplit, UnsplitAll,
@@ -65,6 +65,7 @@ pub static ALL: &[IdeAction] = &[
     ide!("Run", "Run", ["run program", "start", "execute"], RunProgram),
     ide!("Rerun", "Run", ["run again", "restart"], RerunProgram),
     ide!("Edit Configurations…", "Run", ["run configurations", "edit configurations"], EditRunConfigurations),
+    ide!("Apply Hot Reload Changes", "Run", ["hot reload", "apply changes", "dotnet watch"], ApplyHotReloadChanges),
     ide!("Stop", "Run", ["stop build", "cancel build", "stop program"], Stop),
     ide!("Run Window", "View", ["run output", "console", "tool window"], ToggleRun),
     ide!("New Solution…", "File", ["create solution"], NewSolution),
