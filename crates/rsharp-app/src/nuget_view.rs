@@ -174,8 +174,13 @@ impl NuGetView {
         let Some(root) = self.root.clone() else { return };
         let places = self.places.clone();
         cx.spawn(async move |this, cx| {
-            let read = cx.background_executor().spawn(async move { SourceSet::load(&root, &places) }).await;
+            let asked = root.clone();
+            let read = cx.background_executor().spawn(async move { SourceSet::load(&asked, &places) }).await;
             let _ = this.update(cx, |v, cx| {
+                // Read for a folder since closed: the open one's own read lands instead.
+                if v.root.as_ref() != Some(&root) {
+                    return;
+                }
                 if v.feed.as_ref().is_some_and(|f| !read.enabled().any(|e| &e.name == f)) {
                     v.feed = None;
                 }
@@ -542,8 +547,14 @@ impl NuGetView {
                     if let Some(new) = new {
                         kept.push((file.clone(), new, None));
                     }
-                    if let Some(buffer) = crate::buffer::find(&file, cx) {
-                        buffer.update(cx, |b, cx| b.reload(cx));
+                    // Edits made while dotnet ran are kept; the person is told the tab is not dotnet's text.
+                    match crate::buffer::find(&file, cx) {
+                        Some(buffer) if buffer.read(cx).is_modified() => v.log.push_str(&format!(
+                            "{} has unsaved edits, so its tab was not reloaded with what dotnet wrote.\n",
+                            file.display()
+                        )),
+                        Some(buffer) => buffer.update(cx, |b, cx| b.reload(cx)),
+                        None => {}
                     }
                     wrote.push(file);
                 }
