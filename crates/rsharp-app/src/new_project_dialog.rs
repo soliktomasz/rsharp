@@ -389,9 +389,13 @@ impl NewProjectDialog {
                 true
             }
             "Location" if self.draft.directory.to_string_lossy() != value => {
+                let before = existing_parent(self.context());
                 self.draft.directory = value.into();
                 self.names(cx);
-                self.load(cx);
+                // Typing a path reloads only once it reaches another existing folder.
+                if existing_parent(self.context()) != before {
+                    self.load(cx);
+                }
                 true
             }
             key if key.starts_with("option: ") => {

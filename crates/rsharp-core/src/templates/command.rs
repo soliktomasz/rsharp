@@ -79,12 +79,15 @@ pub(super) fn run(
     let mut problem = None;
     let mut pipes_closed = false;
     loop {
-        if status.is_none() {
+        // Checked after exit too: whatever outlives dotnet with its pipes open must not hold run past them.
+        if problem.is_none() {
             if cancel.load(Ordering::Acquire) {
                 problem = Some("Cancelled".to_string());
             } else if started.elapsed() >= limit {
                 problem = Some(format!("dotnet timed out after {} seconds", limit.as_secs()));
             }
+        }
+        if status.is_none() {
             if problem.is_some() {
                 child.kill();
                 status = child.wait().ok();
@@ -100,8 +103,11 @@ pub(super) fn run(
                 }
             }
         }
+        if problem.is_some() {
+            break;
+        }
         if pipes_closed {
-            if status.is_some() || problem.is_some() {
+            if status.is_some() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -123,8 +129,11 @@ pub(super) fn run(
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
     }
-    for handle in handles {
-        let _ = handle.join();
+    // A reader still blocked on an open pipe ends once it closes or its send fails.
+    if pipes_closed {
+        for handle in handles {
+            let _ = handle.join();
+        }
     }
     for bytes in pending {
         if !bytes.is_empty() {

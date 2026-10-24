@@ -176,6 +176,21 @@ fn absent_or_invalid_ide_host_falls_back_but_corrupt_cache_is_an_error() {
 }
 
 #[test]
+fn a_malformed_template_is_skipped_and_the_rest_still_listed() {
+    let mut fixture = Fixture::new();
+    let broken = |id: &str, short: &str| json!({"Identity":id,"Name":id,"ShortNameList":[short],"TagsCollection":{"type":"project"}});
+    let mut constraint = broken("BadOs", "bados");
+    constraint["Constraints"] = json!([{"Type":"os","Args":"[unclosed"}]);
+    let mut host = broken("BadHost", "badhost");
+    host["HostData"] = json!("{");
+    fixture.all.extend([constraint, host]);
+    let catalog = fixture.read(TemplatePlatform::Linux);
+    let names: Vec<_> = catalog.templates().into_iter().map(|t| t.short_name().to_string()).collect();
+    assert!(names.contains(&"console".to_string()), "one bad template hid the valid ones: {names:?}");
+    assert!(!names.iter().any(|n| n == "bados" || n == "badhost"), "a malformed template was offered: {names:?}");
+}
+
+#[test]
 fn cache_and_ide_host_utf8_boms_are_read_like_dotnet() {
     let fixture = Fixture::new();
     let mut host = b"\xEF\xBB\xBF".to_vec();

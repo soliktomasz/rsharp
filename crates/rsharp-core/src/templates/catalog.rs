@@ -27,8 +27,17 @@ pub fn parse_cache(path: &Path, sdk: &str, platform: TemplatePlatform) -> Result
     let mut hosts = HostFiles::default();
     let mut groups: Vec<(String, Vec<&Value>)> = Vec::new();
     for template in all {
-        if !matches!(tag(template, "type"), Some("project" | "solution")) || !usable(template, platform)? {
+        if !matches!(tag(template, "type"), Some("project" | "solution")) {
             continue;
+        }
+        // One malformed template is skipped, never the catalog with it.
+        match usable(template, platform) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(why) => {
+                log::warn!("Template {} skipped: {why}", text(template, "Identity").unwrap_or("?"));
+                continue;
+            }
         }
         let Some(id) = text(template, "GroupIdentity").or_else(|| text(template, "Identity")) else { continue };
         if let Some((_, group)) = groups.iter_mut().find(|(key, _)| key == id) {
@@ -45,9 +54,13 @@ pub fn parse_cache(path: &Path, sdk: &str, platform: TemplatePlatform) -> Result
         let mut variants = Vec::new();
         let mut newest = None;
         for entry in group {
-            if let Some(v) = variant(entry, platform, &mut hosts)? {
-                newest.get_or_insert(entry);
-                variants.push(v);
+            match variant(entry, platform, &mut hosts) {
+                Ok(Some(v)) => {
+                    newest.get_or_insert(entry);
+                    variants.push(v);
+                }
+                Ok(None) => {}
+                Err(why) => log::warn!("Template {} skipped: {why}", text(entry, "Identity").unwrap_or("?")),
             }
         }
         let Some(newest) = newest else { continue };
