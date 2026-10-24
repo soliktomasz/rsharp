@@ -24,6 +24,10 @@ use crate::find_bar::{Find, FindNext, FindPrevious, Replace};
 use crate::keymap::{OpenSettings, Quit};
 use crate::window::{Back, FindInFiles, Forward, GoToFile, GoToSymbol, GoToType, LastEditLocation, RecentFiles};
 use crate::window::{
+    BuildSelected, BuildSolution, CleanSelected, CleanSolution, RebuildSelected, RebuildSolution, StopBuild,
+    ToggleBuild,
+};
+use crate::window::{
     CloseAllButPinned, CloseAllTabs, CloseOtherTabs, CloseTabsToLeft, CloseTabsToRight, FileEncoding, LineSeparators,
     OpenTabInNewWindow, PinTab, ReopenClosedTab, ShowHistory, SplitDown, SplitRight, Unsplit, UnsplitAll,
 };
@@ -51,6 +55,14 @@ macro_rules! ide {
 }
 
 pub static ALL: &[IdeAction] = &[
+    ide!("Build Solution", "Build", ["compile", "make"], BuildSolution),
+    ide!("Rebuild Solution", "Build", ["compile again"], RebuildSolution),
+    ide!("Clean Solution", "Build", ["remove build output"], CleanSolution),
+    ide!("Build Selected Projects", "Build", ["compile project"], BuildSelected),
+    ide!("Rebuild Selected Projects", "Build", ["compile project again"], RebuildSelected),
+    ide!("Clean Selected Projects", "Build", ["clean project"], CleanSelected),
+    ide!("Build", "View", ["build output", "console", "tool window"], ToggleBuild),
+    ide!("Stop", "Run", ["stop build", "cancel build"], StopBuild),
     ide!("New Solution…", "File", ["create solution"], NewSolution),
     ide!("New Project…", "File", ["add project", "create project"], NewProject),
     ide!("Open…", "File", ["open folder", "open solution", "open project"], OpenFolder),
@@ -155,7 +167,8 @@ pub static ALL: &[IdeAction] = &[
 ];
 
 /// Rider's main menus in its order.
-pub const MENUS: &[&str] = &["File", "Edit", "View", "Navigate", "Code", "Refactor", "Tools", "Window", "Help"];
+pub const MENUS: &[&str] =
+    &["File", "Edit", "View", "Navigate", "Code", "Refactor", "Build", "Run", "Tools", "Window", "Help"];
 
 /// The main menu: macOS's menu bar, the app menu first with Settings and Quit where a Mac keeps them.
 // shortcut: Windows and Linux get no in-window menu yet; Rider's is the toolbar's main menu button.

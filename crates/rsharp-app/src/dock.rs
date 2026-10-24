@@ -41,10 +41,11 @@ pub enum Tool {
     /// Find Usages' results, and every other list of places to go.
     Find,
     NuGet,
+    Build,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 4] = [Tool::Solution, Tool::Problems, Tool::Find, Tool::NuGet];
+    pub const ALL: [Tool; 5] = [Tool::Solution, Tool::Problems, Tool::Find, Tool::NuGet, Tool::Build];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -52,6 +53,7 @@ impl Tool {
             Tool::Problems => "Problems",
             Tool::Find => "Find",
             Tool::NuGet => "NuGet",
+            Tool::Build => "Build",
         }
     }
 
@@ -61,6 +63,7 @@ impl Tool {
             Tool::Problems => "tw-problems",
             Tool::Find => "tw-find",
             Tool::NuGet => "package",
+            Tool::Build => "tw-build",
         }
     }
 
@@ -71,6 +74,7 @@ impl Tool {
             Tool::Problems => Place::BottomLeft,
             Tool::Find => Place::BottomLeft,
             Tool::NuGet => Place::BottomLeft,
+            Tool::Build => Place::BottomLeft,
         }
     }
 }

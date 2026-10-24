@@ -4,6 +4,7 @@ pub mod actions;
 pub mod assets;
 pub mod bench;
 pub mod buffer;
+pub mod build_view;
 pub mod dock;
 pub mod editor;
 pub mod editor_area;

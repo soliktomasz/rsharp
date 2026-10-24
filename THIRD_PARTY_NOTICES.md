@@ -42,6 +42,8 @@ gpui brings about 550 crates of its own. Their notices are not yet written out: 
 - **IntelliJ Platform icons** (`crates/rsharp-app/assets/icons/*.svg`): Apache-2.0, Copyright 2000-2024 JetBrains
   s.r.o. and contributors (https://github.com/JetBrains/intellij-community), the New UI ("expui") icons, taken from
   Rider's platform jar (`intellij.platform.ide.jar`), never from Rider's own (`intellij.rider.*`) jars.
+  Build's `rerun.svg`, `stop.svg` and `tw-build.svg` use `expui/run/rerun_dark.svg`,
+  `expui/run/stop_dark.svg` and `expui/toolwindows/build_dark.svg`; `clear.svg` is its `actions/gc_dark.svg`.
 
 The colours in `crates/rsharp-app/src/theme.rs` are values read from Rider's Islands Dark and Rider Dark themes.
 

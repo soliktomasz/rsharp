@@ -89,6 +89,9 @@ fn the_solution_view_menus_offer_riders_items_with_their_keys(cx: &mut TestAppCo
     assert_eq!(
         menu(cx, "Shop"),
         [
+            "Build".to_string(),
+            "Rebuild".into(),
+            "Clean".into(),
             format!("Add > New Project... ({})", key("⇧⌘N", "Ctrl+Shift+N")),
             "Add > New Solution Folder...".into(),
             "Add > Existing Project...".into(),
@@ -98,6 +101,9 @@ fn the_solution_view_menus_offer_riders_items_with_their_keys(cx: &mut TestAppCo
     assert_eq!(
         menu(cx, "src"),
         [
+            "Build".to_string(),
+            "Rebuild".into(),
+            "Clean".into(),
             format!("Add > New Project... ({})", key("⇧⌘N", "Ctrl+Shift+N")),
             "Add > New Solution Folder...".to_string(),
             "Add > Existing Project...".into(),
@@ -110,6 +116,9 @@ fn the_solution_view_menus_offer_riders_items_with_their_keys(cx: &mut TestAppCo
     assert_eq!(
         menu(cx, "Shop.Web"),
         [
+            "Build".to_string(),
+            "Rebuild".into(),
+            "Clean".into(),
             "Add > New File...".to_string(),
             "Add > New Folder...".into(),
             "Add > Class/Interface...".into(),

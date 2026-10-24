@@ -169,7 +169,23 @@ pub struct CodeEditor {
     pending: Option<(EditPlan, u64)>,
     /// What Roslyn says about the file as it is worked on: popups, usages, colours.
     assist: assist::Assist,
+    /// A console uses the editor's selection and visible-line drawing, without a file or undo history.
+    console: Option<Console>,
 }
+
+struct Console {
+    folder: PathBuf,
+    errors: Vec<Range<usize>>,
+    follow: bool,
+}
+
+pub struct ConsoleLink {
+    pub path: PathBuf,
+    pub line: usize,
+    pub column: usize,
+}
+
+impl gpui::EventEmitter<ConsoleLink> for CodeEditor {}
 
 /// An edit refused because the file is read-only: the window asks to clear that.
 pub struct ReadOnlyEdit;
@@ -294,7 +310,33 @@ impl CodeEditor {
             _buffer_events: subscription,
             pending: None,
             assist: assist::Assist::default(),
+            console: None,
         }
+    }
+
+    pub(crate) fn console(&mut self, folder: PathBuf) {
+        self.console = Some(Console { folder, errors: Vec::new(), follow: true });
+        self.soft_wrap = true;
+    }
+
+    pub(crate) fn output(&mut self, text: Rope, errors: Vec<Range<usize>>, removed: usize, cx: &mut Context<Self>) {
+        let follow = self.console.as_ref().is_some_and(|c| c.follow);
+        self.text = text;
+        self.version += 1;
+        self.rows_key = None;
+        let len = self.text.len_bytes();
+        for selection in &mut self.carets {
+            selection.anchor = selection.anchor.saturating_sub(removed).min(len);
+            selection.head = selection.head.saturating_sub(removed).min(len);
+        }
+        if follow {
+            self.carets = vec![Selection::caret(len)];
+            self.autoscroll = true;
+        }
+        if let Some(console) = &mut self.console {
+            console.errors = errors;
+        }
+        cx.notify();
     }
 
     /// The text and its version as the buffer has them now.
@@ -368,6 +410,9 @@ impl CodeEditor {
     }
 
     fn apply(&mut self, plan: EditPlan, cx: &mut Context<Self>) {
+        if self.console.is_some() {
+            return;
+        }
         if self.buffer.read(cx).read_only {
             self.pending = Some((plan, self.version));
             cx.emit(ReadOnlyEdit);
@@ -379,6 +424,9 @@ impl CodeEditor {
     }
 
     fn undo(&mut self, redo: bool, cx: &mut Context<Self>) {
+        if self.console.is_some() {
+            return;
+        }
         if self.buffer.read(cx).read_only {
             // Undo is not kept to make once cleared, and an edit refused before it must not be made in its place.
             self.pending = None;
@@ -733,8 +781,27 @@ impl CodeEditor {
             return;
         }
         let offset = self.offset_for_point(event.position);
-        let text = self.text.clone();
         let m = event.modifiers;
+        if let Some(console) = &mut self.console {
+            console.follow = false;
+            let line = self.text.byte_to_line(offset);
+            let start = self.text.line_to_byte(line);
+            let text = self.text.line(line).to_string();
+            let prefix = text.find(": error").or_else(|| text.find(": warning"));
+            // Only Cmd+click (Ctrl+click elsewhere) follows the compiler location, as Rider's console does through a
+            // link: a plain click has to place a caret and start a selection, even at the start of an error's line.
+            if m.secondary() && prefix.is_some_and(|end| offset.saturating_sub(start) <= end) {
+                let mut parser = rsharp_core::build::Parser::new(console.folder.clone());
+                parser.push(&text);
+                if let Some(problem) = parser.finish().into_iter().next()
+                    && let Some(path) = problem.path
+                {
+                    cx.emit(ConsoleLink { path, line: problem.line, column: problem.column });
+                    return;
+                }
+            }
+        }
+        let text = self.text.clone();
         // Rider's macOS keymap adds a caret with Alt+Shift+click, its Visual Studio keymap with Ctrl+Alt+click.
         let adds_caret = if cfg!(target_os = "macos") { m.alt && m.shift } else { m.control && m.alt };
         if adds_caret {
@@ -765,8 +832,9 @@ impl CodeEditor {
             self.selecting = true;
             return;
         }
-        // Cmd+click (Ctrl+click elsewhere) goes to the declaration of what was clicked, as Rider's does.
-        if m.secondary() && !m.shift && !m.alt && event.click_count == 1 {
+        // Cmd+click (Ctrl+click elsewhere) goes to the declaration of what was clicked, as Rider's does. A console has
+        // no declaration to go to: its links are compiler locations, followed above.
+        if m.secondary() && !m.shift && !m.alt && event.click_count == 1 && self.console.is_none() {
             self.set_selections(vec![Selection::caret(offset)]);
             self.go_to("textDocument/definition", "Declaration", cx);
             return;
@@ -817,6 +885,10 @@ impl CodeEditor {
     fn on_scroll(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
         let delta = event.delta.pixel_delta(self.line_height);
         self.scroll_y = (self.scroll_y - delta.y).clamp(px(0.), self.max_scroll());
+        let follow = self.scroll_y >= self.max_scroll() - self.line_height * 4.;
+        if let Some(console) = &mut self.console {
+            console.follow = follow;
+        }
         cx.notify();
     }
 
@@ -969,7 +1041,9 @@ impl Focusable for CodeEditor {
 
 impl Render for CodeEditor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.refresh_assist(cx);
+        if self.console.is_none() {
+            self.refresh_assist(cx);
+        }
         let popup = self.popup_view(cx);
         let element = div()
             .id("code-editor")
@@ -1197,7 +1271,14 @@ impl Element for EditorElement {
                 .shape_line("0".into(), font_size, &[run(1, theme::editor::text().into(), &code_font)], None)
                 .width;
             // The numbers, then the folding column against the code.
-            let gutter_width = if settings.show_line_numbers { char_width * digits as f32 + px(32.) } else { px(24.) };
+            let show_numbers = settings.show_line_numbers && editor.console.is_none();
+            let gutter_width = if editor.console.is_some() {
+                px(8.)
+            } else if show_numbers {
+                char_width * digits as f32 + px(32.)
+            } else {
+                px(24.)
+            };
             let text_left = bounds.origin.x + gutter_width + px(TEXT_PAD) - px(16.);
             editor.columns = Some(((bounds.right() - text_left - px(TEXT_PAD)) / char_width).floor().max(8.) as usize);
             editor.reveal_carets();
@@ -1247,6 +1328,9 @@ impl Element for EditorElement {
                 .map(|h| (h.range, theme::syntax(h.kind)))
                 .collect();
             colours.extend(tokens);
+            if let Some(console) = &editor.console {
+                colours.extend(console.errors.iter().map(|range| (range.clone(), theme::error().into())));
+            }
             colours.sort_by_key(|(r, _)| r.start);
             editor.assist.visible_lines = shown.first().map_or(0, |r| r.line)..shown.last().map_or(0, |r| r.line + 1);
 
@@ -1269,7 +1353,7 @@ impl Element for EditorElement {
                     .map(|(at, label)| (at - row.start, label.as_str()))
                     .collect();
                 lines.push(Shaped::new(&content, runs, &hints, font_size, &code_font, window));
-                let number = (row.first && settings.show_line_numbers).then(|| {
+                let number = (row.first && show_numbers).then(|| {
                     let number = (row.line + 1).to_string();
                     let colour = if caret_lines.binary_search(&row.line).is_ok() {
                         theme::editor::line_number_current()

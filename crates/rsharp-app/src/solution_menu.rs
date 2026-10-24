@@ -49,7 +49,7 @@ pub fn menu_for(row: &TreeRow) -> Vec<MenuItem> {
     let paste = Action("Paste", key("⌘V", "Ctrl+V"));
     let holds = || vec![Action("New File...", None), Action("New Folder...", None), Action("Class/Interface...", None)];
     let copy_path = Action("Copy Path", None);
-    match row.kind {
+    let mut menu = match row.kind {
         NodeKind::Solution => vec![
             Submenu(
                 "Add",
@@ -98,7 +98,11 @@ pub fn menu_for(row: &TreeRow) -> Vec<MenuItem> {
             copy_path,
         ],
         NodeKind::Framework | NodeKind::Package => Vec::new(),
+    };
+    if matches!(row.kind, NodeKind::Solution | NodeKind::SolutionFolder | NodeKind::Project) {
+        menu.splice(0..0, [Action("Build", None), Action("Rebuild", None), Action("Clean", None)]);
     }
+    menu
 }
 
 /// A menu's items as the tests and Find Action read them: "Add > New File...", a key in brackets after it.

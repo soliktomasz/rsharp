@@ -19,6 +19,18 @@ pub struct AppSettings {
     pub editor_font_size: f32,
     /// Editor | Font | Line height, as a multiple of the font's own.
     pub editor_line_spacing: f32,
+    /// Build, Execution, Deployment | Build | Presentation.
+    pub open_build_window: bool,
+    pub build_results: BuildResults,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum BuildResults {
+    Always,
+    WarningsOrErrors,
+    #[default]
+    Errors,
+    Never,
 }
 
 impl Default for AppSettings {
@@ -29,6 +41,8 @@ impl Default for AppSettings {
             show_whitespace: false,
             editor_font_size: 13.,
             editor_line_spacing: 1.2,
+            open_build_window: true,
+            build_results: BuildResults::Errors,
         }
     }
 }

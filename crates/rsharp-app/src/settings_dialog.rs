@@ -4,7 +4,7 @@
 use crate::assets::icon;
 use crate::field::{Changed, TextField};
 use crate::find_action::{Choose, Dismiss};
-use crate::settings::{AppSettings, apply, settings};
+use crate::settings::{AppSettings, BuildResults, apply, settings};
 use crate::theme;
 use gpui::{
     AnyWindowHandle, App, Bounds, ClickEvent, Context, Entity, FocusHandle, Focusable, FontWeight, SharedString,
@@ -14,6 +14,7 @@ use gpui::{
 enum Opt {
     Check { label: &'static str, get: fn(&AppSettings) -> bool, set: fn(&mut AppSettings, bool) },
     Number { label: &'static str, number: Number },
+    Results,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -58,6 +59,18 @@ static PAGES: &[Page] = &[
             Opt::Number { label: "Line height", number: Number::LineSpacing },
         ],
     },
+    Page {
+        group: "Build, Execution, Deployment",
+        name: "Build",
+        options: &[
+            Opt::Check {
+                label: "Open the Build window when a build is explicitly invoked",
+                get: |s| s.open_build_window,
+                set: |s, value| s.open_build_window = value,
+            },
+            Opt::Results,
+        ],
+    },
 ];
 
 pub struct SettingsDialog {
@@ -68,6 +81,7 @@ pub struct SettingsDialog {
     page: usize,
     problem: Option<SharedString>,
     focus: FocusHandle,
+    results_open: bool,
 }
 
 /// Opens Settings, or brings it forward when it is open already.
@@ -117,7 +131,16 @@ impl SettingsDialog {
         };
         let font_size = number_field(draft.editor_font_size, cx);
         let line_spacing = number_field(draft.editor_line_spacing, cx);
-        Self { draft, search, font_size, line_spacing, page: 0, problem: None, focus: cx.focus_handle() }
+        Self {
+            draft,
+            search,
+            font_size,
+            line_spacing,
+            page: 0,
+            problem: None,
+            focus: cx.focus_handle(),
+            results_open: false,
+        }
     }
 
     /// The pages the search leaves, by index: a page stays when its name, its group or an option on it matches.
@@ -133,6 +156,7 @@ impl SettingsDialog {
                     || p.options.iter().any(|o| {
                         matches(match o {
                             Opt::Check { label, .. } | Opt::Number { label, .. } => label,
+                            Opt::Results => "Showing build results after build completed",
                         })
                     })
             })
@@ -287,6 +311,61 @@ impl Render for SettingsDialog {
                             }),
                     )
                     .into_any_element(),
+                Opt::Results => {
+                    let choices = [
+                        (BuildResults::Always, "Always"),
+                        (BuildResults::WarningsOrErrors, "Warnings or errors"),
+                        (BuildResults::Errors, "Errors"),
+                        (BuildResults::Never, "Never"),
+                    ];
+                    let label = choices.iter().find(|(mode, _)| *mode == self.draft.build_results).unwrap().1;
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .child("Showing build results after build completed")
+                        .child(
+                            div()
+                                .id("build-results-choice")
+                                .debug_selector(|| "build results choice".to_string())
+                                .w(px(240.))
+                                .h(px(28.))
+                                .px(px(8.))
+                                .rounded(px(4.))
+                                .border_1()
+                                .border_color(theme::control_border())
+                                .flex()
+                                .items_center()
+                                .child(div().flex_1().child(label))
+                                .child(icon("chevron-down", 16.))
+                                .on_click(cx.listener(|d, _, _, cx| {
+                                    d.results_open = !d.results_open;
+                                    cx.notify();
+                                })),
+                        )
+                        .when(self.results_open, |d| {
+                            d.child(div().w(px(240.)).flex().flex_col().children(choices.into_iter().map(
+                                |(mode, label)| {
+                                    div()
+                                        .id(label)
+                                        .debug_selector(move || format!("build results: {label}"))
+                                        .h(px(24.))
+                                        .px(px(8.))
+                                        .flex()
+                                        .items_center()
+                                        .rounded(px(4.))
+                                        .hover(|d| d.bg(theme::row_hover()))
+                                        .child(label)
+                                        .on_click(cx.listener(move |d, _, _, cx| {
+                                            d.draft.build_results = mode;
+                                            d.results_open = false;
+                                            cx.notify();
+                                        }))
+                                },
+                            )))
+                        })
+                        .into_any_element()
+                }
             })
             .collect();
         let mac = cfg!(target_os = "macos");

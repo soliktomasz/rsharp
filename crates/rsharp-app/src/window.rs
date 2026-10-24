@@ -36,6 +36,14 @@ actions!(
         ToggleSolution,
         ToggleProblems,
         ToggleNuGet,
+        ToggleBuild,
+        BuildSolution,
+        RebuildSolution,
+        CleanSolution,
+        BuildSelected,
+        RebuildSelected,
+        CleanSelected,
+        StopBuild,
         HideToolWindow,
         FloatToolWindow,
         RestoreDefaultLayout,
@@ -79,7 +87,9 @@ actions!(
     ]
 );
 
+mod build;
 mod file_moves;
+pub use build::{BuildOutcome, BuildStatus};
 mod file_ops;
 mod msbuild;
 mod new_project;
@@ -109,6 +119,7 @@ pub enum ProblemsTab {
     File,
     Solution,
     Toolset,
+    Build,
 }
 
 /// A place the caret was: its file, line and UTF-16 column, from 0.
@@ -226,6 +237,19 @@ pub struct MainWindow {
     project_menu: bool,
     nuget: Entity<crate::nuget_view::NuGetView>,
     _nuget_subscription: gpui::Subscription,
+    build: Entity<crate::build_view::BuildView>,
+    build_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    build_generation: u64,
+    _build_task: Option<Task<()>>,
+    last_build: Option<(rsharp_core::build::Kind, Option<Vec<PathBuf>>)>,
+    build_problems: Vec<rsharp_core::build::Problem>,
+    build_outcome: Option<build::BuildOutcome>,
+}
+
+impl Drop for MainWindow {
+    fn drop(&mut self) {
+        self.cancel_build();
+    }
 }
 
 impl MainWindow {
@@ -233,6 +257,7 @@ impl MainWindow {
         let owner = cx.weak_entity();
         window.on_window_should_close(cx, move |_, cx| {
             let _ = owner.update(cx, |m, cx| {
+                m.cancel_build();
                 if let Some(handle) = m.creation_dialog {
                     let _ = handle.update(cx, |d, w, cx| d.cancel(w, cx));
                 }
@@ -242,12 +267,37 @@ impl MainWindow {
         let root_focus = cx.focus_handle();
         window.focus(&root_focus);
         let nuget = cx.new(crate::nuget_view::NuGetView::new);
+        let build = cx.new(crate::build_view::BuildView::new);
+        cx.subscribe_in(&build, window, |m, _, action: &crate::build_view::BuildAction, _, cx| {
+            match action {
+                crate::build_view::BuildAction::Rerun => {
+                    if let Some((kind, targets)) = m.last_build.clone() {
+                        m.begin_build(kind, targets, cx);
+                    }
+                }
+                crate::build_view::BuildAction::Stop => m.cancel_build(),
+            }
+            cx.notify();
+        })
+        .detach();
+        let console = build.read(cx).editor().clone();
+        cx.subscribe_in(&console, window, |m, _, link: &editor::ConsoleLink, window, cx| {
+            m.open_file(&link.path, Some((link.line, link.column)), window, cx);
+        })
+        .detach();
         let _nuget_subscription = cx.subscribe(&nuget, |m, _, wrote: &crate::nuget_view::Wrote, cx| {
             for path in &wrote.0 {
                 m.follow_written(path, cx);
             }
         });
         Self {
+            build,
+            build_cancel: None,
+            build_generation: 0,
+            _build_task: None,
+            last_build: None,
+            build_problems: Vec::new(),
+            build_outcome: None,
             nuget,
             _nuget_subscription,
             root_focus,
@@ -310,6 +360,7 @@ impl MainWindow {
     }
 
     pub fn open_workspace(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        self.leave_build(cx);
         self.save_state(cx);
         self.leave_editors();
         let path = rsharp_core::paths::canonical(path);
@@ -333,6 +384,9 @@ impl MainWindow {
             SolutionTree::new(solution, evaluated, kept.open.iter().cloned().collect())
         });
         self.start_watching(&folder, cx);
+        // Install the shared client before either a build or Roslyn can start, so both hold the same Host.
+        self.host =
+            cx.global::<crate::state::Ide>().servers.then(|| rsharp_lsp::SharedHost::carried(&folder)).flatten();
         self.workspace = Some(workspace);
         self.selected = Some(0);
         self.rebuild_rows();
@@ -408,7 +462,6 @@ impl MainWindow {
 
     fn start_server(&mut self, cx: &mut Context<Self>) {
         self.server = None;
-        self.host = None;
         (self.evaluating, self.evaluate_again, self._evaluate_task) = (false, false, None);
         let Some(workspace) = &self.workspace else { return };
         if !cx.global::<crate::state::Ide>().servers {
@@ -430,13 +483,9 @@ impl MainWindow {
         self.projects_loaded = false;
         let (folder, solution) = (workspace.folder.clone(), workspace.solution.clone());
         let logs = store(cx).root().join("logs").join("roslyn");
+        let host = self.host.clone();
         let (sender, mut events) = futures::channel::mpsc::unbounded();
         self._server_task = Some(cx.spawn(async move |this, cx| {
-            // Found off the UI thread, as finding dotnet looks along PATH; the evaluations and Roslyn share it.
-            let host = {
-                let folder = folder.clone();
-                cx.background_executor().spawn(async move { rsharp_lsp::SharedHost::carried(&folder) }).await
-            };
             let given = host.clone();
             if this
                 .update(cx, |w, cx| {
@@ -716,6 +765,19 @@ impl MainWindow {
                 })
                 .collect(),
             ProblemsTab::Toolset => self.load_problems.iter().map(|(p, _, m)| format!("{} {m}", name(p))).collect(),
+            ProblemsTab::Build => self
+                .build_problems
+                .iter()
+                .map(|problem| {
+                    format!(
+                        "{}:{} {}: {}",
+                        problem.path.as_deref().map(&name).unwrap_or_default(),
+                        problem.line + 1,
+                        problem.code,
+                        problem.message
+                    )
+                })
+                .collect(),
         }
     }
 
@@ -1461,6 +1523,7 @@ impl MainWindow {
 
     /// Back to the Welcome screen, the folder's state kept, as Rider's File | Close Solution.
     pub fn close_solution(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.leave_build(cx);
         self.save_state(cx);
         self.leave_editors();
         self.workspace = None;
@@ -1820,6 +1883,7 @@ impl Render for MainWindow {
                 .on_action(cx.listener(move |_, _: &editor::Escape, _, cx| close.update(cx, |b, cx| b.close(cx))))
             })
             .map(|d| self.tab_actions(d, cx))
+            .map(|d| self.build_actions(d, cx))
             .when(self.workspace.is_some(), |d| {
                 use crate::goto::Kind;
                 d.on_action(cx.listener(|w, _: &GoToFile, window, cx| w.open_go_to(Kind::File, window, cx)))
@@ -2176,6 +2240,7 @@ impl MainWindow {
             Tool::Problems => self.problems_content(cx).into_any_element(),
             Tool::Find => self.find_content(cx).into_any_element(),
             Tool::NuGet => self.nuget.clone().into_any_element(),
+            Tool::Build => self.build.clone().into_any_element(),
         };
         island().child(header).child(content)
     }
@@ -2188,6 +2253,7 @@ impl MainWindow {
                 .map(|e| e.read(cx).path.file_name().unwrap_or_default().to_string_lossy().into_owned()),
             Tool::Find => self.found.as_ref().map(|(title, found)| format!("{title}: {}", found.len())),
             Tool::NuGet => None,
+            Tool::Build => self.build_outcome.as_ref().map(|outcome| outcome.message.clone()),
         }
     }
 
@@ -2282,6 +2348,7 @@ impl MainWindow {
             Tool::Problems => self.problems_focus.clone(),
             Tool::Find => self.find_focus.clone(),
             Tool::NuGet => self.nuget.focus_handle(cx),
+            Tool::Build => self.build.focus_handle(cx),
         }
     }
 
@@ -2392,6 +2459,7 @@ impl MainWindow {
             ProblemsTab::File => self.file_problems(cx).into_any_element(),
             ProblemsTab::Solution => self.solution_problems_view(cx).into_any_element(),
             ProblemsTab::Toolset => self.toolset_problems().into_any_element(),
+            ProblemsTab::Build => self.build_problems_view(cx).into_any_element(),
         };
         div()
             .flex_1()
@@ -2406,6 +2474,7 @@ impl MainWindow {
                     .pb(px(4.))
                     .child(tab("file", "File".into(), ProblemsTab::File, cx))
                     .child(tab("solution", titled("Solution", solution_count), ProblemsTab::Solution, cx))
+                    .child(tab("build", titled("Build", self.build_problems.len()), ProblemsTab::Build, cx))
                     .child(tab("toolset", titled("Toolset", self.load_problems.len()), ProblemsTab::Toolset, cx)),
             )
             .child(body)
@@ -3153,7 +3222,34 @@ impl MainWindow {
                 }),
             ))
             .child(div().flex_1())
-            .children(self.said.clone().map(|said| status_widget(said.to_string()).text_color(theme::error())))
+            .children(self.said.clone().map(|said| {
+                let result = self.build_outcome.as_ref().filter(|outcome| outcome.message == said.as_ref());
+                let error = result.map_or(!self.is_building(), |outcome| {
+                    matches!(outcome.status, BuildStatus::Failed | BuildStatus::NotStarted)
+                });
+                status_widget(said.to_string())
+                    .id("status-message")
+                    .debug_selector(|| "status message".to_string())
+                    .text_color(if error { theme::error() } else { theme::text_muted() })
+                    .when(result.is_some(), |d| {
+                        d.hover(|d| d.bg(theme::button_hover())).on_click(cx.listener(
+                            |m, _: &ClickEvent, window, cx| {
+                                if m.build_problems.is_empty() {
+                                    m.dock.show(Tool::Build);
+                                } else {
+                                    m.dock.show(Tool::Problems);
+                                    m.problems_tab = ProblemsTab::Build;
+                                }
+                                m.save_state(cx);
+                                window.focus(&m.tool_focus(
+                                    if m.build_problems.is_empty() { Tool::Build } else { Tool::Problems },
+                                    cx,
+                                ));
+                                cx.notify();
+                            },
+                        ))
+                    })
+            }))
             .children(problems.filter(|(e, w)| e + w > 0).map(|(errors, warnings)| {
                 status_widget(format!("{}, {}", count(errors, "error"), count(warnings, "warning")))
                     .text_color(if errors > 0 { theme::error() } else { theme::warning() })

@@ -115,6 +115,19 @@ impl MainWindow {
         self.selected = Some(row);
         let title = item_title(item);
         match (found.kind, title) {
+            (NodeKind::Solution | NodeKind::SolutionFolder | NodeKind::Project, "Build" | "Rebuild" | "Clean") => {
+                let kind = match title {
+                    "Rebuild" => rsharp_core::build::Kind::Rebuild,
+                    "Clean" => rsharp_core::build::Kind::Clean,
+                    _ => rsharp_core::build::Kind::Build,
+                };
+                let selected = if found.kind == NodeKind::Solution { None } else { self.selected_build_targets() };
+                if found.kind != NodeKind::Solution && selected.is_none() {
+                    self.said = Some("Nothing to build: no projects selected".into());
+                } else {
+                    self.begin_build(kind, selected, cx);
+                }
+            }
             (NodeKind::Solution | NodeKind::SolutionFolder, "New Project...") => {
                 self.show_new_project(solution_folder_of(&found), window, cx)
             }

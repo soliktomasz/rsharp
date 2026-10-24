@@ -174,6 +174,14 @@ Done when: a solution can be built up from New Solution to three projects with r
 entirely in RSharp, its files byte-identical to Passenger's for the same steps.
 
 ### Phase 5: Build, run and test (M)
+Built: the first slice, explicit Build/Rebuild/Clean of the solution or selected project/folder, through
+literal dotnet commands with SDK overrides removed and MSBuild workers isolated. Passenger's Host now routes
+concurrent requests and holds its generating design-time builds off until the explicit build ends. Build has
+a dockable console with bounded output, Rerun/Stop/Clear and compiler links; Problems has a separate Build tab.
+Dirty workspace buffers, including detached editors, save first. Stop and leaving the workspace end the build's
+process tree; New Solution builds once after opening. Presentation settings control opening Build and showing
+its results. Run configurations, Run, Hot Reload and Unit Tests remain the next slices. Run in the terminal
+waits for Phase 6.
 - Builds through `DotnetCommand` with the host's hold, read for errors, and the Build window.
 - Run configurations: from launchSettings, the folder's own, and Edit Configurations; `LaunchPlan`; Run in the
   terminal; console links; the browser opened once the port answers.
