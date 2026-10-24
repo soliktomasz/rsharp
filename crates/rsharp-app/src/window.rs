@@ -35,6 +35,7 @@ actions!(
         NewProject,
         ToggleSolution,
         ToggleProblems,
+        ToggleNuGet,
         HideToolWindow,
         FloatToolWindow,
         RestoreDefaultLayout,
@@ -81,6 +82,7 @@ actions!(
 mod file_moves;
 mod file_ops;
 mod new_project;
+mod nuget;
 mod solution_actions;
 
 use solution_actions::{NameFor, SolutionMenu};
@@ -221,6 +223,8 @@ pub struct MainWindow {
     creation_opening: bool,
     _creation_subscription: Option<gpui::Subscription>,
     project_menu: bool,
+    nuget: Entity<crate::nuget_view::NuGetView>,
+    _nuget_subscription: gpui::Subscription,
 }
 
 impl MainWindow {
@@ -236,7 +240,15 @@ impl MainWindow {
         });
         let root_focus = cx.focus_handle();
         window.focus(&root_focus);
+        let nuget = cx.new(crate::nuget_view::NuGetView::new);
+        let _nuget_subscription = cx.subscribe(&nuget, |m, _, wrote: &crate::nuget_view::Wrote, cx| {
+            for path in &wrote.0 {
+                m.follow_written(path, cx);
+            }
+        });
         Self {
+            nuget,
+            _nuget_subscription,
             root_focus,
             workspace: None,
             branch: None,
@@ -339,6 +351,7 @@ impl MainWindow {
         if let Some(active) = kept.active.filter(|a| *a < self.area.group().tabs.len()) {
             self.show_tab(0, active, window, cx);
         }
+        self.sync_nuget(cx);
         cx.notify();
     }
 
@@ -845,6 +858,7 @@ impl MainWindow {
         let Some(tree) = &mut self.tree else { return };
         tree.set_evaluated(project);
         self.rebuild_rows();
+        self.sync_nuget(cx);
         cx.notify();
     }
 
@@ -1457,6 +1471,7 @@ impl MainWindow {
         self.server_state = ServerState::None;
         self._server_task = None;
         self.branch = None;
+        self.sync_nuget(cx);
         window.set_window_title("RSharp");
         window.focus(&self.root_focus);
         cx.notify();
@@ -1755,6 +1770,7 @@ impl Render for MainWindow {
                     .on_action(
                         cx.listener(|w, _: &ToggleProblems, window, cx| w.toggle_tool(Tool::Problems, window, cx)),
                     )
+                    .on_action(cx.listener(|w, _: &ToggleNuGet, window, cx| w.toggle_tool(Tool::NuGet, window, cx)))
                     .on_action(cx.listener(|w, _: &RestoreDefaultLayout, _, cx| {
                         w.dock = DockLayout::default();
                         w.save_state(cx);
@@ -2156,6 +2172,7 @@ impl MainWindow {
             Tool::Solution => self.solution_content(window, cx).into_any_element(),
             Tool::Problems => self.problems_content(cx).into_any_element(),
             Tool::Find => self.find_content(cx).into_any_element(),
+            Tool::NuGet => self.nuget.clone().into_any_element(),
         };
         island().child(header).child(content)
     }
@@ -2167,6 +2184,7 @@ impl MainWindow {
                 .active_editor()
                 .map(|e| e.read(cx).path.file_name().unwrap_or_default().to_string_lossy().into_owned()),
             Tool::Find => self.found.as_ref().map(|(title, found)| format!("{title}: {}", found.len())),
+            Tool::NuGet => None,
         }
     }
 
@@ -2216,7 +2234,7 @@ impl MainWindow {
     }
 
     fn focused_tool(&self, window: &Window, cx: &App) -> Option<Tool> {
-        Tool::ALL.into_iter().find(|t| self.tool_focus(*t).contains_focused(window, cx))
+        Tool::ALL.into_iter().find(|t| self.tool_area(*t, cx).contains_focused(window, cx))
     }
 
     /// Floats a docked window in the middle of the window, or docks a floating one back in its place.
@@ -2230,7 +2248,7 @@ impl MainWindow {
             self.dock.float(tool, Rect { x, y, w, h });
             self.dock = self.dock.clone().clamped();
         }
-        window.focus(self.tool_focus(tool));
+        window.focus(&self.tool_focus(tool, cx));
         self.save_state(cx);
         cx.notify();
     }
@@ -2241,25 +2259,35 @@ impl MainWindow {
         let (x, y) = (f32::from(at.x) - 40., f32::from(at.y) - 20.);
         self.dock.float(tool, Rect { x, y, w: 420., h: 360. });
         self.dock = self.dock.clone().clamped();
-        window.focus(self.tool_focus(tool));
+        window.focus(&self.tool_focus(tool, cx));
         self.save_state(cx);
         cx.notify();
     }
 
-    fn tool_focus(&self, tool: Tool) -> &FocusHandle {
+    /// Where a tool window takes the keys when it opens: NuGet's search field, as Rider's.
+    fn tool_focus(&self, tool: Tool, cx: &App) -> FocusHandle {
         match tool {
-            Tool::Solution => &self.explorer_focus,
-            Tool::Problems => &self.problems_focus,
-            Tool::Find => &self.find_focus,
+            Tool::NuGet => self.nuget.read(cx).search_field().focus_handle(cx),
+            _ => self.tool_area(tool, cx),
+        }
+    }
+
+    /// The focus that holds everything in a tool window, which has the keys while any part of it does.
+    fn tool_area(&self, tool: Tool, cx: &App) -> FocusHandle {
+        match tool {
+            Tool::Solution => self.explorer_focus.clone(),
+            Tool::Problems => self.problems_focus.clone(),
+            Tool::Find => self.find_focus.clone(),
+            Tool::NuGet => self.nuget.focus_handle(cx),
         }
     }
 
     /// Opens or closes a tool window; one opened takes the keys, one closed with them gives them to the editor.
     pub fn toggle_tool(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
-        let had_focus = self.tool_focus(tool).contains_focused(window, cx);
+        let had_focus = self.tool_area(tool, cx).contains_focused(window, cx);
         self.dock.toggle(tool);
         if self.dock.is_open(tool) {
-            window.focus(self.tool_focus(tool));
+            window.focus(&self.tool_focus(tool, cx));
         } else if had_focus {
             match self.active_editor() {
                 Some(editor) => window.focus(&editor.focus_handle(cx)),

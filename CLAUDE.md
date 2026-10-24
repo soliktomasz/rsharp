@@ -59,6 +59,11 @@ terminal and takes focus for a moment.
   options and missing-pack offers; `cache::Catalogs` shares reads, watches packages.json and SDK/template roots,
   and retries failed reads; `create` runs literal dotnet arguments, takes Avalonia Accelerate out before restore,
   and owns generated output until `CreatedProjects::keep`, with guarded cancellation cleanup),
+  `nuget` (NuGet as restore sees it: `sources` reads the nuget.config files as NuGet.Configuration does, closer
+  keys winning, `<clear />`, disabled feeds, packageSourceMapping, nuget.org assumed without a user file and never
+  written; `feed` searches v3 feeds over `ureq` and folders of .nupkg files, All Feeds at once and merged; `change`
+  runs `dotnet add package` and `dotnet remove package`, as Passenger does, so the bytes are dotnet's; `version`
+  NuGet's order),
   `editorconfig` (the .editorconfig files over a file, its own parser and globs), `history` (Local History: each version
   of a file under `localHistory/`, content once by hash in `blobs/`, a JSON line per version in `changes.log`), `state` (the one `StateStore`: `RSHARP_STATE` or the local app data; app documents
   at its root, each folder's under `workspaces/<name>-<hash>/`; writes debounced on its own thread, merged over
@@ -115,7 +120,10 @@ terminal and takes focus for a moment.
   `field.rs` is the single-line text field, its editing `rsharp-text`'s commands under the
   editor's own actions; `fuzzy.rs` how a query matches a name. `settings.rs` is `AppSettings` (`settings.json`),
   a gpui global that editors observe; `settings_dialog.rs` Rider's searchable Settings window (a new setting is
-  a field, an `Opt` on a page, and what follows it). `solution_view.rs` is the Solution view's tree for a folder with a solution (only open nodes walked, each kept
+  a field, an `Opt` on a page, and what follows it). `nuget_view.rs` is Rider's NuGet window (Packages, Sources
+  and Log tabs; the search field takes the keys when it opens), its projects fed by `window/nuget.rs` after each
+  evaluation; a change saves open copies first, keeps the old bytes in Local History and tells the window what it
+  wrote. `solution_view.rs` is the Solution view's tree for a folder with a solution (only open nodes walked, each kept
   open by its key); a folder without one shows its files. `solution_menu.rs` is a row's menu (Rider's items and keys)
   and the name popup; `reference_dialog.rs` Add Reference; the window's side of changing the solution is in
   `window/`: `solution_actions.rs` (the menu's actions, solution folders, Add Existing, Remove, Add Reference, the

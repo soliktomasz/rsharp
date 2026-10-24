@@ -24,6 +24,11 @@ change that brings it in.
 | `trash` | MIT | Artur Kovacs and contributors |
 | `tree-sitter` | MIT | Max Brunsfeld |
 | `tree-sitter-c-sharp` | MIT | Max Brunsfeld, Damien Guard and contributors |
+| `ureq` | MIT OR Apache-2.0 | Martin Algesten and contributors |
+
+`ureq` brings rustls-platform-verifier (MIT OR Apache-2.0), webpki-roots (CDLA-Permissive-2.0, Mozilla's root
+certificates as data), ureq-proto, utf8-zero and base64 (MIT OR Apache-2.0); on macOS security-framework (MIT OR
+Apache-2.0), on Linux rustls-native-certs and openssl-probe (MIT OR Apache-2.0). Its rustls and ring are gpui's.
 
 gpui brings about 550 crates of its own. Their notices are not yet written out: a release must generate them
 (for example with `cargo about`) and fail on any licence that is not open source.
@@ -52,8 +57,10 @@ nothing into the output.
 ## Ported from Passenger
 
 The project-template family rules, pack metadata and template-creation behavior in
-`crates/rsharp-core/src/templates/` are ported from Passenger's `src/Passenger.App/Templates/`
-(MIT, Copyright (c) 2026 Ted L, https://github.com/Zaneris/passenger).
+`crates/rsharp-core/src/templates/` are ported from Passenger's `src/Passenger.App/Templates/`, and the NuGet
+sources, feeds and window in `crates/rsharp-core/src/nuget/` and `crates/rsharp-app/src/nuget_view.rs` from its
+`src/Passenger.App/Packages/` and `ToolWindows/NuGetView.cs` (MIT, Copyright (c) 2026 Ted L,
+https://github.com/Zaneris/passenger).
 
 ## Run, not carried
 

@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 const KEPT: usize = 256 * 1024;
 
 #[derive(Debug)]
-pub(super) struct CommandResult {
+pub(crate) struct CommandResult {
     pub status: ExitStatus,
     pub stdout: String,
     pub stderr: String,
@@ -30,7 +30,7 @@ enum Pipe {
     Failed(String),
 }
 
-pub(super) fn run(
+pub(crate) fn run(
     mut command: Command,
     limit: Duration,
     cancel: &AtomicBool,

@@ -748,6 +748,7 @@ impl MainWindow {
     /// unsaved edits kept as it is), a file not open is kept in Local History as an External change, the solution is
     /// read again when it changed, and the projects whose inputs changed are evaluated again.
     fn folder_changed(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        self.package_sources_changed(&paths, cx);
         let solution = self.tree.as_ref().map(|t| t.solution().path.clone());
         let mut closed = Vec::new();
         for path in &paths {
