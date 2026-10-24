@@ -2,6 +2,7 @@
 //! folder up, then the user's and the machine's, a closer file's key winning and a `<clear />` ending the files after
 //! it, with the packageSourceMapping that keeps a package to its feeds.
 
+use super::secret::{self, Credentials};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -27,12 +28,15 @@ impl Place {
     }
 }
 
-/// A feed as one file writes it.
+/// A feed as one file writes it, with whose credentials the file holds for it (never the password itself).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConfigFeed {
     pub name: String,
     pub value: String,
     pub disabled_here: bool,
+    pub username: Option<String>,
+    pub has_password: bool,
+    pub allow_insecure: bool,
 }
 
 /// A nuget.config in effect: its feeds, whether it clears those of the files after it, or why it does not read.
@@ -41,18 +45,31 @@ pub struct ConfigFile {
     pub path: PathBuf,
     pub place: Place,
     pub feeds: Vec<ConfigFeed>,
+    /// The feeds this file disables, its own or another file's.
+    pub disabled: Vec<String>,
     pub clears: bool,
     pub problem: Option<String>,
 }
 
-/// A feed in effect: where it is (a folder made absolute, or a URL), whether it is enabled, and the file naming it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl ConfigFile {
+    /// The machine's files are NuGet's to read and never to write, as the Sources tab keeps them.
+    pub fn read_only(&self) -> bool {
+        self.place == Place::Machine
+    }
+}
+
+/// A feed in effect: where it is (a folder made absolute, or a URL), whether it is enabled, the file naming it, its
+/// credentials (from a `NuGetPackageSourceCredentials_` variable, else the closest file's) and its connection switches.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Feed {
     pub name: String,
     pub source: String,
     pub enabled: bool,
     pub protocol_version: Option<u32>,
     pub defined_in: Option<PathBuf>,
+    pub credentials: Option<Credentials>,
+    pub allow_insecure: bool,
+    pub skip_certificate_check: bool,
 }
 
 impl Feed {
@@ -100,6 +117,9 @@ pub struct SourceSet {
     /// NuGet's order: the folder's first, the machine's last.
     pub files: Vec<ConfigFile>,
     pub feeds: Vec<Feed>,
+    /// The feeds the files' auditSources name, which restore's audit asks for known vulnerabilities in place of the
+    /// package sources; none when no file names any.
+    pub audit_sources: Vec<Feed>,
     /// Each feed's patterns, by feed name in lower case; empty when no file maps packages.
     mapping: HashMap<String, Vec<String>>,
 }
@@ -154,22 +174,45 @@ impl SourceSet {
                 disabled.insert(key.to_lowercase(), value.eq_ignore_ascii_case("true"));
             }
         }
-        let mut feeds: Vec<Feed> = Vec::new();
-        let sources = in_effect("packageSources");
-        for parsed in &sources {
-            for add in parsed.adds("packageSources") {
-                if feeds.iter().any(|f| f.name.eq_ignore_ascii_case(&add.key)) {
-                    continue;
+        let credentials_of = |name: &str| -> Option<Credentials> {
+            from_environment(name).or_else(|| {
+                let files = in_effect("packageSourceCredentials");
+                files.iter().find_map(|p| p.credentials.iter().find(|(n, _)| n.eq_ignore_ascii_case(name))).and_then(
+                    |(_, values)| {
+                        let value =
+                            |key: &str| values.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v);
+                        let password = value("ClearTextPassword")
+                            .cloned()
+                            .or_else(|| value("Password").and_then(|v| secret::unprotect(v)))?;
+                        Some(Credentials { username: value("Username")?.clone(), password })
+                    },
+                )
+            })
+        };
+        let feeds_of = |section: &str, files: &[&Parsed]| -> Vec<Feed> {
+            let mut feeds: Vec<Feed> = Vec::new();
+            for parsed in files {
+                for add in parsed.adds(section) {
+                    if feeds.iter().any(|f| f.name.eq_ignore_ascii_case(&add.key)) {
+                        continue;
+                    }
+                    feeds.push(Feed {
+                        enabled: !disabled.get(&add.key.to_lowercase()).copied().unwrap_or(false),
+                        source: resolve(&add.value, &parsed.path),
+                        protocol_version: add.protocol_version,
+                        defined_in: Some(parsed.path.clone()),
+                        credentials: credentials_of(&add.key),
+                        allow_insecure: add.allow_insecure,
+                        skip_certificate_check: add.skip_certificate_check,
+                        name: add.key.clone(),
+                    });
                 }
-                feeds.push(Feed {
-                    enabled: !disabled.get(&add.key.to_lowercase()).copied().unwrap_or(false),
-                    source: resolve(&add.value, &parsed.path),
-                    protocol_version: add.protocol_version,
-                    defined_in: Some(parsed.path.clone()),
-                    name: add.key.clone(),
-                });
             }
-        }
+            feeds
+        };
+        let sources = in_effect("packageSources");
+        let mut feeds = feeds_of("packageSources", &sources);
+        let audit_sources = feeds_of("auditSources", &in_effect("auditSources"));
         // NuGet writes the user's file naming nuget.org when there is none; it is taken as written, never written here.
         let cleared_before_user = read_files.iter().any(|p| {
             matches!(p.place, Place::Solution | Place::Folder) && p.cleared.iter().any(|s| s == "packageSources")
@@ -180,7 +223,8 @@ impl SourceSet {
                 source: NUGET_ORG.into(),
                 enabled: !disabled.get("nuget.org").copied().unwrap_or(false),
                 protocol_version: Some(3),
-                defined_in: None,
+                credentials: credentials_of("nuget.org"),
+                ..Default::default()
             });
         }
         let mut mapping: HashMap<String, Vec<String>> = HashMap::new();
@@ -189,11 +233,17 @@ impl SourceSet {
                 mapping.insert(feed.to_lowercase(), patterns.clone());
             }
         }
-        SourceSet { root: root.into(), files, feeds, mapping }
+        SourceSet { root: root.into(), files, feeds, audit_sources, mapping }
     }
 
     pub fn enabled(&self) -> impl Iterator<Item = &Feed> {
         self.feeds.iter().filter(|f| f.enabled)
+    }
+
+    /// Where restore's audit, and so the NuGet window, learns of vulnerable packages: the audit sources, else every
+    /// enabled package source.
+    pub fn audited(&self) -> Vec<Feed> {
+        if self.audit_sources.is_empty() { self.enabled().cloned().collect() } else { self.audit_sources.clone() }
     }
 
     pub fn mapped(&self) -> bool {
@@ -220,6 +270,52 @@ impl SourceSet {
         let longest = self.mapping.values().filter_map(|p| best(p)).max();
         longest.is_some() && self.mapping.get(&feed.to_lowercase()).and_then(|p| best(p)) == longest
     }
+}
+
+/// `NuGetPackageSourceCredentials_<name>`, as NuGet reads it: `Username=…;Password=…`.
+fn from_environment(name: &str) -> Option<Credentials> {
+    let value = std::env::var(format!("NuGetPackageSourceCredentials_{name}")).ok()?;
+    let part = |key: &str| {
+        value.split(';').find_map(|p| {
+            p.split_once('=').filter(|(k, _)| k.trim().eq_ignore_ascii_case(key)).map(|(_, v)| v.to_string())
+        })
+    };
+    Some(Credentials { username: part("Username")?, password: part("Password")? })
+}
+
+/// An element name as .NET's XmlConvert.DecodeName reads it: `_xHHHH_` is that character (`My_x0020_Feed`).
+pub(crate) fn decode_name(name: &str) -> String {
+    regex::Regex::new(r"_x([0-9A-Fa-f]{4})_")
+        .unwrap()
+        .replace_all(name, |c: &regex::Captures| {
+            u32::from_str_radix(&c[1], 16)
+                .ok()
+                .and_then(char::from_u32)
+                .map(String::from)
+                .unwrap_or_else(|| c[0].to_string())
+        })
+        .into_owned()
+}
+
+/// A feed's name as an element name, as XmlConvert.EncodeLocalName writes it: every character an XML name cannot hold
+/// as `_xHHHH_`, and an underscore that would read as one escaped too.
+pub(crate) fn encode_name(name: &str) -> String {
+    let mut out = String::new();
+    let chars: Vec<char> = name.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
+        let start = c.is_alphabetic() || c == '_';
+        let fits = if i == 0 { start } else { start || c.is_numeric() || c == '-' || c == '.' };
+        let looks_escaped = c == '_' && chars.get(i + 1) == Some(&'x');
+        if fits && !looks_escaped {
+            out.push(c);
+        } else {
+            let mut units = [0u16; 2];
+            for unit in c.encode_utf16(&mut units) {
+                out.push_str(&format!("_x{unit:04X}_"));
+            }
+        }
+    }
+    out
 }
 
 fn config_files(folder: &Path) -> Vec<PathBuf> {
@@ -270,6 +366,8 @@ struct Add {
     key: String,
     value: String,
     protocol_version: Option<u32>,
+    allow_insecure: bool,
+    skip_certificate_check: bool,
 }
 
 struct Parsed {
@@ -278,6 +376,8 @@ struct Parsed {
     sections: HashMap<String, Vec<Add>>,
     cleared: Vec<String>,
     mapping: Vec<(String, Vec<String>)>,
+    /// packageSourceCredentials: each feed's name, decoded, with its keys and values.
+    credentials: Vec<(String, Vec<(String, String)>)>,
 }
 
 impl Parsed {
@@ -300,16 +400,31 @@ fn read(path: &Path, place: Place) -> (ConfigFile, Option<Parsed>) {
             let feeds = parsed
                 .adds("packageSources")
                 .iter()
-                .map(|a| ConfigFeed {
-                    name: a.key.clone(),
-                    value: a.value.clone(),
-                    disabled_here: disabled.contains(&a.key.to_lowercase()),
+                .map(|a| {
+                    let held = parsed.credentials.iter().find(|(n, _)| n.eq_ignore_ascii_case(&a.key)).map(|(_, v)| v);
+                    let value = |key: &str| held.and_then(|v| v.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)));
+                    ConfigFeed {
+                        name: a.key.clone(),
+                        value: a.value.clone(),
+                        disabled_here: disabled.contains(&a.key.to_lowercase()),
+                        username: value("Username").map(|(_, v)| v.clone()),
+                        has_password: value("Password").or_else(|| value("ClearTextPassword")).is_some(),
+                        allow_insecure: a.allow_insecure,
+                    }
                 })
                 .collect();
+            let disabled = parsed
+                .section("disabledPackageSources")
+                .filter(|(_, v)| v.eq_ignore_ascii_case("true"))
+                .map(|(k, _)| k.to_string())
+                .collect();
             let clears = parsed.cleared.iter().any(|s| s == "packageSources");
-            (ConfigFile { path: path.into(), place, feeds, clears, problem: None }, Some(parsed))
+            (ConfigFile { path: path.into(), place, feeds, disabled, clears, problem: None }, Some(parsed))
         }
-        Err(why) => (ConfigFile { path: path.into(), place, feeds: vec![], clears: false, problem: Some(why) }, None),
+        Err(why) => (
+            ConfigFile { path: path.into(), place, feeds: vec![], disabled: vec![], clears: false, problem: Some(why) },
+            None,
+        ),
     }
 }
 
@@ -318,8 +433,14 @@ fn parse(path: &Path, place: Place) -> Result<Parsed, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let (text, _) = crate::encodings::decode(&bytes, None);
     let mut reader = quick_xml::Reader::from_str(&text);
-    let mut parsed =
-        Parsed { path: path.into(), place, sections: HashMap::new(), cleared: Vec::new(), mapping: Vec::new() };
+    let mut parsed = Parsed {
+        path: path.into(),
+        place,
+        sections: HashMap::new(),
+        cleared: Vec::new(),
+        mapping: Vec::new(),
+        credentials: Vec::new(),
+    };
     // The open elements' names, the root's first.
     let mut open: Vec<String> = Vec::new();
     let mut root_seen = false;
@@ -358,6 +479,12 @@ fn parse(path: &Path, place: Place) -> Result<Parsed, String> {
                     last.1.push(pattern);
                 }
             }
+            2 if open[1] == "packageSourceCredentials" => parsed.credentials.push((decode_name(&name), Vec::new())),
+            3 if open[1] == "packageSourceCredentials" && name == "add" => {
+                if let (Some(last), Some(key)) = (parsed.credentials.last_mut(), attribute("key")) {
+                    last.1.push((key, attribute("value").unwrap_or_default()));
+                }
+            }
             2 if name == "clear" => parsed.cleared.push(open[1].clone()),
             2 if name == "add" => {
                 if let Some(key) = attribute("key") {
@@ -365,6 +492,10 @@ fn parse(path: &Path, place: Place) -> Result<Parsed, String> {
                         key,
                         value: attribute("value").unwrap_or_default(),
                         protocol_version: attribute("protocolVersion").and_then(|v| v.parse().ok()),
+                        allow_insecure: attribute("allowInsecureConnections")
+                            .is_some_and(|v| v.eq_ignore_ascii_case("true")),
+                        skip_certificate_check: attribute("disableTLSCertificateValidation")
+                            .is_some_and(|v| v.eq_ignore_ascii_case("true")),
                     });
                 }
             }

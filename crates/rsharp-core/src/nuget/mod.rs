@@ -2,6 +2,10 @@
 //! `dotnet add package`.
 
 pub mod change;
+pub mod config_edit;
 pub mod feed;
+pub mod providers;
+pub mod secret;
 pub mod sources;
 pub mod version;
+pub mod vulnerabilities;

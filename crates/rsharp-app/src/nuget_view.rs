@@ -13,7 +13,10 @@ use gpui::{
 };
 use rsharp_core::nuget::feed::{FeedSet, PackageFeed};
 use rsharp_core::nuget::sources::{Places, SourceSet};
+use rsharp_core::nuget::vulnerabilities::{Advisory, Vulnerabilities};
 use rsharp_core::nuget::{change, version};
+
+mod sources;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -87,6 +90,13 @@ pub struct NuGetView {
     _search_task: Option<Task<()>>,
     _versions_task: Option<Task<()>>,
     _subscription: Subscription,
+    /// The Sources tab: the file whose feeds are shown, the feed form when open, and why a write failed.
+    chosen_file: Option<PathBuf>,
+    form: Option<sources::FeedForm>,
+    sources_problem: Option<String>,
+    /// The audit's known vulnerabilities, read once the sources are and a project has a package.
+    vulnerabilities: Option<Arc<Vulnerabilities>>,
+    auditing: bool,
 }
 
 impl EventEmitter<Wrote> for NuGetView {}
@@ -123,6 +133,11 @@ impl NuGetView {
             _search_task: None,
             _versions_task: None,
             _subscription: subscription,
+            chosen_file: None,
+            form: None,
+            sources_problem: None,
+            vulnerabilities: None,
+            auditing: false,
         }
     }
 
@@ -138,6 +153,9 @@ impl NuGetView {
             self.root = root;
             self.sources = None;
             self.feed = None;
+            self.chosen_file = None;
+            self.form = None;
+            self.vulnerabilities = None;
             self.reload_sources(cx);
         }
     }
@@ -146,6 +164,7 @@ impl NuGetView {
     pub fn set_projects(&mut self, projects: Vec<ProjectPackages>, cx: &mut Context<Self>) {
         if self.projects != projects {
             self.projects = projects;
+            self.audit(cx);
             self.list(cx);
         }
     }
@@ -161,10 +180,69 @@ impl NuGetView {
                     v.feed = None;
                 }
                 v.sources = Some(Arc::new(read));
+                v.vulnerabilities = None;
+                v.audit(cx);
                 v.list(cx);
             });
         })
         .detach();
+    }
+
+    /// Reads the known vulnerabilities from the audit's feeds, as restore's NuGetAudit does, once there are
+    /// sources and a project has a package to judge.
+    fn audit(&mut self, cx: &mut Context<Self>) {
+        let Some(sources) = self.sources.clone() else { return };
+        if self.vulnerabilities.is_some() || self.auditing || self.projects.iter().all(|p| p.packages.is_empty()) {
+            return;
+        }
+        self.auditing = true;
+        cx.spawn(async move |this, cx| {
+            let feeds = sources.audited();
+            let read = cx.background_executor().spawn(async move { Vulnerabilities::read(&feeds) }).await;
+            let _ = this.update(cx, |v, cx| {
+                v.auditing = false;
+                // Read for sources since replaced: the new ones are asked again.
+                if v.sources.as_ref().is_some_and(|s| Arc::ptr_eq(s, &sources)) {
+                    v.vulnerabilities = Some(Arc::new(read));
+                    v.default_to_fix();
+                    cx.notify();
+                } else {
+                    v.audit(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The advisories that affect a version some project has of a package, the gravest first, each once.
+    pub fn advisories(&self, id: &str) -> Vec<Advisory> {
+        let Some(known) = &self.vulnerabilities else { return Vec::new() };
+        let mut found: Vec<Advisory> = Vec::new();
+        for installed in self.projects.iter().filter_map(|p| p.version_of(id).flatten()) {
+            for advisory in known.of(id, installed) {
+                if !found.contains(advisory) {
+                    found.push(advisory.clone());
+                }
+            }
+        }
+        found.sort_by(|a, b| b.severity.cmp(&a.severity));
+        found
+    }
+
+    /// For a vulnerable installed package, Update puts in the least offered version that fixes it.
+    fn default_to_fix(&mut self) {
+        let (Some(row), Some(known), Ok(offered)) = (self.selected(), &self.vulnerabilities, &self.versions) else {
+            return;
+        };
+        let vulnerable = self
+            .projects
+            .iter()
+            .filter_map(|p| p.version_of(&row.id).flatten())
+            .filter(|v| !known.of(&row.id, v).is_empty())
+            .min_by(|a, b| version::compare(a, b));
+        if let Some(fix) = vulnerable.and_then(|v| known.fixed_version(&row.id, v, offered)) {
+            self.version = Some(fix.clone());
+        }
     }
 
     pub fn tab(&self) -> Tab {
@@ -365,6 +443,7 @@ impl NuGetView {
                     v.version = found.first().cloned().or(v.version.take());
                 }
                 v.versions = found;
+                v.default_to_fix();
                 cx.notify();
             });
         }));
@@ -624,6 +703,7 @@ impl NuGetView {
                     .child(icon("package", 16.))
                     .child(div().flex_1().truncate().child(row.id.clone()))
                     .child(div().flex_none().text_color(theme::text_secondary()).child(row.version.clone()))
+                    .when(!self.advisories(&row.id).is_empty(), |d| d.child(icon("warning", 14.)))
                     .when(row.installed && !self.search.read(cx).text().trim().is_empty(), |d| {
                         d.child(icon("check", 14.))
                     })
@@ -673,6 +753,9 @@ impl NuGetView {
             .map(|(i, project)| {
                 let has = project.version_of(&row.id);
                 let current = has.map(|v| v.unwrap_or("").to_string());
+                let vulnerable = has.flatten().is_some_and(|v| {
+                    self.vulnerabilities.as_ref().is_some_and(|known| !known.of(&row.id, v).is_empty())
+                });
                 let can = !self.busy && version.is_some();
                 let name = project.name.clone();
                 div()
@@ -682,10 +765,12 @@ impl NuGetView {
                     .gap(px(8.))
                     .child(icon("project", 16.))
                     .child(div().flex_1().truncate().child(project.name.clone()))
+                    .when(vulnerable, |d| d.child(icon("warning", 14.)))
                     .child(
                         div()
                             .flex_none()
-                            .text_color(theme::text_secondary())
+                            .when(vulnerable, |d| d.text_color(theme::warning()))
+                            .when(!vulnerable, |d| d.text_color(theme::text_secondary()))
                             .child(current.clone().unwrap_or_else(|| "—".into())),
                     )
                     .map(|d| match &current {
@@ -749,6 +834,23 @@ impl NuGetView {
                     .children(versions_said.map(|s| div().text_color(theme::text_muted()).child(s))),
             )
             .child(div().children(projects))
+            .children(self.advisories(&row.id).into_iter().enumerate().map(|(i, advisory)| {
+                let url = advisory.url.clone();
+                div()
+                    .id(("nuget advisory", i))
+                    .debug_selector(move || format!("nuget advisory: {i}"))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(icon("warning", 14.))
+                    .child(div().text_color(theme::warning()).child(format!(
+                        "{} vulnerability in {}",
+                        advisory.severity.name(),
+                        advisory.versions
+                    )))
+                    .child(div().truncate().text_color(theme::accent()).child(advisory.url.clone()))
+                    .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.open_url(&url)))
+            }))
             .when(!row.description.is_empty(), |d| d.child(div().child(row.description.clone())))
             .when(!row.authors.is_empty(), |d| {
                 d.child(div().text_color(theme::text_secondary()).child(format!("by {}", row.authors)))
@@ -822,60 +924,6 @@ impl NuGetView {
             .into_any_element(),
         )
     }
-
-    fn sources_view(&self) -> gpui::AnyElement {
-        let Some(sources) = &self.sources else {
-            return div()
-                .p(px(12.))
-                .text_color(theme::text_muted())
-                .child("Reading package sources…")
-                .into_any_element();
-        };
-        let mut rows: Vec<gpui::AnyElement> = Vec::new();
-        for file in &sources.files {
-            rows.push(
-                div()
-                    .pt(px(8.))
-                    .flex()
-                    .gap(px(8.))
-                    .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(file.place.name()))
-                    .child(div().truncate().text_color(theme::text_secondary()).child(file.path.display().to_string()))
-                    .when(file.clears, |d| {
-                        d.child(div().text_color(theme::text_muted()).child("clears the files after it"))
-                    })
-                    .into_any_element(),
-            );
-            if let Some(problem) = &file.problem {
-                rows.push(div().pl(px(16.)).text_color(theme::error()).child(problem.clone()).into_any_element());
-            }
-            for feed in &file.feeds {
-                let enabled = sources.feeds.iter().any(|f| f.name.eq_ignore_ascii_case(&feed.name) && f.enabled);
-                rows.push(
-                    div()
-                        .pl(px(16.))
-                        .h(px(24.))
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .when(!enabled, |d| d.text_color(theme::text_muted()))
-                        .child(feed.name.clone())
-                        .child(div().truncate().text_color(theme::text_secondary()).child(feed.value.clone()))
-                        .when(!enabled, |d| d.child("(disabled)"))
-                        .into_any_element(),
-                );
-            }
-        }
-        if sources.feeds.iter().any(|f| f.defined_in.is_none()) {
-            rows.push(
-                div()
-                    .pt(px(8.))
-                    .text_color(theme::text_secondary())
-                    .child("nuget.org, as NuGet assumes without a user nuget.config")
-                    .into_any_element(),
-            );
-        }
-        div().id("nuget sources").flex_1().min_h_0().overflow_y_scroll().px(px(12.)).children(rows).into_any_element()
-    }
 }
 
 impl Render for NuGetView {
@@ -897,7 +945,7 @@ impl Render for NuGetView {
                         .child(self.details(cx)),
                 )
                 .into_any_element(),
-            Tab::Sources => self.sources_view(),
+            Tab::Sources => self.sources_view(cx),
             Tab::Log => div()
                 .id("nuget log")
                 .flex_1()

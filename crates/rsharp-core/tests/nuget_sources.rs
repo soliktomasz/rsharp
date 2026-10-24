@@ -147,3 +147,45 @@ fn the_mapping_keeps_each_package_to_its_longest_pattern() {
     let unmapped = Fixture::new();
     assert!(unmapped.load().allows("anything", "Any.Package"), "without a mapping every feed may serve a package");
 }
+
+#[test]
+fn credentials_settings_and_audit_sources_read_as_nuget_reads_them() {
+    let f = Fixture::new();
+    f.write(
+        &f.solution().join("nuget.config"),
+        r#"<configuration>
+  <packageSources>
+    <add key="Corp Feed" value="https://corp.example/v3/index.json" allowInsecureConnections="true" disableTLSCertificateValidation="true" />
+    <add key="env" value="https://env.example/v3/index.json" />
+  </packageSources>
+  <packageSourceCredentials>
+    <Corp_x0020_Feed><add key="Username" value="ann" /><add key="ClearTextPassword" value="near" /></Corp_x0020_Feed>
+  </packageSourceCredentials>
+  <auditSources><add key="advisories" value="https://audit.example/v3/index.json" /></auditSources>
+</configuration>"#,
+    );
+    f.write(
+        &f.places.user.join("NuGet.Config"),
+        r#"<configuration><packageSourceCredentials><Corp_x0020_Feed><add key="Username" value="far" /><add key="ClearTextPassword" value="away" /></Corp_x0020_Feed></packageSourceCredentials></configuration>"#,
+    );
+    // SAFETY: no other test reads this variable.
+    unsafe { std::env::set_var("NuGetPackageSourceCredentials_env", "Username=bot;Password=tok") };
+    let set = f.load();
+    let corp = &set.feeds[0];
+    assert_eq!(
+        corp.credentials.as_ref().map(|c| (c.username.as_str(), c.password.as_str())),
+        Some(("ann", "near")),
+        "the closer file's credentials did not win"
+    );
+    assert!(corp.allow_insecure && corp.skip_certificate_check);
+    assert_eq!(
+        set.feeds[1].credentials.as_ref().map(|c| c.username.as_str()),
+        Some("bot"),
+        "the variable's credentials were not read"
+    );
+    let file = &set.files[0];
+    assert_eq!((file.feeds[0].username.as_deref(), file.feeds[0].has_password), (Some("ann"), true));
+    assert_eq!(set.audit_sources.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["advisories"]);
+    assert_eq!(set.audited().len(), 1, "the audit did not take the audit sources in place of the package sources");
+    assert!(!format!("{set:?}").contains("near"), "a password was printed");
+}

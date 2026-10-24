@@ -173,3 +173,148 @@ fn install_and_remove_change_the_project_and_its_listed_version(cx: &mut TestApp
     );
     until(cx, "the project's Install offered again", |cx| cx.debug_bounds("nuget install: Demo").is_some());
 }
+
+fn type_into(field: &Entity<rsharp_app::field::TextField>, text: &str, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| window.focus(&field.focus_handle(cx)));
+    cx.simulate_input(text);
+    cx.run_until_parked();
+}
+
+fn config(run: &Run) -> String {
+    std::fs::read_to_string(run.folder.join("nuget.config")).unwrap()
+}
+
+#[gpui::test]
+fn the_sources_tab_adds_disables_edits_and_deletes_a_feed_in_the_solutions_file(cx: &mut TestAppContext) {
+    let run = run("nuget-sources-edit");
+    let (main, cx) = run.window(cx);
+    let nuget = open(&run, &main, cx);
+    click(cx, "nuget tab: Sources");
+    assert_eq!(
+        nuget.read_with(cx, |v, _| v.chosen_file().map(|f| f.path.clone())),
+        Some(run.folder.join("nuget.config")),
+        "the solution's own file was not the one shown"
+    );
+
+    click(cx, "nuget add feed");
+    click(cx, "nuget form ok");
+    assert!(cx.debug_bounds("nuget form ok").is_some(), "a nameless feed was accepted");
+    let form = nuget.read_with(cx, |v, _| {
+        let f = v.form().unwrap();
+        (f.name.clone(), f.url.clone(), f.user.clone(), f.password.clone())
+    });
+    type_into(&form.0, "corp", cx);
+    type_into(&form.1, "https://corp.example/v3/index.json", cx);
+    click(cx, "nuget form ok");
+    assert!(
+        config(&run).contains("<add key=\"corp\" value=\"https://corp.example/v3/index.json\" />"),
+        "Add Feed did not write the feed: {}; form {:?}; problem {:?}",
+        config(&run),
+        nuget.read_with(cx, |v, cx| v.form().map(|f| (f.name.read(cx).text(), f.url.read(cx).text()))),
+        nuget.read_with(cx, |v, _| v.sources_problem().map(str::to_string))
+    );
+    assert!(
+        nuget.read_with(cx, |v, _| v.feed_choices()).contains(&"corp".to_string()),
+        "the sources were not read again"
+    );
+
+    click(cx, "nuget feed enabled: corp");
+    assert!(config(&run).contains("<add key=\"corp\" value=\"true\" />"), "disabling wrote nothing: {}", config(&run));
+    assert!(!nuget.read_with(cx, |v, _| v.feed_choices()).contains(&"corp".to_string()), "a disabled feed was offered");
+    click(cx, "nuget feed enabled: corp");
+    assert!(!config(&run).contains("value=\"true\""), "enabling left the disabling: {}", config(&run));
+
+    click(cx, "nuget edit feed: corp");
+    let form = nuget.read_with(cx, |v, _| {
+        let f = v.form().unwrap();
+        (f.user.clone(), f.password.clone())
+    });
+    type_into(&form.0, "ann", cx);
+    click(cx, "nuget form ok");
+    assert!(nuget.read_with(cx, |v, _| v.form().is_some()), "a user without a password was accepted");
+    type_into(&form.1, "pw", cx);
+    click(cx, "nuget form ok");
+    assert!(config(&run).contains("<add key=\"Username\" value=\"ann\" />"), "{}", config(&run));
+    assert!(!format!("{:?}", nuget.read_with(cx, |v, _| v.sources().map(|s| format!("{s:?}")))).contains("\"pw\""));
+
+    click(cx, "nuget delete feed: corp");
+    assert!(!config(&run).contains("corp"), "Delete left the feed or its credentials: {}", config(&run));
+    assert_eq!(nuget.read_with(cx, |v, _| v.sources_problem().map(str::to_string)), None);
+}
+
+/// A v3 feed on loopback with search, a flat container and one advisory: Demo.Core below 1.2.0 is vulnerable.
+fn audit_feed() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let served = base.clone();
+    std::thread::spawn(move || {
+        use std::io::{BufRead, Write};
+        for stream in listener.incoming().flatten() {
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            while reader.read_line(&mut String::new()).unwrap_or(0) > 2 {}
+            let path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
+            let body = match path.split('?').next().unwrap() {
+                "/v3/index.json" => format!(
+                    r#"{{"resources":[{{"@id":"{served}/query","@type":"SearchQueryService/3.5.0"}},{{"@id":"{served}/flat","@type":"PackageBaseAddress/3.0.0"}},{{"@id":"{served}/vuln.json","@type":"VulnerabilityInfo/6.7.0"}}]}}"#
+                ),
+                "/vuln.json" => format!(r#"[{{"@name":"base","@id":"{served}/base.json"}}]"#),
+                "/base.json" => {
+                    r#"{"demo.core":[{"severity":2,"url":"https://advisory.example/demo","versions":"(, 1.2.0)"}]}"#
+                        .into()
+                }
+                "/flat/demo.core/index.json" => r#"{"versions":["1.0.0","1.2.0","2.0.0"]}"#.into(),
+                "/query" => r#"{"data":[]}"#.into(),
+                _ => String::new(),
+            };
+            let status = if body.is_empty() { 404 } else { 200 };
+            let mut stream = stream;
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    base
+}
+
+#[gpui::test]
+fn a_vulnerable_installed_package_is_marked_and_update_offers_the_fix(cx: &mut TestAppContext) {
+    let base = audit_feed();
+    let run = Run::new(
+        "nuget-audit",
+        &[
+            ("Shop.slnx", "<Solution>\n  <Project Path=\"Demo/Demo.csproj\" />\n</Solution>\n"),
+            ("Demo/Demo.csproj", PROJECT),
+            (
+                "nuget.config",
+                &format!(
+                    "<configuration><packageSources><clear /><add key=\"audit\" value=\"{base}/v3/index.json\" protocolVersion=\"3\" allowInsecureConnections=\"true\" /></packageSources></configuration>"
+                ),
+            ),
+        ],
+    );
+    let (main, cx) = run.window(cx);
+    let nuget = open(&run, &main, cx);
+    nuget.update(cx, |v, cx| {
+        v.set_projects(
+            vec![rsharp_app::nuget_view::ProjectPackages {
+                path: run.folder.join("Demo/Demo.csproj"),
+                name: "Demo".into(),
+                packages: vec![("Demo.Core".into(), Some("1.0.0".into()))],
+            }],
+            cx,
+        )
+    });
+    until(cx, "the advisories", |cx| nuget.read_with(cx, |v, _| !v.advisories("Demo.Core").is_empty()));
+    nuget.update(cx, |v, cx| v.select(Some(0), cx));
+    until(cx, "the versions", |cx| nuget.read_with(cx, |v, _| v.versions().is_ok_and(|v| !v.is_empty())));
+    assert_eq!(
+        nuget.read_with(cx, |v, _| v.version().map(str::to_string)).as_deref(),
+        Some("1.2.0"),
+        "Update did not offer the least version that fixes the advisory"
+    );
+    assert!(cx.debug_bounds("nuget advisory: 0").is_some(), "the advisory was not shown");
+}
