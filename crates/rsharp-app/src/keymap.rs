@@ -62,6 +62,7 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("ctrl-f5", RunProgram, None),
         KeyBinding::new(if mac { "alt-shift-f5" } else { "ctrl-shift-f5" }, RerunProgram, None),
         KeyBinding::new(if mac { "cmd-4" } else { "alt-4" }, ToggleRun, None),
+        KeyBinding::new("alt-f10", ApplyHotReloadChanges, None),
         KeyBinding::new("up", SelectPrevious, Some("NuGet")),
         KeyBinding::new("down", SelectNext, Some("NuGet")),
         KeyBinding::new("shift-escape", HideToolWindow, None),

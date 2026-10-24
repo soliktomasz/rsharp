@@ -71,6 +71,22 @@ static PAGES: &[Page] = &[
             Opt::Results,
         ],
     },
+    Page {
+        group: "Build, Execution, Deployment",
+        name: "Hot Reload",
+        options: &[
+            Opt::Check {
+                label: "Run with Hot Reload (dotnet watch)",
+                get: |s| s.hot_reload,
+                set: |s, value| s.hot_reload = value,
+            },
+            Opt::Check {
+                label: "Always restart for a change it cannot apply",
+                get: |s| s.hot_reload_restart_on_rude_edit,
+                set: |s, value| s.hot_reload_restart_on_rude_edit = value,
+            },
+        ],
+    },
 ];
 
 pub struct SettingsDialog {

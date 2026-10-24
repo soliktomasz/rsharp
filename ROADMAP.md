@@ -188,12 +188,15 @@ bounded output and its exit code in the status bar, URL and stack-frame links in
 opened once the program listens at its profile's URL. The third slice, the folder's own run configurations and
 Rider's Edit Configurations dialog: stored in `runConfigurations.json` with each project relative to the folder,
 added, copied, removed and edited over the window, listed before the projects' generated ones, and run as they
-are. Hot Reload and Unit Tests remain the next slices. Run in the terminal waits for Phase 6.
+are. The fourth slice, Hot Reload: Settings' Hot Reload runs a project under `dotnet watch` (no launch profile, so
+the plan's arguments, environment and browser still hold), a save applies itself or restarts the program, Apply
+Hot Reload Changes (Alt+F10) saves for it, and what watch made of a save is said in the person's words. Unit
+Tests remain the next slice. Run in the terminal waits for Phase 6.
 - Builds through `DotnetCommand` with the host's hold, read for errors, and the Build window.
 - Run configurations: from launchSettings, the folder's own, and Edit Configurations; `LaunchPlan`; Run in the
   terminal; console links; the browser opened once the port answers. (all but Run in the terminal, which waits
   for Phase 6.)
-- Hot Reload under dotnet watch.
+- Hot Reload under dotnet watch. (In.)
 - **Unit tests:**
   - `TestFinder` reads tests from code before any build, with tree-sitter, so no parse runs in .NET.
   - Microsoft.Testing.Platform's JSON-RPC, in Rust.

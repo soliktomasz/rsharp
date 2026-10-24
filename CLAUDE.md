@@ -123,7 +123,10 @@ terminal and takes focus for a moment.
   presentation settings decide when Build comes forward. `window/run.rs` owns the folder's run configurations
   (its own from `runConfigurations.json`, then its executable projects' launch profiles, kept in the toolbar and
   with the folder), the plan a launch resolves from MSBuild's properties off the UI thread, the build before it,
-  the program in the Run console, and the browser opened once it listens. `run_dialog.rs` is Rider's Run/Debug
+  the program in the Run console, and the browser opened once it listens; with Settings' Hot Reload on, the
+  project runs under `dotnet watch` instead (its own build, the plan's arguments after `--`, no launch profile),
+  Apply Hot Reload Changes saves for it, and `run::watch` turns watch's own lines into the person's sentences.
+  `run_dialog.rs` is Rider's Run/Debug
   Configurations dialog over the window: Add, Copy and Remove of the folder's own, the chosen one's fields, OK,
   Cancel and Apply, a generated one changing only by copying it.
   New Solution builds once after opening. `dock.rs` is the frame's layout: IntelliJ's six places, which window is where and open, the islands' sizes,

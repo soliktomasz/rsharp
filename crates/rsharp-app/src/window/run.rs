@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::console::ConsoleView;
+use crate::settings::settings;
 use futures::{FutureExt, channel::mpsc};
 use rsharp_core::run::{LaunchPlan, RunConfiguration, browser};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -208,6 +209,9 @@ impl MainWindow {
                 ..rsharp_core::project::EvaluatedProject::default()
             });
         let folder = rsharp_core::run::configuration::project_folder(&configuration.project);
+        // Settings' Hot Reload runs the project's own program under dotnet watch; a configuration running another
+        // program has nothing for watch to watch, as Rider and Passenger agree.
+        self.run_watching = settings(cx).hot_reload && configuration.program.is_none();
         self.run_generation += 1;
         let generation = self.run_generation;
         let cancel = Arc::new(AtomicBool::new(false));
@@ -216,7 +220,14 @@ impl MainWindow {
         self.run_plan = None;
         self.run_after_build = None;
         self.run_after_stop = false;
-        self.said = Some(format!("Building and running {}…", configuration.name).into());
+        self.said = Some(
+            if self.run_watching {
+                format!("Starting {} with Hot Reload…", configuration.name)
+            } else {
+                format!("Building and running {}…", configuration.name)
+            }
+            .into(),
+        );
         if !self.dock.is_open(Tool::Run) {
             self.dock.show(Tool::Run);
             self.save_state(cx);
@@ -272,6 +283,11 @@ impl MainWindow {
     ) {
         match event {
             Event::Output(text, error) => {
+                if self.run_watching
+                    && let Some(verdict) = text.lines().find_map(rsharp_core::run::watch::verdict)
+                {
+                    self.said = Some(verdict.said().into());
+                }
                 self.run_console.update(cx, |view, cx| view.append(&[(text, error)], cx));
             }
             Event::Resolved(Ok(plan)) => {
@@ -314,6 +330,11 @@ impl MainWindow {
     /// The plan is resolved: its project builds first when it says so, and the program starts after it.
     fn begin_launch(&mut self, plan: LaunchPlan, sender: mpsc::Sender<Event>, cx: &mut Context<Self>) {
         self.run_plan = Some(plan.clone());
+        // dotnet watch builds the project itself, and builds it again for every change.
+        if self.run_watching {
+            self.start_plan(plan, sender, cx);
+            return;
+        }
         match plan.build.clone() {
             Some(step) => {
                 self.run_after_build = Some((plan, sender));
@@ -360,22 +381,47 @@ impl MainWindow {
     }
 
     fn start_plan(&mut self, plan: LaunchPlan, sender: mpsc::Sender<Event>, cx: &mut Context<Self>) {
-        if let Some(why) = plan.why_not("run") {
+        let watching = self.run_watching;
+        if let Some(why) = plan.why_not("run", !watching) {
             self.finish_run(RunOutcome { status: RunStatus::Refused, message: why }, cx);
             return;
         }
-        let Some(cancel) = self.run_cancel.clone() else { return };
+        let command = if watching {
+            // Watch starts in the program's folder, which its own first build makes.
+            if let Err(why) = plan.make_working_folder() {
+                self.finish_run(RunOutcome { status: RunStatus::Refused, message: why }, cx);
+                return;
+            }
+            plan.watching(settings(cx).hot_reload_restart_on_rude_edit)
+        } else {
+            Ok(plan.command())
+        };
+        let command = match command {
+            Ok(command) => command,
+            Err(why) => {
+                self.finish_run(RunOutcome { status: RunStatus::Refused, message: why }, cx);
+                return;
+            }
+        };
+        let Some(cancel) = self.run_cancel.clone() else {
+            eprintln!("TRACE2 no cancel");
+            return;
+        };
         let browser_cancel = cancel.clone();
-        let line = format!("\n{}\n", display_command(&plan));
+        let line = format!("\n{}\n", shown_command(&command));
         self.run_console.update(cx, |view, cx| {
             view.append(&[(line, false)], cx);
             view.running = true;
             view.can_rerun = true;
             cx.notify();
         });
-        self.said = Some(format!("Running {}…", plan.name).into());
-        self.run_outcome =
-            Some(RunOutcome { status: RunStatus::Running, message: format!("Running {}…", plan.name) });
+        let running = if watching {
+            format!("Running {} with Hot Reload: a save applies its changes", plan.name)
+        } else {
+            format!("Running {}…", plan.name)
+        };
+        self.said = Some(running.clone().into());
+        self.run_outcome = Some(RunOutcome { status: RunStatus::Running, message: running });
         let mut output = sender.clone();
         let mut ended = sender.clone();
         let program = plan.clone();
@@ -383,7 +429,7 @@ impl MainWindow {
             let cancel_for_output = cancel.clone();
             let mut partial = [String::new(), String::new()];
             let result = rsharp_core::build::run_while(
-                program.command(),
+                command,
                 &cancel,
                 || true,
                 |text, error| {
@@ -462,6 +508,26 @@ impl MainWindow {
         }
     }
 
+    /// Whether the program that runs was started under `dotnet watch`, so a save applies its changes.
+    pub fn is_watching(&self) -> bool {
+        self.run_watching && self.is_running()
+    }
+
+    /// Rider's Apply Hot Reload Changes: every open buffer is saved, since dotnet watch reads the files on disk, and the
+    /// status bar says what it makes of them as `dotnet watch` answers.
+    pub(super) fn apply_hot_reload(&mut self, cx: &mut Context<Self>) {
+        if !self.is_watching() {
+            self.said = Some("This program does not run with Hot Reload: turn it on in Settings, Hot Reload".into());
+            cx.notify();
+            return;
+        }
+        match self.save_all(cx) {
+            Ok(()) => self.said = Some("Hot Reload: saved for dotnet watch to apply".into()),
+            Err(message) => self.said = Some(message.into()),
+        }
+        cx.notify();
+    }
+
     /// Stop: the program and everything it started end, and no awaiting start follows. A run waiting on its build stops
     /// that build too, and its plan stays until the build's end finishes the run as stopped.
     pub(super) fn stop_run(&mut self, cx: &mut Context<Self>) {
@@ -515,6 +581,7 @@ impl MainWindow {
         self.run_after_stop = false;
         self.run_plan = None;
         self.run_outcome = None;
+        self.run_watching = false;
         self.run_own.clear();
         self.run_configs.clear();
         self.run_projects.clear();
@@ -595,6 +662,9 @@ impl MainWindow {
                 .on_action(
                     cx.listener(|m, _: &EditRunConfigurations, window, cx| m.edit_run_configurations(window, cx)),
                 )
+                .when(self.is_watching(), |d| {
+                    d.on_action(cx.listener(|m, _: &ApplyHotReloadChanges, _, cx| m.apply_hot_reload(cx)))
+                })
                 .when(self.chosen_run_configuration().is_some() && !self.is_running(), |d| {
                     d.on_action(cx.listener(|m, _: &RunProgram, _, cx| m.run(cx)))
                 })
@@ -715,13 +785,14 @@ fn is_project(path: &Path) -> bool {
         .is_some_and(|extension| matches!(extension.to_ascii_lowercase().as_str(), "csproj" | "fsproj" | "vbproj"))
 }
 
-/// The program and its arguments as the console shows them, each quoted where it holds a space.
-fn display_command(plan: &LaunchPlan) -> String {
+/// The command line as the console shows it before its output: the program and its arguments, each quoted where it
+/// holds a space — `dotnet watch …` for a run with Hot Reload, as the person would type it.
+fn shown_command(command: &std::process::Command) -> String {
     let quote = |text: &str| {
         if text.contains(' ') { format!("\"{text}\"") } else { text.to_string() }
     };
-    std::iter::once(quote(&plan.program.to_string_lossy()))
-        .chain(plan.arguments.iter().map(|argument| quote(argument)))
+    std::iter::once(quote(&command.get_program().to_string_lossy()))
+        .chain(command.get_args().map(|argument| quote(&argument.to_string_lossy())))
         .collect::<Vec<_>>()
         .join(" ")
 }

@@ -77,6 +77,19 @@ fn click(cx: &mut VisualTestContext, selector: &'static str) {
     cx.run_until_parked();
 }
 
+/// Drives the window until `done` or the deadline, saying whether it came true.
+fn pump_until(cx: &mut VisualTestContext, deadline: Instant, done: impl Fn(&mut VisualTestContext) -> bool) -> bool {
+    while Instant::now() < deadline {
+        if done(cx) {
+            return true;
+        }
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    done(cx)
+}
+
 fn wait(cx: &mut VisualTestContext, what: &str, done: impl Fn(&mut VisualTestContext) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(120);
     while !done(cx) {
@@ -496,6 +509,171 @@ fn the_chosen_configuration_and_the_folders_own_are_kept_with_it() {
     assert_eq!(own[0].project, run.folder.join("App/App.csproj"), "a stored project is read back against the folder");
     let chosen = main.read_with(cx, |main, _| main.chosen_run_configuration().map(|c| c.name.clone()));
     assert_eq!(chosen.as_deref(), Some("Kept"), "the choice was not kept with the folder");
+}
+
+/// dotnet watch opens a socket under the temp folder, and .NET refuses a path over 104 characters: a fixture gives it a
+/// short one, as a person whose temp folder is deep must. It is made under `target/`, which no test's own state shares.
+fn watch_temp(name: &str) -> String {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target").join(format!("watch-{name}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    // Resolved, since `..` counts towards the limit too.
+    std::fs::canonicalize(&dir).unwrap_or(dir).to_string_lossy().into_owned()
+}
+
+/// Turns Settings' Hot Reload on, as a person does in Settings, Build, Execution, Deployment, Hot Reload.
+fn with_hot_reload(cx: &mut VisualTestContext, on: bool) {
+    cx.update(|_, cx| {
+        let mut changed = rsharp_app::settings::settings(cx).clone();
+        changed.hot_reload = on;
+        rsharp_app::settings::apply(changed, cx);
+    });
+}
+
+#[test]
+fn hot_reload_runs_the_program_under_dotnet_watch() {
+    // Settings' Hot Reload runs the project under dotnet watch: watch builds it, so no build goes first.
+    let run = Run::new("run-watch", &[]);
+    app(&run, "System.Console.WriteLine(\"watched\");\nSystem.Threading.Thread.Sleep(60000);\n");
+    let temp = watch_temp("first");
+    profile(
+        &run,
+        &format!(
+            r#"{{"profiles":{{"watch":{{"commandName":"Project","environmentVariables":{{"TMPDIR":"{temp}"}}}}}}}}"#
+        ),
+    );
+    if !offline(&run) {
+        return;
+    }
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    with_hot_reload(cx, true);
+    cx.simulate_keystrokes("ctrl-f5");
+    wait(cx, "the program under dotnet watch", |cx| {
+        main.read_with(cx, |main, cx| {
+            (main.is_watching() && main.run_output(cx).contains("watched"))
+                || (!main.is_running() && main.run_outcome().is_some())
+        })
+    });
+    let shown = output(&main, cx);
+    assert!(
+        shown.contains("watched"),
+        "the program under watch did not run: {:?}\n{shown}",
+        outcome(&main, cx).map(|outcome| outcome.message)
+    );
+    assert!(
+        shown.lines().next().is_some_and(|line| line.is_empty())
+            && shown.lines().any(|line| line.contains(" watch --non-interactive run --project")),
+        "the Run console does not show dotnet watch's command line:\n{shown}"
+    );
+    assert!(
+        main.read_with(cx, |main, _| main.said().unwrap_or_default().contains("Hot Reload")),
+        "the status bar does not say the program runs with Hot Reload: {:?}",
+        main.read_with(cx, |main, _| main.said().map(str::to_string))
+    );
+    cx.simulate_keystrokes("shift-f5");
+    let outcome = finished(&main, cx);
+    assert_eq!(outcome.status, RunStatus::Stopped, "{}", outcome.message);
+}
+
+#[test]
+fn a_save_applies_its_change_to_the_running_program() {
+    // What Hot Reload promises: an edit made here reaches the program that runs, without a second Run.
+    let run = Run::new("run-watch-apply", &[]);
+    app(
+        &run,
+        "while (true)\n{\n    System.Console.WriteLine(Values.Text);\n    System.Threading.Thread.Sleep(200);\n}\n",
+    );
+    write(
+        &run.folder,
+        "App/Values.cs",
+        "public static class Values\n{\n    public static string Text => \"one\";\n}\n",
+    );
+    let temp = watch_temp("apply");
+    profile(
+        &run,
+        &format!(
+            r#"{{"profiles":{{"watch":{{"commandName":"Project","environmentVariables":{{"TMPDIR":"{temp}"}}}}}}}}"#
+        ),
+    );
+    if !offline(&run) {
+        return;
+    }
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    with_hot_reload(cx, true);
+    cx.simulate_keystrokes("ctrl-f5");
+    wait(cx, "the program printing its first value", |cx| {
+        main.read_with(cx, |main, cx| {
+            (main.is_watching() && main.run_output(cx).contains("one"))
+                || (!main.is_running() && main.run_outcome().is_some())
+        })
+    });
+    let shown = output(&main, cx);
+    assert!(
+        shown.contains("one"),
+        "the program under watch did not print: {:?}\n{shown}",
+        outcome(&main, cx).map(|outcome| outcome.message)
+    );
+    let values = run.folder.join("App/Values.cs");
+    main.update_in(cx, |main, window, cx| main.open_file(&values, Some((0, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("secondary-a");
+    cx.simulate_input("public static class Values\n{\n    public static string Text => \"two\";\n}\n");
+    cx.run_until_parked();
+    // Apply Hot Reload Changes saves what is open, and dotnet watch reads the files on disk.
+    cx.simulate_keystrokes("alt-f10");
+    cx.run_until_parked();
+    assert_eq!(
+        std::fs::read_to_string(&values).unwrap(),
+        "public static class Values\n{\n    public static string Text => \"two\";\n}\n",
+        "Apply Hot Reload Changes did not save the edit"
+    );
+    // dotnet watch answers a save itself: either it applies the change, or the program restarts with it. A machine
+    // whose file events never reach watch says so rather than failing, as one without the SDK is skipped.
+    let two =
+        |cx: &mut VisualTestContext| main.read_with(cx, |main, cx| main.run_output(cx).matches("two").count() > 1);
+    let seen = pump_until(cx, Instant::now() + Duration::from_secs(45), |cx| {
+        two(cx) || output(&main, cx).contains("File changed")
+    });
+    if !seen {
+        cx.simulate_keystrokes("shift-f5");
+        eprintln!("skipped: this machine delivers no file change to dotnet watch");
+        return;
+    }
+    pump_until(cx, Instant::now() + Duration::from_secs(90), two);
+    let shown = output(&main, cx);
+    assert!(
+        shown.contains("two"),
+        "dotnet watch saw the change and did not apply it ({:?}); the last of its output was:\n{}",
+        outcome(&main, cx).map(|outcome| outcome.message),
+        shown.lines().rev().take(15).collect::<Vec<_>>().join("\n")
+    );
+    // The status bar says what watch made of the save, in the person's words.
+    let said = main.read_with(cx, |main, _| main.said().map(str::to_string)).unwrap_or_default();
+    assert!(
+        said.starts_with("Hot Reload:"),
+        "the status bar does not say what dotnet watch made of the save: {said:?}"
+    );
+    cx.simulate_keystrokes("shift-f5");
+    finished(&main, cx);
+}
+
+#[test]
+fn apply_hot_reload_changes_is_unavailable_without_a_run_under_watch() {
+    // Rider greys it: no key does anything, and Find Action says what would make it available.
+    let run = Run::new("run-watch-unavailable", &[("App/App.csproj", EXE_PROJECT)]);
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    cx.simulate_keystrokes("secondary-shift-a");
+    cx.simulate_input("apply hot reload");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(
+        main.read_with(cx, |main, _| main.said().map(str::to_string)).as_deref(),
+        Some("Apply Hot Reload Changes is not available here"),
+        "nothing said why Apply Hot Reload Changes cannot run"
+    );
 }
 
 #[test]

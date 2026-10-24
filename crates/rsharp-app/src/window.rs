@@ -49,6 +49,7 @@ actions!(
         RunProgram,
         RerunProgram,
         EditRunConfigurations,
+        ApplyHotReloadChanges,
         HideToolWindow,
         FloatToolWindow,
         RestoreDefaultLayout,
@@ -274,6 +275,8 @@ pub struct MainWindow {
     run_after_build: Option<(rsharp_core::run::LaunchPlan, mpsc::Sender<run::Event>)>,
     /// Rerun was pressed while the program ran: it starts again once the program has ended.
     run_after_stop: bool,
+    /// The program that runs was started under `dotnet watch`, so a save reaches it (Settings' Hot Reload).
+    run_watching: bool,
     run_outcome: Option<run::RunOutcome>,
     /// How the browser is opened; a test takes it over, so no browser opens.
     browser_opener: Arc<dyn Fn(String) + Send + Sync>,
@@ -358,6 +361,7 @@ impl MainWindow {
             run_plan: None,
             run_after_build: None,
             run_after_stop: false,
+            run_watching: false,
             run_outcome: None,
             run_dialog: None,
             browser_opener: Arc::new(|url| {
