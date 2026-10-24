@@ -30,6 +30,7 @@ impl NewProjectDialog {
         let field = self.fields[key].clone();
         let focus = field.focus_handle(cx);
         let label = key.to_string();
+        let text = self.fields[key].read(cx).text();
         div()
             .id(SharedString::from(format!("field-{key}")))
             .debug_selector(move || format!("field: {label}"))
@@ -43,6 +44,9 @@ impl NewProjectDialog {
             .bg(theme::frame())
             .border_1()
             .border_color(theme::control_border())
+            .when(!text.is_empty(), |d| {
+                d.tooltip(move |_, cx| cx.new(|_| crate::window::Tip(text.clone().into())).into())
+            })
             .when(focus.is_focused(window), |d| d.border_color(theme::accent()))
             .when(enabled, |d| d.child(field).on_mouse_down(gpui::MouseButton::Left, move |_, w, _| w.focus(&focus)))
             .when(!enabled, |d| d.text_color(theme::text_secondary()).child(self.fields[key].read(cx).text()))
@@ -63,6 +67,7 @@ impl NewProjectDialog {
         let label = choices.iter().find(|(v, _)| *v == value).map(|(_, l)| l.clone()).unwrap_or(value);
         let action = key.to_string();
         let selector = key.to_string();
+        let full_label = label.clone();
         let mut control = self
             .control(key, enabled, window, cx)
             .debug_selector(move || format!("choice: {selector}"))
@@ -78,6 +83,7 @@ impl NewProjectDialog {
             .border_1()
             .border_color(theme::control_border())
             .bg(theme::frame())
+            .tooltip(move |_, cx| cx.new(|_| crate::window::Tip(full_label.clone().into())).into())
             .when(self.controls[key].is_focused(window), |d| d.border_color(theme::accent()))
             .child(div().flex_1().min_w_0().truncate().child(label))
             .child(icon("chevron-down", 12.))
@@ -164,19 +170,24 @@ impl Render for NewProjectDialog {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_fields(window, cx);
         self.order.clear();
+        self.form_rows.clear();
         let enabled = !self.busy;
         let chosen = self.draft.chosen().cloned();
         let new_solution = self.draft.target.is_none();
         let mut form = vec![];
         // Names lead the form and the tab order, as Rider does on opening.
         if new_solution {
+            self.form_rows.insert("Solution name".into(), form.len());
             let field = self.field("Solution name", enabled, window, cx);
             form.push(Self::row("Solution name", field));
         }
         if self.draft.asks_project_name() {
+            self.form_rows.insert("Project name".into(), form.len());
             let field = self.field("Project name", enabled, window, cx);
             form.push(Self::row("Project name", field));
         }
+        self.form_rows.insert("Location".into(), form.len());
+        self.form_rows.insert("Browse".into(), form.len());
         let location = self.field("Location", enabled, window, cx);
         let browse = self.dialog_button("Browse", false, enabled, window, cx);
         form.push(Self::row(
@@ -184,6 +195,7 @@ impl Render for NewProjectDialog {
             div().flex().gap(px(8.)).child(div().flex_1().min_w_0().child(location)).child(browse).into_any_element(),
         ));
         if new_solution && self.draft.asks_project_name() {
+            self.form_rows.insert("Same directory".into(), form.len());
             let checked = self.draft.same_directory;
             let check = self
                 .control("Same directory", enabled, window, cx)
@@ -194,6 +206,7 @@ impl Render for NewProjectDialog {
                     }
                 }));
             form.push(Self::row("", check.into_any_element()));
+            self.form_rows.insert("Solution format".into(), form.len());
             let choice = self.choice("Solution format", enabled, window, cx);
             form.push(Self::row("Solution format", choice));
         }
@@ -217,14 +230,17 @@ impl Render for NewProjectDialog {
                 form.push(div().text_color(theme::text_secondary()).child(variant.description).into_any_element());
             }
             if self.draft.family.is_some_and(|i| self.draft.families[i].types.len() > 1) {
+                self.form_rows.insert("Type".into(), form.len());
                 let choice = self.choice("Type", enabled, window, cx);
                 form.push(Self::row("Type", choice));
             }
             if template.languages().len() > 1 {
+                self.form_rows.insert("Language".into(), form.len());
                 let choice = self.choice("Language", enabled, window, cx);
                 form.push(Self::row("Language", choice));
             }
             if !template.frameworks(self.draft.language.as_deref()).is_empty() {
+                self.form_rows.insert("Framework".into(), form.len());
                 let choice = self.choice("Framework", enabled, window, cx);
                 form.push(Self::row("Framework", choice));
             }
@@ -232,6 +248,12 @@ impl Render for NewProjectDialog {
                 let allowed = enabled && self.draft.option_enabled(&option.name);
                 let symbol = option.name.clone();
                 let selector = symbol.clone();
+                let key = match option.kind {
+                    TemplateOptionKind::Bool => format!("check: {symbol}"),
+                    TemplateOptionKind::Choice => symbol.clone(),
+                    _ => format!("option: {symbol}"),
+                };
+                self.form_rows.insert(key, form.len());
                 let control = match option.kind {
                     TemplateOptionKind::Bool => {
                         let key = format!("check: {symbol}");
@@ -279,6 +301,7 @@ impl Render for NewProjectDialog {
                         .child(format!("This template requires {}.", pack.id))
                         .into_any_element(),
                 );
+                self.form_rows.insert("Install".into(), form.len());
                 let install = self.dialog_button("Install", true, enabled && self.draft.authoritative, window, cx);
                 form.push(div().flex().child(install).into_any_element());
             } else if let Ok(request) = self.draft.request()
@@ -334,6 +357,9 @@ impl Render for NewProjectDialog {
         self.controls.insert("Templates".into(), self.list_focus.clone());
         if enabled {
             self.order.push("Templates".into());
+            self.order.retain(|k| k != "Templates" && k != "Search templates");
+            self.order.insert(0, "Templates".into());
+            self.order.insert(0, "Search templates".into());
         }
         let rows: Vec<_> = self
             .draft
@@ -342,6 +368,7 @@ impl Render for NewProjectDialog {
             .map(|&i| {
                 let name = self.draft.families[i].name.clone();
                 let label = name.clone();
+                let full_name = name.clone();
                 let missing = self.draft.families[i].not_installed();
                 div()
                     .id(("template-family", i))
@@ -354,6 +381,7 @@ impl Render for NewProjectDialog {
                     .rounded(px(4.))
                     .when(self.draft.family == Some(i), |d| d.bg(theme::selection()))
                     .when(self.draft.family != Some(i), |d| d.hover(|d| d.bg(theme::row_hover())))
+                    .tooltip(move |_, cx| cx.new(|_| crate::window::Tip(full_name.clone().into())).into())
                     .child(icon(if missing { "package" } else { "project" }, 16.))
                     .child(div().flex_1().min_w_0().truncate().child(label))
                     .when(missing, |d| d.text_color(theme::text_secondary()))

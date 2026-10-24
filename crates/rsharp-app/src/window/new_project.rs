@@ -58,7 +58,7 @@ impl MainWindow {
                         m.creation_dialog = Some(handle);
                         let dialog = handle.entity(cx).unwrap();
                         let owned = cx.entity();
-                        handle.update(cx, |d, w, cx| d.watch_owner(&owned, w, cx)).unwrap();
+                        handle.update(cx, |d, w, cx| d.watch_owner(&owned, original.clone(), w, cx)).unwrap();
                         m._creation_subscription =
                             Some(cx.subscribe_in(&dialog, window, move |m, _, event: &Ended, window, cx| {
                                 m.creation_dialog = None;

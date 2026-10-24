@@ -364,3 +364,68 @@ fn a_deleted_logical_folder_refuses_attachment_and_missing_physical_folder_uses_
     );
     assert!(run.folder.join("Made/Made.csproj").exists());
 }
+
+#[gpui::test]
+fn changing_the_owner_workspace_refuses_create_before_any_command(cx: &mut TestAppContext) {
+    let run = Run::new(
+        "new-project-switched-before-create",
+        &[("One.slnx", "<Solution />"), ("two/Two.slnx", "<Solution />")],
+    );
+    let (main, cx) = run.window(cx);
+    main.update_in(cx, |m, w, cx| {
+        m.open_workspace(&run.folder.join("One.slnx"), w, cx);
+        m.show_new_project(None, w, cx);
+    });
+    cx.run_until_parked();
+    let handle = main.read_with(cx, |m, _| m.new_project_dialog()).unwrap();
+    handle.update(cx, |d, _, cx| d.show_catalog(templates::fixture(), true, cx)).unwrap();
+    main.update_in(cx, |m, w, cx| m.open_workspace(&run.folder.join("two/Two.slnx"), w, cx));
+    let mut d = VisualTestContext::from_window(handle.into(), cx);
+    d.run_until_parked();
+    click(&mut d, "button: Create");
+    assert_eq!(
+        handle.read_with(&d, |d, _| d.problem().map(str::to_string)).unwrap().as_deref(),
+        Some("The originating window changed workspace")
+    );
+}
+
+#[gpui::test]
+fn tab_reveals_an_option_below_the_fold_in_a_small_window(cx: &mut TestAppContext) {
+    let run = Run::new("new-project-focus-scroll", &[]);
+    let (_, main) = run.window(cx);
+    let (handle, mut cx) = open(main, &run);
+    let mut catalog = (*templates::fixture()).clone();
+    let options = &mut catalog.families.iter_mut().find(|f| f.name == "Console").unwrap().types[0].variants[0].options;
+    let base = options[0].clone();
+    for n in 0..10 {
+        let mut option = base.clone();
+        option.name = format!("Extra{n}");
+        option.label = format!("Extra option {n}");
+        options.push(option);
+    }
+    let mut last = base;
+    last.name = "Last".into();
+    last.label = "Last option".into();
+    last.kind = rsharp_core::templates::TemplateOptionKind::Text;
+    last.default = String::new();
+    options.push(last);
+    handle.update(&mut cx, |d, _, cx| d.show_catalog(std::sync::Arc::new(catalog), true, cx)).unwrap();
+    cx.simulate_resize(gpui::size(gpui::px(720.), gpui::px(480.)));
+    cx.run_until_parked();
+    for _ in 0..18 {
+        cx.simulate_keystrokes("tab");
+        cx.run_until_parked();
+    }
+    cx.simulate_input("retained");
+    cx.run_until_parked();
+    assert_eq!(
+        handle.read_with(&cx, |d, _| d.draft().option_value("Last").map(str::to_string)).unwrap().as_deref(),
+        Some("retained"),
+        "Tab did not reach the final option"
+    );
+    let bounds = cx.debug_bounds("field: option: Last").unwrap();
+    assert!(
+        bounds.top() >= gpui::px(0.) && bounds.bottom() < gpui::px(430.),
+        "Tab focused an option outside the visible form: {bounds:?}"
+    );
+}

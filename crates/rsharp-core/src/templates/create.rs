@@ -162,6 +162,33 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::time::Duration;
 
+    #[test]
+    fn creation_rechecks_current_target_names_and_logical_folder_before_writing() {
+        let (root, environment, catalog, mut request) = setup("current-target", false);
+        let solution = root.join("Shop.slnx");
+        std::fs::write(&solution, "<Solution><Project Path=\"Taken/Taken.csproj\" /></Solution>").unwrap();
+        request.project_name = "Taken".into();
+        request.target =
+            Some(crate::templates::ProjectTarget { solution: solution.clone(), folder: None, projects: vec![] });
+        let mut run = |_: Command,
+                       _: Duration,
+                       _: &AtomicBool,
+                       _: &mut dyn FnMut(&str)|
+         -> Result<command::CommandResult, String> {
+            panic!("a changed target reached dotnet before validation")
+        };
+        let error = job::create_with(&environment, &catalog, &request, &AtomicBool::new(false), &mut |_| {}, &mut run)
+            .unwrap_err();
+        assert!(error.contains("already exists"), "{error}");
+        request.project_name = "Fresh".into();
+        request.target.as_mut().unwrap().folder = Some("/gone/".into());
+        let error = job::create_with(&environment, &catalog, &request, &AtomicBool::new(false), &mut |_| {}, &mut run)
+            .unwrap_err();
+        assert!(error.contains("gone"), "{error}");
+        assert!(!root.join("Fresh").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[cfg(unix)]
     fn status(code: i32) -> ExitStatus {
         use std::os::unix::process::ExitStatusExt;

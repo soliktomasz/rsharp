@@ -19,6 +19,7 @@ fn installed_catalog_matches_dotnet_new_list_in_an_isolated_hive() {
     let store = Catalogs::new(environment.clone());
     let catalog = store.load(&root).unwrap();
     assert!(catalog.templates().iter().any(|t| t.short_name() == "console" && t.pack.is_none()));
+    let mut unmatched: Vec<_> = catalog.templates().into_iter().filter(|t| t.pack.is_none()).collect();
     for kind in ["project", "solution"] {
         let mut command =
             environment.new_command(&["list".into(), "--type".into(), kind.into(), "--columns-all".into()], &root);
@@ -43,20 +44,34 @@ fn installed_catalog_matches_dotnet_new_list_in_an_isolated_hive() {
         };
         let headers: Vec<_> = (0..columns.len()).map(|c| cell(lines[rule - 1], c)).collect();
         let short = headers.iter().position(|h| h == "Short Name").unwrap();
+        let name = headers.iter().position(|h| h == "Template Name").unwrap();
+        let language = headers.iter().position(|h| h == "Language").unwrap();
         for line in lines[rule + 1..].iter().filter(|l| !l.trim().is_empty()) {
             let shorts = cell(line, short);
             if cfg!(not(windows)) && (line.contains("WPF") || line.contains("WinForms")) {
                 continue;
             }
-            assert!(
-                catalog
-                    .templates()
-                    .iter()
-                    .any(|t| t.pack.is_none() && shorts.split(',').any(|s| t.short_names.iter().any(|v| v == s))),
-                "catalog omitted {line}"
-            );
+            let shorts: Vec<_> = shorts.split(',').collect();
+            let label = cell(line, name);
+            let languages: Vec<_> = cell(line, language)
+                .split(',')
+                .filter(|l| !l.is_empty())
+                .map(|l| l.trim_matches(['[', ']']).to_string())
+                .collect();
+            let found = unmatched.iter().position(|t| {
+                t.short_names == shorts
+                    && t.languages() == languages
+                    && (label.strip_suffix("...").map_or(t.name == label, |prefix| t.name.starts_with(prefix)))
+            });
+            let index = found.unwrap_or_else(|| panic!("catalog omitted or changed metadata for {line}"));
+            unmatched.remove(index);
         }
     }
+    assert!(
+        unmatched.is_empty(),
+        "catalog listed templates the CLI did not report: {:?}",
+        unmatched.iter().map(|t| &t.short_names).collect::<Vec<_>>()
+    );
     drop(store);
     let _ = std::fs::remove_dir_all(root);
 }

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 const KEYS: usize = 200;
 
-pub async fn run(window: WindowHandle<MainWindow>, started: Instant, cx: &mut AsyncApp) {
+pub async fn run(window: WindowHandle<MainWindow>, started: Instant, during_startup: bool, cx: &mut AsyncApp) {
     let (drawn, frame) = futures::channel::oneshot::channel::<Instant>();
     let _ = window.update(cx, |_, window, _| {
         window.on_next_frame(move |_, _| {
@@ -18,6 +18,9 @@ pub async fn run(window: WindowHandle<MainWindow>, started: Instant, cx: &mut As
     let first_frame = frame.await.map_or(Duration::ZERO, |at| at.duration_since(started));
     let waited = Instant::now();
     let ready = loop {
+        if during_startup {
+            break Ok(Duration::ZERO);
+        }
         let state = window.read_with(cx, |main, _| (main.server_ready(), main.server_failed().map(str::to_string)));
         match state {
             Ok((true, _)) => break Ok(waited.elapsed()),
@@ -30,7 +33,9 @@ pub async fn run(window: WindowHandle<MainWindow>, started: Instant, cx: &mut As
         }
     };
     // Roslyn settles after its load (analyzers, the first diagnostics); memory is read once it has.
-    cx.background_executor().timer(Duration::from_secs(5)).await;
+    if !during_startup {
+        cx.background_executor().timer(Duration::from_secs(5)).await;
+    }
     let (ide_kb, all_kb) = memory();
     let typing = Instant::now();
 
@@ -61,7 +66,8 @@ pub async fn run(window: WindowHandle<MainWindow>, started: Instant, cx: &mut As
         "{}",
         serde_json::json!({
             "firstFrameMs": first_frame.as_secs_f64() * 1000.,
-            "solutionLoadedMs": ready.as_ref().map(|d| d.as_secs_f64() * 1000.).ok(),
+            "solutionLoadedMs": if during_startup {None}else{ready.as_ref().map(|d| d.as_secs_f64() * 1000.).ok()},
+            "duringStartup":during_startup,
             "serverProblem": ready.err(),
             "ideRssMb": ide_kb as f64 / 1024.,
             "totalRssMb": all_kb as f64 / 1024.,

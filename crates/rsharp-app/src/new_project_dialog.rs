@@ -68,6 +68,7 @@ pub struct NewProjectDialog {
     list_focus: FocusHandle,
     list_scroll: ScrollHandle,
     form_scroll: ScrollHandle,
+    form_rows: BTreeMap<String, usize>,
     popup: Option<Popup>,
     problem: Option<String>,
     busy: bool,
@@ -80,6 +81,7 @@ pub struct NewProjectDialog {
     _catalog_subscription: Option<CatalogSubscription>,
     _owner_subscription: Option<Subscription>,
     installed_choice: Option<String>,
+    origin: Option<Option<PathBuf>>,
 }
 
 impl EventEmitter<Ended> for NewProjectDialog {}
@@ -154,6 +156,7 @@ impl NewProjectDialog {
             list_focus: cx.focus_handle(),
             list_scroll: ScrollHandle::new(),
             form_scroll: ScrollHandle::new(),
+            form_rows: BTreeMap::new(),
             popup: None,
             problem: None,
             busy: false,
@@ -166,12 +169,20 @@ impl NewProjectDialog {
             _catalog_subscription: None,
             _owner_subscription: None,
             installed_choice: None,
+            origin: None,
         }
     }
 }
 
 impl NewProjectDialog {
-    pub(crate) fn watch_owner(&mut self, owner: &Entity<MainWindow>, window: &Window, cx: &mut Context<Self>) {
+    pub(crate) fn watch_owner(
+        &mut self,
+        owner: &Entity<MainWindow>,
+        origin: Option<PathBuf>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.origin = Some(origin);
         let handle = window.window_handle().downcast::<Self>().unwrap();
         self._owner_subscription = Some(cx.observe_release(owner, move |d, _, cx| {
             d.cancel.store(true, Ordering::Release);
@@ -339,7 +350,8 @@ impl NewProjectDialog {
         }
         for (key, value) in values {
             if !self.fields.contains_key(&key) {
-                let field = cx.new(|cx| TextField::new("", cx));
+                let field =
+                    cx.new(|cx| TextField::new(if key == "Search templates" { "Search templates" } else { "" }, cx));
                 let name = key.clone();
                 cx.subscribe(&field, move |d, field, _: &Changed, cx| {
                     if !d.busy {
@@ -422,7 +434,7 @@ impl NewProjectDialog {
         })
         .detach();
     }
-    fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.cancel.store(true, Ordering::Release);
         self.revision += 1;
         if self.busy {
@@ -464,6 +476,9 @@ impl NewProjectDialog {
             at.map_or(0, |i| (i + 1) % handles.len())
         };
         window.focus(&handles[next]);
+        if let Some(row) = self.form_rows.get(&self.order[next]) {
+            self.form_scroll.scroll_to_item(*row);
+        }
         for field in self.fields.values() {
             if field.focus_handle(cx) == handles[next] {
                 field.update(cx, |f, cx| f.select_all(cx));
@@ -539,7 +554,7 @@ impl NewProjectDialog {
                 self.set_choice(&popup.key, value);
                 cx.notify();
             }
-        } else if let Some(key) = self.focused_control(window) {
+        } else if let Some(key) = self.focused_control(window).filter(|key| key != "Templates") {
             self.activate(&key, window, cx);
         } else {
             self.create(window, cx);
@@ -597,6 +612,13 @@ impl NewProjectDialog {
     }
     fn create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
+            return;
+        }
+        if let Some(origin) = &self.origin
+            && !self.owner.read_with(cx, |m, _| m.opened_as() == origin.as_deref()).unwrap_or(false)
+        {
+            self.problem = Some("The originating window changed workspace".into());
+            cx.notify();
             return;
         }
         let request = match self.draft.request() {
@@ -688,28 +710,58 @@ impl NewProjectDialog {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        window.focus(self.controls.get("Cancel").unwrap_or(&self.focus));
         cx.notify();
-        cx.spawn_in(window,async move |this,cx| {
-            let mut work=work.fuse();
-            let result=loop {
-                futures::select! { result=work=>break result, _=cx.background_executor().timer(Duration::from_millis(50)).fuse()=>{
-                    let _=this.update(cx,|_,cx|cx.notify());
-                }}
+        cx.spawn_in(window, async move |this, cx| {
+            let mut work = work.fuse();
+            let result = loop {
+                futures::select! {
+                    result = work => break result,
+                    _ = cx.background_executor().timer(Duration::from_millis(50)).fuse() => {
+                        let _ = this.update(cx, |_, cx| cx.notify());
+                    }
+                }
             };
-            let mut result=Some(result);
-            let accepted=this.update_in(cx,|d,window,cx| {
-                d.busy=false;
+            let mut result = Some(result);
+            let accepted = this.update_in(cx, |d, window, cx| {
+                d.busy = false;
                 match result.take().unwrap() {
-                    Ok(Some(created)) if !d.closing => { cx.emit(Ended::Created(created));window.remove_window(); },
-                    Ok(Some(created)) => { cx.background_executor().spawn(async move {if let Err(e)=created.discard(){log::error!("{e}");}}).detach();d.cancel(window,cx); },
-                    Ok(None) if !d.closing=>{d.load(cx);},
-                    Ok(None)=>d.cancel(window,cx),
-                    Err(why) if d.closing && why=="Cancelled"=>d.cancel(window,cx),
-                    Err(why)=>{d.closing=false;d.problem=Some(why);cx.notify();}
+                    Ok(Some(created)) if !d.closing => {
+                        cx.emit(Ended::Created(created));
+                        window.remove_window();
+                    }
+                    Ok(Some(created)) => {
+                        // Cancel may arrive after generation finished but before this UI handoff.
+                        d.busy = true;
+                        let cleanup = cx.background_executor().spawn(async move {
+                            created.discard()?;
+                            Err("Cancelled".into())
+                        });
+                        d.finish(cleanup, window, cx);
+                    }
+                    Ok(None) if !d.closing => d.load(cx),
+                    Ok(None) => d.cancel(window, cx),
+                    Err(why) if d.closing && why == "Cancelled" => d.cancel(window, cx),
+                    Err(why) => {
+                        d.closing = false;
+                        d.problem = Some(why);
+                        cx.notify();
+                    }
                 }
             });
-            if accepted.is_err() && let Some(Ok(Some(created)))=result.take() { cx.background_executor().spawn(async move{if let Err(e)=created.discard(){log::error!("{e}");}}).detach(); }
-        }).detach();
+            if accepted.is_err()
+                && let Some(Ok(Some(created))) = result.take()
+            {
+                cx.background_executor()
+                    .spawn(async move {
+                        if let Err(why) = created.discard() {
+                            log::error!("{why}");
+                        }
+                    })
+                    .await;
+            }
+        })
+        .detach();
     }
 }
 
@@ -748,5 +800,89 @@ mod ui_tests {
                 "an install that yielded no matching template claimed success"
             );
         });
+    }
+
+    #[gpui::test]
+    fn cancel_keeps_the_busy_window_until_its_worker_settles_and_never_emits_created(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            crate::init(std::env::temp_dir().join(format!("rsharp-cancel-dialog-{}", std::process::id())), cx);
+            cx.global_mut::<templates::Templates>().enabled = false;
+        });
+        let (_, main) = cx.add_window_view(MainWindow::new);
+        let owner = main.update(|w, _| w.window_handle().downcast::<MainWindow>().unwrap());
+        let handle = main.update(|_, cx| open(owner, std::env::temp_dir(), None, cx).unwrap());
+        let (tx, rx) = futures::channel::oneshot::channel();
+        handle
+            .update(main, |d, w, cx| {
+                d.begin();
+                let work = cx.background_executor().spawn(async move { rx.await.unwrap() });
+                d.finish(work, w, cx);
+            })
+            .unwrap();
+        let mut dialog = gpui::VisualTestContext::from_window(handle.into(), main);
+        dialog.run_until_parked();
+        dialog.simulate_keystrokes("escape");
+        dialog.run_until_parked();
+        assert!(
+            handle.read_with(&dialog, |d, _| d.busy && d.cancel.load(Ordering::Acquire) && d.closing).unwrap(),
+            "Cancel abandoned its active worker"
+        );
+        tx.send(Err("Cancelled".into())).unwrap();
+        dialog.run_until_parked();
+        assert!(
+            handle.read_with(&dialog, |_, _| ()).is_err(),
+            "the cancelled worker settled but the dialog stayed open"
+        );
+    }
+
+    #[gpui::test]
+    fn a_cancelled_late_live_result_reports_cleanup_refusal_without_closing(cx: &mut gpui::TestAppContext) {
+        let mut environment = match rsharp_core::templates::TemplateEnvironment::discover() {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("SKIP live late-result cleanup: {e}");
+                return;
+            }
+        };
+        let base = std::env::temp_dir().join(format!("rsharp-late-result-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        environment.cli_home = base.join("home");
+        environment.hive = Some(base.join("hive"));
+        environment.nuget_packages = Some(base.join("packages"));
+        let catalogs = rsharp_core::templates::cache::Catalogs::new(environment.clone());
+        let catalog = catalogs.load(&base).unwrap();
+        let mut draft = Draft::new(base.clone(), None);
+        draft.show_catalog(catalog.clone(), true);
+        draft.set_solution_name("Late".into());
+        let created =
+            create::create(&environment, &catalog, &draft.request().unwrap(), &AtomicBool::new(false), &mut |_| {})
+                .unwrap();
+        std::fs::write(base.join("Late/unrelated.txt"), "keep").unwrap();
+        cx.update(|cx| {
+            crate::init(base.join("state"), cx);
+            cx.global_mut::<templates::Templates>().enabled = false;
+        });
+        let (_, main) = cx.add_window_view(MainWindow::new);
+        let owner = main.update(|w, _| w.window_handle().downcast::<MainWindow>().unwrap());
+        let handle = main.update(|_, cx| open(owner, base.clone(), None, cx).unwrap());
+        handle
+            .update(main, |d, w, cx| {
+                d.begin();
+                d.closing = true;
+                let work = cx.background_executor().spawn(async move { Ok(Some(created)) });
+                d.finish(work, w, cx);
+            })
+            .unwrap();
+        let mut dialog = gpui::VisualTestContext::from_window(handle.into(), main);
+        dialog.run_until_parked();
+        assert!(
+            handle.read_with(&dialog, |d, _| d.problem().is_some_and(|p| p.contains("Cleanup left"))).unwrap_or(false),
+            "a late result closed the dialog without showing what cleanup retained"
+        );
+        assert_eq!(std::fs::read_to_string(base.join("Late/unrelated.txt")).unwrap(), "keep");
+        handle.update(&mut dialog, |_, w, _| w.remove_window()).unwrap();
+        catalogs.shutdown();
+        let _ = std::fs::remove_dir_all(base);
     }
 }

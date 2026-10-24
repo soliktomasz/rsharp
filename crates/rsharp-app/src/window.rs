@@ -222,6 +222,15 @@ pub struct MainWindow {
 
 impl MainWindow {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let owner = cx.weak_entity();
+        window.on_window_should_close(cx, move |_, cx| {
+            let _ = owner.update(cx, |m, cx| {
+                if let Some(handle) = m.creation_dialog {
+                    let _ = handle.update(cx, |d, w, cx| d.cancel(w, cx));
+                }
+            });
+            true
+        });
         let root_focus = cx.focus_handle();
         window.focus(&root_focus);
         Self {
@@ -3300,11 +3309,12 @@ impl Render for FloatDrag {
 
 /// A tool window's stripe button, carried in a drag, drawn as a chip of its title.
 /// A tooltip: a line of text on a popup, as Rider's.
-struct Tip(SharedString);
+pub(crate) struct Tip(pub(crate) SharedString);
 
 impl Render for Tip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
+            .max_w(px(480.))
             .px(px(8.))
             .py(px(4.))
             .rounded(px(6.))

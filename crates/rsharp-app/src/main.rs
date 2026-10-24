@@ -99,8 +99,9 @@ fn main() {
             let _ = window
                 .update(cx, |_, window, _| window.on_next_frame(move |_, cx| rsharp_app::templates::preload(last, cx)));
         }
-        if options.bench {
-            cx.spawn(async move |cx| rsharp_app::bench::run(window, started, cx).await).detach();
+        let profile_startup = std::env::var_os("RSHARP_PROFILE_STARTUP").is_some();
+        if options.bench || profile_startup {
+            cx.spawn(async move |cx| rsharp_app::bench::run(window, started, profile_startup, cx).await).detach();
         }
         if !keystrokes.is_empty() {
             let any = window.into();

@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json.schemastore.org/template",
+  "author": "RSharp tests",
+  "classifications": ["Test solution"],
+  "identity": "RSharp.Tests.WholeSolution",
+  "groupIdentity": "RSharp.Tests.WholeSolution",
+  "name": "Whole Solution",
+  "shortName": "rsharp-test-solution",
+  "sourceName": "WholeSolution",
+  "defaultName": "WholeSolution",
+  "tags": {"language": "C#", "type": "solution"},
+  "symbols": {
+    "skipRestore": {"type": "parameter", "datatype": "bool", "defaultValue": "false"}
+  }
+}

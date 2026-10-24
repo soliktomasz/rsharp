@@ -60,6 +60,9 @@ jobs:
       - name: Formatting
         run: cargo fmt --all --check
 
+      - name: Live template test feed (Passenger's Avalonia.Templates 12.1.4)
+        run: python tools/prepare-template-tests.py
+
       - name: Build
         run: cargo build --workspace --all-targets
 

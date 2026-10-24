@@ -62,6 +62,21 @@ pub(super) fn create_with(
     ) -> Result<command::CommandResult, String>,
 ) -> Result<CreatedProjects, String> {
     let plan = plan(request, catalog)?;
+    if let Some(target) = &request.target {
+        let solution = crate::solution::read(&target.solution)
+            .ok_or_else(|| format!("{} is no longer a readable solution", target.solution.display()))?;
+        if solution.projects().iter().any(|p| p.name.eq_ignore_ascii_case(request.project_name.trim())) {
+            return Err(format!("Project {} already exists in the solution", request.project_name.trim()));
+        }
+        fn has_folder(entries: &[crate::solution::SolutionEntry], wanted: &str) -> bool {
+            entries.iter().any(|e|matches!(e,crate::solution::SolutionEntry::Folder{path,children,..} if path==wanted || has_folder(children,wanted)))
+        }
+        if let Some(folder) = &target.folder
+            && !has_folder(&solution.entries, folder)
+        {
+            return Err(format!("Solution folder {folder} no longer exists"));
+        }
+    }
     if cancel.load(Ordering::Acquire) {
         return Err("Cancelled".into());
     }
