@@ -56,6 +56,9 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new(if mac { "cmd-1" } else { "alt-1" }, ToggleSolution, None),
         KeyBinding::new(if mac { "cmd-6" } else { "alt-6" }, ToggleProblems, None),
         KeyBinding::new(if mac { "cmd-7" } else { "alt-7" }, ToggleNuGet, None),
+        KeyBinding::new(if mac { "cmd-shift-b" } else { "ctrl-shift-b" }, BuildSolution, None),
+        KeyBinding::new(if mac { "cmd-0" } else { "alt-0" }, ToggleBuild, None),
+        KeyBinding::new("shift-f5", StopBuild, None),
         KeyBinding::new("up", SelectPrevious, Some("NuGet")),
         KeyBinding::new("down", SelectNext, Some("NuGet")),
         KeyBinding::new("shift-escape", HideToolWindow, None),
@@ -152,7 +155,7 @@ pub fn bind(cx: &mut App) {
             KeyBinding::new("cmd-alt-l", Reformat, editor),
             KeyBinding::new("cmd-b", GoToDeclaration, editor),
             KeyBinding::new("cmd-alt-b", GoToImplementation, editor),
-            KeyBinding::new("cmd-shift-b", GoToTypeDeclaration, editor),
+            KeyBinding::new("cmd-shift-f11", GoToTypeDeclaration, editor),
             KeyBinding::new("alt-f7", FindUsages, editor),
             // Rider's macOS keymap: Super Method (Base Symbols) is Cmd+U; Derived Symbols has no key of its own there.
             KeyBinding::new("cmd-u", BaseSymbols, editor),

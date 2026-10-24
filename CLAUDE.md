@@ -47,7 +47,10 @@ terminal and takes focus for a moment.
   Windows the child is in a job of its own, killed when the IDE's handle closes. Either way it holds however
   the IDE ended, SIGKILL included (Roslyn's BuildHost ignores SIGTERM and outlived Roslyn before it).
   `paths::canonical` drops Windows' `\\?\` and URIs are `file:///C:/…`, as Roslyn reports them. `paths` (canonical
-  paths, `file://` URIs), `programs` (finds `dotnet` as a login shell would), `files::write` (every save:
+  paths, `file://` URIs), `programs` (finds `dotnet` as a login shell would), `dotnet` (literal CLI commands,
+  English UTF-8 output, isolated MSBuild workers and no inherited SDK overrides), `build` (Build/Rebuild/Clean
+  arguments, MSBuild diagnostics with continuations and deduplication, bounded streaming of both pipes with
+  ANSI/UTF-8 decoding and stoppable process trees), `files::write` (every save:
   temporary file and rename, a read-only file refused), `encodings` (a file's bytes as its text: BOM, else UTF-8,
   else its .editorconfig's 8-bit charset, else windows-1252; a character the encoding cannot hold refused at save),
   `solution` (a .sln or .slnx as its file says: folders, items, projects), `project` (the Host's `EvaluatedProject`, its
@@ -97,7 +100,8 @@ terminal and takes focus for a moment.
   Passenger's sidecars from `vendor/passenger` (a pinned submodule) into `target/<profile>/sidecars`: Roslyn then runs
   as Passenger runs it, the server version Passenger pins with its extension, the projects named in
   `passenger/loadProjects` and each one's design-time build asked of Passenger's Host (`host.rs`, JSON lines; `SharedHost` the folder's one Host, which the Solution view's
-  `evaluate` shares), a
+  `evaluate` shares; its reader routes replies by request id, its writer queues complete lines, and a cancellable
+  `hold` keeps generating design-time builds away from an explicit build until it ends), a
   build's problem passed on as the project's error. Without dotnet or the submodule at build time it warns and runs
   the person's `roslyn-language-server` tool, which opens the solution (`solution/open`) or finds the projects.
 - `crates/rsharp-mcp`: no UI. RSharp as an MCP server (`rsharp --mcp [FOLDER]`, JSON-RPC a line at a time on
@@ -112,7 +116,11 @@ terminal and takes focus for a moment.
   down each side, the editor and the open tool windows as islands, the gaps between them resizing what they
   divide; each action registers only while it has something to act on, so menus and Find Action grey it
   otherwise; the root has a focus of its own, so window-wide keys work on the Welcome screen.
-  `dock.rs` is the frame's layout: IntelliJ's six places, which window is where and open, the islands' sizes,
+  `window/build.rs` owns the workspace's Build/Rebuild/Clean: saves shared buffers, waits for the Host's hold,
+  builds targets in order, and stops on Stop, close or workspace change. `build_view.rs` is its bounded plain
+  console over the editor's selection and visible-line drawing, with Rerun/Stop/Clear and compiler source links.
+  Build diagnostics have their own Problems tab; presentation settings decide when Build comes forward.
+  New Solution builds once after opening. `dock.rs` is the frame's layout: IntelliJ's six places, which window is where and open, the islands' sizes,
   kept with the folder (`state.rs`'s `FolderState`) and as `layout.json`, the default for a folder with none.
   A new tool window is a `Tool` with its title, icon and home place, and its content in `window.rs`.
   `projects.rs` is the process's windows: every open (command line, Open, the recent list) goes through
@@ -122,7 +130,7 @@ terminal and takes focus for a moment.
   `new_project_dialog.rs` is the owner-scoped New Solution / New Project window: `state.rs` keeps choices and
   name-following, `render.rs` its controls; `templates.rs` shares the service and preloads after first paint.
   `window/new_project.rs` attaches through the preserving solution writer and opens through `projects`;
-  creation restores and opens now, automatic build is Phase 5. Live template tests prepare an isolated local feed
+  creation restores and opens, and a new solution builds through the same controller. Live template tests prepare an isolated local feed
   with `python tools/prepare-template-tests.py` (Avalonia.Templates 12.1.4, matching Passenger), then use private
   CLI homes, hives and package caches. `RSHARP_PROFILE_STARTUP=1` uses the bench timing hooks on a normal launch,
   typing during preload instead of waiting for Roslyn to settle.

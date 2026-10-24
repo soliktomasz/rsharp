@@ -152,7 +152,8 @@ impl MainWindow {
                 )?;
             }
             cx.defer(move |cx| {
-                crate::projects::open_project(&solution, cx);
+                let handle = crate::projects::open_project(&solution, cx);
+                let _ = handle.update(cx, |m, _, cx| m.begin_build(rsharp_core::build::Kind::Build, None, cx));
             });
             Ok(())
         }

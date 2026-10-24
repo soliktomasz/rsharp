@@ -155,6 +155,7 @@ pub fn start_roslyn(
     let mut answers: crate::Answers = std::sync::Arc::new(|_: &str, _: &Value| None);
     match &carried {
         Some(carried) => {
+            rsharp_core::dotnet::prepare(&mut command);
             command.arg("--extension").arg(&carried.extension);
             // Each server's MSBuild nodes its own, as Passenger keeps them: a node another's restore left is never
             // taken up, and ends with the server.

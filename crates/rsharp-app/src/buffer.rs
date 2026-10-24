@@ -150,6 +150,16 @@ pub fn find(path: &PathBuf, cx: &App) -> Option<Entity<Buffer>> {
     cx.try_global::<Buffers>()?.0.get(path)?.upgrade()
 }
 
+/// Workspace buffers across all editors, including detached windows, each file once.
+pub fn in_folders(folders: &[PathBuf], cx: &App) -> Vec<Entity<Buffer>> {
+    cx.try_global::<Buffers>()
+        .into_iter()
+        .flat_map(|buffers| buffers.0.iter())
+        .filter(|(path, _)| folders.iter().any(|folder| path.starts_with(folder)))
+        .filter_map(|(_, buffer)| buffer.upgrade())
+        .collect()
+}
+
 /// Reads a file into a new buffer, known from now to every window.
 pub fn open(path: PathBuf, cx: &mut App) -> std::io::Result<Entity<Buffer>> {
     let bytes = std::fs::read(&path)?;

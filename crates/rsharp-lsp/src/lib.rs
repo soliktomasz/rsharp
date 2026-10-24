@@ -7,7 +7,7 @@ mod host;
 mod protocol;
 mod roslyn;
 
-pub use host::SharedHost;
+pub use host::{BuildHold, SharedHost};
 pub use protocol::*;
 pub use roslyn::*;
 
