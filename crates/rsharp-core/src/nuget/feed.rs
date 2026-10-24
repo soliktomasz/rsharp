@@ -84,7 +84,8 @@ impl PackageFeed {
             Kind::Folder(folder) => {
                 let wanted = query.trim().to_lowercase();
                 let mut newest: Vec<Package> = Vec::new();
-                for package in read_folder(folder, &self.name, prerelease)? {
+                for package in read_folder(folder, &self.name, prerelease, &|dir| dir.to_lowercase().contains(&wanted))?
+                {
                     if !package.id.to_lowercase().contains(&wanted) {
                         continue;
                     }
@@ -146,7 +147,7 @@ impl PackageFeed {
                     return Err(format!("{} offers neither registrations nor a flat container", self.name));
                 }
             }
-            Kind::Folder(folder) => read_folder(folder, &self.name, true)?
+            Kind::Folder(folder) => read_folder(folder, &self.name, true, &|dir| dir.eq_ignore_ascii_case(id))?
                 .into_iter()
                 .filter(|p| p.id.eq_ignore_ascii_case(id))
                 .map(|p| p.version)
@@ -331,8 +332,13 @@ fn get_json(url: &str) -> Result<Option<Value>, String> {
 }
 
 /// A folder's packages, flat or in NuGet's `id/version/` layout, each from its .nuspec; a file that is not a package
-/// passed over.
-fn read_folder(folder: &Path, name: &str, prerelease: bool) -> Result<Vec<Package>, String> {
+/// passed over. A nested id folder `wanted` refuses is not opened, so a search reads only the packages it could find.
+fn read_folder(
+    folder: &Path,
+    name: &str,
+    prerelease: bool,
+    wanted: &dyn Fn(&str) -> bool,
+) -> Result<Vec<Package>, String> {
     if !folder.is_dir() {
         return Err(format!("{name} is no folder: {} is not there", folder.display()));
     }
@@ -354,6 +360,9 @@ fn read_folder(folder: &Path, name: &str, prerelease: bool) -> Result<Vec<Packag
     };
     let mut files = nupkgs(folder);
     for id in subfolders(folder) {
+        if !id.file_name().is_some_and(|n| wanted(&n.to_string_lossy())) {
+            continue;
+        }
         for version in subfolders(&id) {
             files.extend(nupkgs(&version));
         }
