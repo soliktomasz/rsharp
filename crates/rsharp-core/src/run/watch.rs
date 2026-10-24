@@ -8,6 +8,8 @@ pub enum Verdict {
     Applied,
     /// Nothing in the change was code the runtime could apply (a comment, a resource the program does not read).
     NothingToApply,
+    /// The runtime refused the change: the program keeps running the code it has until it is restarted.
+    NotApplied,
     /// The change cannot be applied, so the program is restarted with it.
     Restarting,
     /// The change does not compile, so nothing was applied.
@@ -20,6 +22,7 @@ impl Verdict {
         match self {
             Verdict::Applied => "Hot Reload: dotnet watch applied the changes",
             Verdict::NothingToApply => "Hot Reload: no managed code changes to apply",
+            Verdict::NotApplied => "Hot Reload: the runtime cannot apply the change; restart the program to run it",
             Verdict::Restarting => "Hot Reload: dotnet watch is restarting the application to apply the changes",
             Verdict::Errors => "Hot Reload: dotnet watch could not apply the changes: the code does not compile",
         }
@@ -27,9 +30,11 @@ impl Verdict {
 }
 
 /// The outcome a line of `dotnet watch`'s output carries, if it carries one: the phrases the .NET SDK writes as it
-/// applies a save, each as its own version spells them.
+/// applies a save, each as its own version spells them. A phrase that says nothing was applied is read before one that
+/// says something was, since it holds the same words: "no changes applied" is not "changes applied".
 pub fn verdict(line: &str) -> Option<Verdict> {
     const PHRASES: &[(&str, Verdict)] = &[
+        ("No changes applied to client because they are not supported by the runtime", Verdict::NotApplied),
         ("Hot reload of changes succeeded", Verdict::Applied),
         ("changes applied", Verdict::Applied),
         ("No managed code changes to apply", Verdict::NothingToApply),
@@ -65,6 +70,16 @@ mod tests {
         assert_eq!(
             said("Unable to apply changes due to compilation errors. Please revert the changes or fix the errors"),
             Some("Hot Reload: dotnet watch could not apply the changes: the code does not compile")
+        );
+        assert_eq!(
+            said("No changes applied to client because they are not supported by the runtime"),
+            Some("Hot Reload: the runtime cannot apply the change; restart the program to run it"),
+            "a change the runtime refused is not a change that was applied"
+        );
+        assert_ne!(
+            verdict("No changes applied to client because they are not supported by the runtime"),
+            Some(Verdict::Applied),
+            "the negative form holds the words of the success one"
         );
         assert_eq!(said("dotnet watch 🔥 Hot reload enabled"), None, "watch starting says nothing of a save");
         assert_eq!(said("Now listening on: http://localhost:5000"), None, "nor does the program's own output");

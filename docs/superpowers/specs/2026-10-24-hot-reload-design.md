@@ -13,8 +13,10 @@ This is the roadmap's "Hot Reload under dotnet watch" for a run without the debu
 Reload (Edit and Continue, `Roslyn.Extension`'s `applyChanges`) belongs to Phase 8, where the debugger is.
 
 **Not in this slice:** Hot Reload while debugging (Phase 8); a program in the Terminal window and its
-external console (Phase 6); dotnet watch's restart question as a dialog — the setting decides, as Passenger's
-does; an agent's `hotReload` override of a run (Phase 12); and `dotnet watch` for a configuration that runs
+external console (Phase 6); dotnet watch's restart question as a dialog — the run is `--non-interactive` because
+the Run console takes no input until the terminal (Phase 6), so the setting decides instead: on, watch restarts
+the program for a change the runtime cannot apply; off, it says a restart is needed and the program keeps its
+old code; an agent's `hotReload` override of a run (Phase 12); and `dotnet watch` for a configuration that runs
 another program, which Rider does not offer either.
 
 ## Reference

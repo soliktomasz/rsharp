@@ -283,8 +283,10 @@ impl MainWindow {
     ) {
         match event {
             Event::Output(text, error) => {
+                // An event carries the lines that arrived together: what watch said last is what stands, so a change it
+                // could not apply and then restarted the program for is said as the restart.
                 if self.run_watching
-                    && let Some(verdict) = text.lines().find_map(rsharp_core::run::watch::verdict)
+                    && let Some(verdict) = text.lines().filter_map(rsharp_core::run::watch::verdict).next_back()
                 {
                     self.said = Some(verdict.said().into());
                 }

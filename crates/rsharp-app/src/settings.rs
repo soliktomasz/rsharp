@@ -25,7 +25,9 @@ pub struct AppSettings {
     /// Build, Execution, Deployment | Hot Reload | Hot Reload when running (dotnet watch): Run starts the program under
     /// `dotnet watch`, so a save applies its edits to it, or restarts it with them.
     pub hot_reload: bool,
-    /// Always restart for a change dotnet watch cannot apply, rather than asking: its `DOTNET_WATCH_RESTART_ON_RUDE_EDIT`.
+    /// Always restart for a change dotnet watch cannot apply, rather than saying a restart is needed and leaving the
+    /// program on its old code: its `DOTNET_WATCH_RESTART_ON_RUDE_EDIT`. Nothing asks, the Run console taking no input
+    /// until the terminal (Phase 6).
     pub hot_reload_restart_on_rude_edit: bool,
 }
 

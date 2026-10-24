@@ -147,7 +147,9 @@ impl LaunchPlan {
 
     /// `dotnet watch`'s command for this plan, as Rider's Hot Reload runs it: the project for its framework, no launch
     /// profile (the plan holds its values already), and the program's own arguments after `--`. It runs in the plan's
-    /// working folder, which [`LaunchPlan::make_working_folder`] makes when the project was never built.
+    /// working folder, which [`LaunchPlan::make_working_folder`] makes when the project was never built. It is
+    /// `--non-interactive` because the Run console takes no input: a question watch asked could never be answered, so
+    /// what happens to a change the runtime cannot apply is `restart_on_rude_edit`'s, as watch reports it.
     pub fn watching(&self, restart_on_rude_edit: bool) -> Result<Command, String> {
         let dotnet = crate::programs::dotnet()
             .ok_or_else(|| "No .NET command line found: install the .NET SDK, or set DOTNET_ROOT".to_string())?;
@@ -174,8 +176,9 @@ impl LaunchPlan {
         for (name, value) in &self.environment {
             command.env(name, value);
         }
-        // Rider's and Passenger's: no emoji in the console, and a change the runtime cannot apply restarts the
-        // program rather than asking, unless the person turned that off.
+        // Rider's and Passenger's: no emoji in the console; and with the setting on, a change the runtime cannot apply
+        // restarts the program instead of being reported as one that needs a restart. Nothing is asked either way, the
+        // console having no input to answer with until the terminal (Phase 6).
         command.env("DOTNET_WATCH_SUPPRESS_EMOJIS", "1");
         if restart_on_rude_edit {
             command.env("DOTNET_WATCH_RESTART_ON_RUDE_EDIT", "true");
