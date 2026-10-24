@@ -2,7 +2,7 @@
 
 pub mod cache;
 pub mod catalog;
-mod command;
+pub(crate) mod command;
 pub mod create;
 pub mod developer_tools;
 pub mod families;

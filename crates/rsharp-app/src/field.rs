@@ -21,12 +21,16 @@ use std::ops::Range;
 /// The field's text changed.
 pub struct Changed;
 
+const BULLET: char = '•';
+
 pub struct TextField {
     document: Document,
     focus: FocusHandle,
     placeholder: SharedString,
     marked: Option<Range<usize>>,
     layout: Option<(ShapedLine, Bounds<Pixels>)>,
+    /// A password's field: a bullet shown for each character, and nothing copied out of it.
+    masked: bool,
 }
 
 impl EventEmitter<Changed> for TextField {}
@@ -39,7 +43,32 @@ impl TextField {
             placeholder: placeholder.into(),
             marked: None,
             layout: None,
+            masked: false,
         }
+    }
+
+    pub fn masked(mut self) -> Self {
+        self.masked = true;
+        self
+    }
+
+    /// Where a byte of the text is in the line shown: the same byte, or in a masked field its character's bullet.
+    fn shown(&self, offset: usize) -> usize {
+        if !self.masked {
+            return offset;
+        }
+        let text = self.document.text();
+        text.byte_slice(..offset.min(text.len_bytes())).chars().count() * BULLET.len_utf8()
+    }
+
+    /// The text's byte at a place in the line shown.
+    fn from_shown(&self, shown: usize) -> usize {
+        if !self.masked {
+            return shown;
+        }
+        let text = self.document.text();
+        let chars = (shown / BULLET.len_utf8()).min(text.len_chars());
+        text.char_to_byte(chars)
     }
 
     pub fn text(&self) -> String {
@@ -110,7 +139,7 @@ impl TextField {
     fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus);
         if let Some((line, bounds)) = &self.layout {
-            let offset = line.closest_index_for_x(event.position.x - bounds.left());
+            let offset = self.from_shown(line.closest_index_for_x(event.position.x - bounds.left()));
             let anchor = if event.modifiers.shift { self.caret().anchor } else { offset };
             self.document.set_selections(vec![Selection { anchor, head: offset }]);
             cx.notify();
@@ -165,7 +194,7 @@ impl Render for TextField {
             }))
             .on_action(cx.listener(|f, _: &Copy, _, cx| {
                 let c = f.caret();
-                if !c.is_empty() {
+                if !c.is_empty() && !f.masked {
                     cx.write_to_clipboard(ClipboardItem::new_string(
                         f.document.text().byte_slice(c.range()).to_string(),
                     ))
@@ -173,7 +202,7 @@ impl Render for TextField {
             }))
             .on_action(cx.listener(|f, _: &Cut, _, cx| {
                 let c = f.caret();
-                if !c.is_empty() {
+                if !c.is_empty() && !f.masked {
                     cx.write_to_clipboard(ClipboardItem::new_string(
                         f.document.text().byte_slice(c.range()).to_string(),
                     ));
@@ -267,7 +296,7 @@ impl EntityInputHandler for TextField {
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
         let (line, bounds) = self.layout.as_ref()?;
-        let x = line.x_for_index(self.utf16_to_offset(range.start));
+        let x = line.x_for_index(self.shown(self.utf16_to_offset(range.start)));
         Some(Bounds::new(point(bounds.left() + x, bounds.top()), size(px(2.), bounds.size.height)))
     }
 
@@ -278,7 +307,7 @@ impl EntityInputHandler for TextField {
         _: &mut Context<Self>,
     ) -> Option<usize> {
         let (line, bounds) = self.layout.as_ref()?;
-        Some(self.offset_to_utf16(line.closest_index_for_x(point.x - bounds.left())))
+        Some(self.offset_to_utf16(self.from_shown(line.closest_index_for_x(point.x - bounds.left()))))
     }
 }
 
@@ -331,6 +360,9 @@ impl Element for FieldElement {
         let style = window.text_style();
         let (text, color): (SharedString, gpui::Hsla) = match field.document.text().len_bytes() {
             0 => (field.placeholder.clone(), theme::text_secondary().into()),
+            n if field.masked => {
+                (BULLET.to_string().repeat(field.document.text().len_chars().min(n)).into(), style.color)
+            }
             _ => (field.document.text().to_string().into(), style.color),
         };
         let run = TextRun {
@@ -360,8 +392,9 @@ impl Element for FieldElement {
         let field = self.field.read(cx);
         let caret = field.caret();
         let empty = field.document.text().len_bytes() == 0;
+        let head = field.shown(caret.head);
         if !caret.is_empty() {
-            let (x0, x1) = (line.x_for_index(caret.start()), line.x_for_index(caret.end()));
+            let (x0, x1) = (line.x_for_index(field.shown(caret.start())), line.x_for_index(field.shown(caret.end())));
             window.paint_quad(fill(
                 Bounds::from_corners(
                     point(bounds.left() + x0, bounds.top()),
@@ -372,7 +405,7 @@ impl Element for FieldElement {
         }
         let _ = line.paint(bounds.origin, bounds.size.height, window, cx);
         if focus.is_focused(window) {
-            let x = if empty { px(0.) } else { line.x_for_index(caret.head) };
+            let x = if empty { px(0.) } else { line.x_for_index(head) };
             window.paint_quad(fill(
                 Bounds::new(
                     point(bounds.left() + x, bounds.top() + px(2.)),

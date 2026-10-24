@@ -149,7 +149,10 @@ the effective SDK's dotnet new catalog, Rider's families and IDE options, and mi
 dialog retains names and choices; creation removes Accelerate tools, restores, then opens or adds through the same
 preserving solution writer. Live tests cover source bytes, both solution formats, local Avalonia installation,
 multi-project templates and growing a solution to three projects with a reference and Roslyn loading. Automatic build
-remains Phase 5. Next: NuGet, then code help in MSBuild files; the whole Phase 4 acceptance below remains open.
+remains Phase 5. NuGet is in: the folder's sources as restore reads them (credentials, credential providers and
+the audit sources included), v3, v2 and folder feeds, search, known vulnerabilities, the NuGet window with Install,
+Update and Remove through `dotnet add package`, and the Sources tab editing a nuget.config in place. Next: code help
+in MSBuild files; the whole Phase 4 acceptance below remains open.
 - **The Solution view as Rider's:** the solution's projects, Dependencies, solution folders, file nesting.
   Cut, copy, paste and drag; every Add kind; Add Reference.
 - **Edits that keep every other byte:** `SolutionEdits` (.sln line by line, .slnx with its whitespace kept) and

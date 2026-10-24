@@ -6,6 +6,7 @@ pub mod files;
 pub mod history;
 pub mod logs;
 pub mod nesting;
+pub mod nuget;
 pub mod paths;
 pub mod process;
 pub mod programs;

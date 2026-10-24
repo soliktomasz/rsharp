@@ -29,7 +29,7 @@ use crate::window::{
 };
 use crate::window::{
     CloseSolution, CloseTab, FindAction, FloatToolWindow, HideToolWindow, OpenFolder, RestoreDefaultLayout,
-    ToggleProblems, ToggleSolution,
+    ToggleNuGet, ToggleProblems, ToggleSolution,
 };
 use crate::window::{NewProject, NewSolution};
 use crate::window::{RecentLocations, ReplaceInFiles, SearchEverywhere};
@@ -146,6 +146,7 @@ pub static ALL: &[IdeAction] = &[
     ide!("Reset Font Size", "View", ["zoom", "default size"], ResetFontSize),
     ide!("Solution", "View", ["project", "explorer", "tool window"], ToggleSolution),
     ide!("Problems", "View", ["errors", "warnings", "tool window"], ToggleProblems),
+    ide!("NuGet", "Tools", ["packages", "package manager", "tool window"], ToggleNuGet),
     ide!("Hide Active Tool Window", "Window", ["close tool window"], HideToolWindow),
     ide!("Float Active Tool Window", "Window", ["floating mode", "view mode", "dock", "undock"], FloatToolWindow),
     ide!("Restore Default Layout", "Window", ["reset layout", "tool windows"], RestoreDefaultLayout),
@@ -154,7 +155,7 @@ pub static ALL: &[IdeAction] = &[
 ];
 
 /// Rider's main menus in its order.
-pub const MENUS: &[&str] = &["File", "Edit", "View", "Navigate", "Code", "Refactor", "Window", "Help"];
+pub const MENUS: &[&str] = &["File", "Edit", "View", "Navigate", "Code", "Refactor", "Tools", "Window", "Help"];
 
 /// The main menu: macOS's menu bar, the app menu first with Settings and Quit where a Mac keeps them.
 // shortcut: Windows and Linux get no in-window menu yet; Rider's is the toolbar's main menu button.

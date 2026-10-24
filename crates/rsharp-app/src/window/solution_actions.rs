@@ -748,6 +748,7 @@ impl MainWindow {
     /// unsaved edits kept as it is), a file not open is kept in Local History as an External change, the solution is
     /// read again when it changed, and the projects whose inputs changed are evaluated again.
     fn folder_changed(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        self.package_sources_changed(&paths, cx);
         let solution = self.tree.as_ref().map(|t| t.solution().path.clone());
         let mut closed = Vec::new();
         for path in &paths {
@@ -768,6 +769,7 @@ impl MainWindow {
             && let Some(tree) = &mut self.tree
         {
             tree.set_solution(read);
+            self.sync_nuget(cx);
         }
         // Read off the UI thread: a pull can change a thousand files at once.
         let reads = cx.background_executor().spawn(async move {
@@ -799,6 +801,7 @@ impl MainWindow {
                 tree.set_solution(solution);
             }
             self.rebuild_rows();
+            self.sync_nuget(cx);
         }
         let extension = path.extension().and_then(|e| e.to_str()).map(str::to_lowercase).unwrap_or_default();
         if extension.ends_with("proj") || extension == "props" || extension == "targets" || is_solution {
