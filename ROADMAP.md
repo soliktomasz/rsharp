@@ -185,12 +185,14 @@ launch profiles, chosen in the toolbar and kept with the folder; Run, Rerun and 
 resolved from MSBuild's properties (the project's assembly under `dotnet`, or a profile's program, with its
 arguments, working folder and environment), the build before the launch, the program in a Run console with
 bounded output and its exit code in the status bar, URL and stack-frame links in that console, and the browser
-opened once the program listens at its profile's URL. Hot Reload and Unit Tests remain the next slices, and
-Edit Configurations with the folder's own configurations follows Run. Run in the terminal waits for Phase 6.
+opened once the program listens at its profile's URL. The third slice, the folder's own run configurations and
+Rider's Edit Configurations dialog: stored in `runConfigurations.json` with each project relative to the folder,
+added, copied, removed and edited over the window, listed before the projects' generated ones, and run as they
+are. Hot Reload and Unit Tests remain the next slices. Run in the terminal waits for Phase 6.
 - Builds through `DotnetCommand` with the host's hold, read for errors, and the Build window.
 - Run configurations: from launchSettings, the folder's own, and Edit Configurations; `LaunchPlan`; Run in the
-  terminal; console links; the browser opened once the port answers. (launchSettings, the plan, Run and the
-  browser are in; the folder's own configurations and Edit Configurations are not yet.)
+  terminal; console links; the browser opened once the port answers. (all but Run in the terminal, which waits
+  for Phase 6.)
 - Hot Reload under dotnet watch.
 - **Unit tests:**
   - `TestFinder` reads tests from code before any build, with tree-sitter, so no parse runs in .NET.

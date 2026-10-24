@@ -23,6 +23,7 @@ pub mod nuget_view;
 pub mod projects;
 pub mod refactor_dialog;
 pub mod reference_dialog;
+pub mod run_dialog;
 pub mod settings;
 pub mod settings_dialog;
 pub mod solution_menu;

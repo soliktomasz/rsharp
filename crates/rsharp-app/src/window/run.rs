@@ -81,7 +81,9 @@ impl MainWindow {
     /// menu and pressing Run read it instead of walking the folder again.
     pub(super) fn refresh_run_configurations(&mut self) {
         self.run_projects = self.discovered_projects();
-        self.run_configs = RunConfiguration::generate(&self.run_projects);
+        // The folder's own first, as Rider lists them, then what its projects and launch profiles make.
+        self.run_configs = self.run_own.clone();
+        self.run_configs.extend(RunConfiguration::generate(&self.run_projects));
         self.run_why_not =
             self.run_configs.iter().map(|configuration| configuration.why_not_here(&self.run_projects)).collect();
         if self
@@ -128,8 +130,24 @@ impl MainWindow {
     pub(super) fn choose_run_configuration(&mut self, name: String, cx: &mut Context<Self>) {
         self.run_selected = Some(name);
         self.run_menu = false;
-        self.save_state(cx);
+        self.save_run_configurations(cx);
         cx.notify();
+    }
+
+    /// Keeps the folder's own configurations and the one chosen with the folder, as `runConfigurations.json`, their
+    /// projects relative to it.
+    pub(super) fn save_run_configurations(&self, cx: &App) {
+        let Some(workspace) = &self.workspace else { return };
+        let document = rsharp_core::run::configuration::RunConfigurations {
+            configurations: self.run_own.clone(),
+            selected: self.run_selected.clone(),
+        };
+        crate::state::store(cx).write_for(&workspace.folder, &document.for_store(&workspace.folder));
+    }
+
+    /// The folder's own run configurations, as Edit Configurations last kept them.
+    pub fn run_own(&self) -> &[RunConfiguration] {
+        &self.run_own
     }
 
     /// Run: the chosen configuration's plan is resolved, its project built as it says, and its program started.
@@ -497,11 +515,13 @@ impl MainWindow {
         self.run_after_stop = false;
         self.run_plan = None;
         self.run_outcome = None;
+        self.run_own.clear();
         self.run_configs.clear();
         self.run_projects.clear();
         self.run_why_not.clear();
         self.run_selected = None;
         self.run_menu = false;
+        self.run_dialog = None;
         self._run_task = None;
         self.run_console.update(cx, |view, cx| {
             view.running = false;
@@ -530,9 +550,51 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// Rider's Run/Debug Configurations dialog over the window: it edits the folder's own configurations, and Apply
+    /// keeps them with the folder while OK closes it too.
+    pub(super) fn edit_run_configurations(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::run_dialog::{Ended, RunDialog};
+        let Some(folder) = self.workspace.as_ref().map(|workspace| workspace.folder.clone()) else {
+            self.said = Some("Nothing to configure: no folder is open".into());
+            cx.notify();
+            return;
+        };
+        let own = self.run_own.clone();
+        let generated = RunConfiguration::generate(&self.run_projects);
+        let chosen = self.chosen_run_configuration().map(|configuration| configuration.name.clone());
+        let dialog =
+            cx.new(|cx| RunDialog::new(&folder, &own, &generated, self.run_projects.clone(), chosen.as_deref(), cx));
+        cx.subscribe_in(&dialog, window, |m, _, ended: &Ended, window, cx| match ended {
+            Ended::Applied { own, chosen } => {
+                m.run_own = own.clone();
+                m.run_selected = chosen.clone().or_else(|| m.run_selected.clone());
+                m.save_run_configurations(cx);
+                m.refresh_run_configurations();
+                cx.notify();
+            }
+            // OK has applied the list already and only says the dialog may close: the keys go back where they were.
+            Ended::Dismissed => {
+                m.run_dialog = None;
+                m.focus_editor(window, cx);
+            }
+        })
+        .detach();
+        window.focus(&dialog.focus_handle(cx));
+        self.run_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    /// The dialog open, for a test to fill its fields and press its buttons.
+    pub fn run_dialog(&self) -> Option<Entity<crate::run_dialog::RunDialog>> {
+        self.run_dialog.clone()
+    }
+
     pub(super) fn run_actions<T: InteractiveElement + FluentBuilder>(&self, d: T, cx: &mut Context<Self>) -> T {
         d.when(self.workspace.is_some(), |d| {
             d.on_action(cx.listener(|m, _: &ToggleRun, window, cx| m.toggle_tool(Tool::Run, window, cx)))
+                .on_action(
+                    cx.listener(|m, _: &EditRunConfigurations, window, cx| m.edit_run_configurations(window, cx)),
+                )
                 .when(self.chosen_run_configuration().is_some() && !self.is_running(), |d| {
                     d.on_action(cx.listener(|m, _: &RunProgram, _, cx| m.run(cx)))
                 })
@@ -601,14 +663,14 @@ impl MainWindow {
                 }
             })
             .collect();
-        if self.run_configs.is_empty() {
-            return div()
-                .w(px(320.))
-                .p(px(10.))
+        // A folder with nothing to run still opens the dialog: a configuration is how a person makes one.
+        let nothing = self.run_configs.is_empty().then(|| {
+            div()
+                .px(px(10.))
+                .py(px(4.))
                 .text_color(theme::text_secondary())
                 .child("No run configuration: this folder has no executable project")
-                .into_any_element();
-        }
+        });
         div()
             .id("run-menu")
             .w(px(320.))
@@ -619,7 +681,25 @@ impl MainWindow {
                 m.run_menu = false;
                 cx.notify();
             }))
+            .children(nothing)
             .children(rows)
+            .child(div().h(px(1.)).mx(px(8.)).my(px(4.)).bg(theme::popup_border()))
+            .child(
+                div()
+                    .id("run-menu: edit")
+                    .debug_selector(|| "run configuration: Edit Configurations…".into())
+                    .h(px(26.))
+                    .px(px(10.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(4.))
+                    .hover(|d| d.bg(theme::selection()))
+                    .child("Edit Configurations…")
+                    .on_click(cx.listener(|m, _: &ClickEvent, window, cx| {
+                        m.run_menu = false;
+                        m.edit_run_configurations(window, cx);
+                    })),
+            )
             .into_any_element()
     }
 }
