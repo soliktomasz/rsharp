@@ -39,3 +39,37 @@ fn the_host_evaluates_a_project_into_its_files_and_packages() {
     );
     let _ = std::fs::remove_dir_all(&base);
 }
+
+#[test]
+fn the_host_inspects_a_project_with_the_unsaved_text_in_place_of_the_disks() {
+    let base = std::env::temp_dir().join(format!("rsharp-host-inspect-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let base = rsharp_core::paths::canonical(&base);
+    let Some(host) = SharedHost::carried(&base) else {
+        eprintln!("skipped: Passenger's sidecars were not built (no dotnet or no vendor/passenger at build time)");
+        return;
+    };
+    let project = base.join("Demo.csproj");
+    std::fs::write(&project, "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>net10.0</TargetFramework>\n  </PropertyGroup>\n</Project>\n").unwrap();
+    let typed = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>net10.0</TargetFramework>\n    <Mine>typed</Mine>\n  </PropertyGroup>\n  <Target Name=\"Hello\" />\n</Project>\n";
+    let texts = std::collections::HashMap::from([(project.clone(), typed.to_string())]);
+    let insight = host.inspect(&project, None, &texts).expect("the Host did not inspect the project");
+    assert!(insight.evaluated, "the project did not evaluate: {:?}", insight.diagnostics);
+    let mine = insight.property("Mine").expect("the unsaved text's property was not evaluated");
+    assert_eq!(mine.value, "typed");
+    let (file, line, _) = insight.at(mine.set[0]).unwrap();
+    assert_eq!(
+        (rsharp_core::paths::canonical(&file), line),
+        (project.clone(), 3),
+        "the property was not placed where it is typed"
+    );
+    assert_eq!(insight.property("TargetFramework").map(|p| p.value.as_str()), Some("net10.0"));
+    assert!(insight.target("Hello").is_some() && insight.target("Build").is_some(), "the targets were not listed");
+    assert!(insight.frameworks.iter().any(|f| f.alias == "net10.0"), "the SDK's frameworks were not listed");
+    assert!(
+        insight.imports.iter().any(|i| i.sdk.as_deref() == Some("Microsoft.NET.Sdk")),
+        "the SDK's imports were not listed"
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}

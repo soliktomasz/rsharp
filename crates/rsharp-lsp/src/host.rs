@@ -3,6 +3,7 @@
 //! as each ends (Roslyn's ProjectFileInfo, as its own build host writes them), then the round's end.
 
 use crate::ServerFailed;
+use rsharp_core::msbuild::insight::ProjectInsight;
 use rsharp_core::process::{self, Child};
 use rsharp_core::project::EvaluatedProject;
 use serde_json::{Value, json};
@@ -118,6 +119,48 @@ impl ProjectHost {
     }
 }
 
+impl ProjectHost {
+    /// One project evaluated for the code help in its MSBuild files: the solution's global properties, and the open
+    /// files' unsaved text, by path, read in place of the disk's.
+    pub fn inspect(
+        &mut self,
+        project: &Path,
+        properties: &Value,
+        texts: &std::collections::HashMap<PathBuf, String>,
+    ) -> Result<ProjectInsight, ServerFailed> {
+        let texts: serde_json::Map<String, Value> =
+            texts.iter().map(|(p, t)| (p.to_string_lossy().into_owned(), Value::String(t.clone()))).collect();
+        let result = self
+            .ask_result("inspect", json!({ "project": project, "properties": properties, "texts": texts }))
+            .map_err(|e| ServerFailed(format!("the project host could not inspect {}: {e}", project.display())))?;
+        serde_json::from_value(result).map_err(|e| {
+            ServerFailed(format!("the project host's inspection of {} did not read: {e}", project.display()))
+        })
+    }
+
+    /// Asks one request answered by a result alone.
+    fn ask_result(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let request = json!({ "id": id, "method": method, "params": params });
+        writeln!(self.input, "{request}")
+            .and_then(|_| self.input.flush())
+            .map_err(|e| format!("the project host could not be asked: {e}"))?;
+        loop {
+            let reply = self.reply().map_err(|e| e.0)?;
+            if reply["id"] != id {
+                continue;
+            }
+            if let Some(error) = reply["error"].as_str() {
+                return Err(error.to_string());
+            }
+            if let Some(result) = reply.get("result") {
+                return Ok(result.clone());
+            }
+        }
+    }
+}
+
 /// The one Host a folder has, which Roslyn's design-time builds and the Solution view's evaluations take turns on:
 /// started on first use, and again after it fails.
 #[derive(Clone)]
@@ -159,5 +202,16 @@ impl SharedHost {
     pub fn evaluate(&self, project: &Path, solution: Option<&Path>) -> Result<EvaluatedProject, ServerFailed> {
         let properties = crate::roslyn::solution_properties(solution);
         self.with(|host| host.evaluate(project, &properties))
+    }
+
+    /// Blocks while a build or another request has the Host, so call it off the UI thread.
+    pub fn inspect(
+        &self,
+        project: &Path,
+        solution: Option<&Path>,
+        texts: &std::collections::HashMap<PathBuf, String>,
+    ) -> Result<ProjectInsight, ServerFailed> {
+        let properties = crate::roslyn::solution_properties(solution);
+        self.with(|host| host.inspect(project, &properties, texts))
     }
 }

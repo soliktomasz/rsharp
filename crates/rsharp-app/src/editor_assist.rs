@@ -72,6 +72,10 @@ pub struct Assist {
 impl Assist {
     /// After a change: the colours carried through it, the usages dropped until asked again.
     pub fn map_through(&mut self, changes: &[Change]) {
+        // A popup stays hung where it was, through edits above it and the text it stood on replaced.
+        for change in changes {
+            self.popup_at = map_through(self.popup_at, change);
+        }
         for (range, _) in &mut self.tokens {
             for change in changes {
                 *range = map_through(range.start, change)..map_through(range.end, change);
@@ -207,6 +211,10 @@ impl CodeEditor {
             self.close_popup(cx);
             return;
         };
+        if self.is_msbuild() {
+            self.msbuild_typed(c, cx);
+            return;
+        }
         let completing = matches!(self.assist.popup, Some(Popup::Completion { .. }));
         match c {
             c if is_word(c) => {
@@ -238,6 +246,10 @@ impl CodeEditor {
     }
 
     pub(super) fn request_completion(&mut self, trigger: Option<char>, explicit: bool, cx: &mut Context<Self>) {
+        if self.is_msbuild() {
+            self.msbuild_complete(explicit, cx);
+            return;
+        }
         let Some((server, uri)) = self.server(cx) else { return };
         let head = self.primary().head;
         let start = word_start(&self.text, head);
@@ -284,7 +296,7 @@ impl CodeEditor {
     }
 
     /// The items the word typed so far matches, best first, the server's order among equals.
-    fn filter_completion(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn filter_completion(&mut self, cx: &mut Context<Self>) {
         let head = self.primary().head;
         let Some(Popup::Completion { list, shown, selected, start, explicit }) = &mut self.assist.popup else { return };
         let typed = self.text.byte_slice(*start..head.max(*start)).to_string();
@@ -353,7 +365,8 @@ impl CodeEditor {
             Some(edit) => (offset(&self.text, edit.span.start).min(start), edit.text.clone()),
             None => (start, item.label.clone()),
         };
-        let caret = from + written.len();
+        // MSBuild's own items place the caret inside what they write (between an attribute's quotes).
+        let caret = from + item.raw["caret"].as_u64().map_or(written.len(), |c| (c as usize).min(written.len()));
         self.apply(
             EditPlan {
                 edits: vec![Edit { range: from..head, text: written }],
@@ -414,7 +427,8 @@ impl CodeEditor {
             .map(|d| d.message.clone())
             .collect();
         let word = word_at(&self.text, at).range();
-        let server = self.server(cx);
+        let own = if self.is_msbuild() { self.msbuild_hover(at, cx) } else { None };
+        let server = self.server(cx).filter(|_| !self.is_msbuild());
         let answer = server.map(|(server, uri)| {
             ask(&server, "textDocument/hover", lsp::at(&uri, language::point(&self.text, at)), cx)
         });
@@ -427,7 +441,7 @@ impl CodeEditor {
                 Some(answer) => answer.await.and_then(|a| lsp::hover(&a)),
                 None => None,
             };
-            let text: Vec<String> = problems.into_iter().chain(hover).collect();
+            let text: Vec<String> = problems.into_iter().chain(own).chain(hover).collect();
             let _ = this.update(cx, |e, cx| {
                 if e.version != version || (from_mouse && e.assist.hover_at != Some(at)) {
                     return;
@@ -471,6 +485,10 @@ impl CodeEditor {
 
     /// Go to Declaration, Implementation or Type Declaration from the caret.
     pub(super) fn go_to(&mut self, method: &'static str, title: &'static str, cx: &mut Context<Self>) {
+        if self.is_msbuild() && method == "textDocument/definition" {
+            self.msbuild_declaration(cx);
+            return;
+        }
         let Some((server, uri)) = self.server(cx) else { return };
         let answer = ask(&server, method, lsp::at(&uri, language::point(&self.text, self.primary().head)), cx);
         self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
@@ -894,8 +912,16 @@ impl CodeEditor {
                 .items_center()
                 .gap(px(16.))
                 .when(chosen, |d| d.bg(theme::selection()))
-                .child(div().flex_1().truncate().font_family(code).child(text))
-                .child(div().text_color(theme::text_secondary()).truncate().child(detail))
+                // The name is what is chosen, so a long detail (MSBuild's documentation) gives way to it.
+                .child(div().flex_none().max_w(px(380.)).truncate().font_family(code).child(text))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .justify_end()
+                        .child(div().min_w_0().text_color(theme::text_secondary()).truncate().child(detail)),
+                )
         };
         let below = point(at.x, at.y + line_height);
         let element = match self.assist.popup.as_ref()? {

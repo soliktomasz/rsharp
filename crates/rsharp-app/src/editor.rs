@@ -16,6 +16,8 @@ use std::path::PathBuf;
 
 #[path = "editor_assist.rs"]
 mod assist;
+#[path = "editor_msbuild.rs"]
+mod msbuild_help;
 #[path = "editor_refactor.rs"]
 mod refactor;
 #[path = "editor_templates.rs"]

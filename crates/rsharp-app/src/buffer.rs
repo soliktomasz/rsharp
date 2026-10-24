@@ -63,6 +63,10 @@ pub struct Buffer {
     pub contexts: Vec<Value>,
     pub context: usize,
     asking_contexts: Option<Task<()>>,
+    /// An MSBuild file's Host, the project it is evaluated through and its solution, and the last evaluation.
+    msbuild: Option<(rsharp_lsp::SharedHost, PathBuf, Option<PathBuf>)>,
+    pub insight: Option<Arc<rsharp_core::msbuild::insight::ProjectInsight>>,
+    inspecting: Option<Task<()>>,
 }
 
 impl EventEmitter<BufferEvent> for Buffer {}
@@ -194,6 +198,9 @@ impl Buffer {
             contexts: Vec::new(),
             context: 0,
             asking_contexts: None,
+            msbuild: None,
+            insight: None,
+            inspecting: None,
         };
         buffer.on_disk = stamp(&buffer.path);
         buffer.reparse(cx);
@@ -294,6 +301,7 @@ impl Buffer {
         }
         self.reparse(cx);
         self.check(Duration::from_millis(400), cx);
+        self.inspect(Duration::from_millis(500), cx);
         cx.emit(BufferEvent::Edited { changes, by });
         cx.notify();
     }
@@ -447,6 +455,78 @@ impl Buffer {
                         message: d["message"].as_str().unwrap_or_default().to_string(),
                     })
                     .collect();
+                cx.notify();
+            });
+        }));
+    }
+
+    /// An MSBuild file's code help: evaluated through `project` in the folder's Host, now and once typing pauses.
+    pub fn attach_msbuild(
+        &mut self,
+        host: rsharp_lsp::SharedHost,
+        project: PathBuf,
+        solution: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        self.msbuild = Some((host, project, solution));
+        self.inspect(Duration::ZERO, cx);
+    }
+
+    /// The project evaluated on the text as typed, every open MSBuild file's unsaved text in place of the disk's; its
+    /// errors in this file become the file's problems.
+    pub fn inspect(&mut self, after: Duration, cx: &mut Context<Self>) {
+        let Some((host, project, solution)) = self.msbuild.clone() else { return };
+        let version = self.document.version();
+        let mut texts = HashMap::new();
+        if self.is_modified() {
+            texts.insert(self.path.clone(), self.document.text().to_string());
+        }
+        for (path, other) in cx.try_global::<Buffers>().map(|b| b.0.clone()).unwrap_or_default() {
+            if path != self.path
+                && rsharp_core::msbuild::is_msbuild(&path)
+                && let Some(other) = other.upgrade().filter(|o| o.read(cx).is_modified())
+            {
+                texts.insert(path, other.read(cx).document.text().to_string());
+            }
+        }
+        self.inspecting = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(after).await;
+            let read = cx
+                .background_executor()
+                .spawn(async move { host.inspect(&project, solution.as_deref(), &texts) })
+                .await;
+            let insight = match read {
+                Ok(insight) => insight,
+                Err(failed) => {
+                    log::info!("MSBuild code help: {failed}");
+                    return;
+                }
+            };
+            let _ = this.update(cx, |b, cx| {
+                if b.document.version() != version {
+                    return;
+                }
+                let me = rsharp_core::paths::canonical(&b.path);
+                let text = b.document.text().clone();
+                b.diagnostics = insight
+                    .diagnostics
+                    .iter()
+                    .filter(|d| rsharp_core::paths::canonical(&d.file) == me)
+                    .map(|d| {
+                        let line = d.line.saturating_sub(1).min(text.len_lines().saturating_sub(1));
+                        let start = text.line_to_byte(line);
+                        let end = line_end(&text, line);
+                        let at = text.char_to_byte(
+                            (text.byte_to_char(start) + d.column.saturating_sub(1)).min(text.byte_to_char(end)),
+                        );
+                        Diagnostic {
+                            range: at..end.max(at + 1).min(text.len_bytes()),
+                            error: d.error,
+                            message: d.message.clone(),
+                        }
+                    })
+                    .collect();
+                b.insight = Some(Arc::new(insight));
                 cx.notify();
             });
         }));

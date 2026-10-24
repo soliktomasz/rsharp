@@ -21,6 +21,8 @@ just test [filter]         # every test
 just screenshot OUT.png [args]   # the real window captured on macOS (tools/screenshot.sh; WAIT=seconds,
                            # SHOT_WINDOW=Settings for another window by title; a state folder of its own)
 target/debug/rsharp --mcp [FOLDER]   # RSharp as an MCP server on standard input and output (no window)
+tools/passenger-parity.sh  # Phase 4's acceptance, Passenger's side: the steps of tests/phase4.rs through Passenger's
+                           # window, written to tests/fixtures/phase4 (needs the SDK vendor/passenger pins and 10.0.1xx)
 tools/bench.sh             # the release build on 1, 3 and 10 projects: start, load, memory, key to frame;
                            # appends bench/results.csv by commit (keep its window in front)
 ```
@@ -68,7 +70,9 @@ terminal and takes focus for a moment.
   credential providers through its plugin protocol) asked once a feed without credentials answers 401;
   `vulnerabilities` the audit's VulnerabilityInfo advisories; `config_edit` changes one nuget.config as `dotnet
   nuget` does, every other byte kept; `change` runs `dotnet add package` and `dotnet remove package`, as Passenger
-  does, so the bytes are dotnet's; `version` NuGet's order),
+  does, so the bytes are dotnet's; `version` NuGet's order), `msbuild` (code help in project, .props and .targets
+  files: `insight` the Host's `inspect` answer, `schema` dotnet/msbuild's XSDs carried in `assets/msbuild/` and read
+  once, `context` where the caret is in the text as typed, `help` the completion, hover and declaration there),
   `editorconfig` (the .editorconfig files over a file, its own parser and globs), `history` (Local History: each version
   of a file under `localHistory/`, content once by hash in `blobs/`, a JSON line per version in `changes.log`), `state` (the one `StateStore`: `RSHARP_STATE` or the local app data; app documents
   at its root, each folder's under `workspaces/<name>-<hash>/`; writes debounced on its own thread, merged over
@@ -128,7 +132,9 @@ terminal and takes focus for a moment.
   a field, an `Opt` on a page, and what follows it). `nuget_view.rs` is Rider's NuGet window (Packages, Sources
   and Log tabs; the search field takes the keys when it opens; a vulnerable installed version marked, Update offering
   its fix), its projects fed by `window/nuget.rs` after each evaluation; a change saves open copies first, keeps the
-  old bytes in Local History and tells the window what it wrote. `nuget_view/sources.rs` is the Sources tab: the
+  old bytes in Local History and tells the window what it wrote. `editor_msbuild.rs` is an MSBuild file's completion, hover
+  card and Go to Declaration, its buffer given the Host by `window/msbuild.rs` and inspected once typing pauses, the
+  evaluation's errors its problems. `nuget_view/sources.rs` is the Sources tab: the
   files in effect and the chosen one's feeds, added, edited (a masked password field), enabled and deleted in place. `solution_view.rs` is the Solution view's tree for a folder with a solution (only open nodes walked, each kept
   open by its key); a folder without one shows its files. `solution_menu.rs` is a row's menu (Rider's items and keys)
   and the name popup; `reference_dialog.rs` Add Reference; the window's side of changing the solution is in

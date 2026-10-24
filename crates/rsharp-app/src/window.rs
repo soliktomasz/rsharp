@@ -81,6 +81,7 @@ actions!(
 
 mod file_moves;
 mod file_ops;
+mod msbuild;
 mod new_project;
 mod nuget;
 mod solution_actions;
@@ -441,6 +442,7 @@ impl MainWindow {
                 .update(cx, |w, cx| {
                     w.host = given;
                     w.evaluate_projects(cx);
+                    w.attach_msbuild_files(cx);
                 })
                 .is_err()
             {
@@ -1161,6 +1163,7 @@ impl MainWindow {
                 if let Some(server) = self.server.clone().filter(|_| is_csharp(&path)) {
                     buffer.update(cx, |b, cx| b.attach_server(server, cx));
                 }
+                self.attach_msbuild(&buffer, cx);
                 let editor = self.new_editor(buffer, window, cx);
                 self.area.add(editor, false)
             }
