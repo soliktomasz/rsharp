@@ -211,6 +211,64 @@ fn a_failed_build_starts_nothing() {
 }
 
 #[test]
+fn stop_during_the_build_before_a_launch_ends_the_run_as_stopped() {
+    // Run builds first: Stop then ends that build, and the run is over rather than waiting on a build forever.
+    let run = Run::new("run-stop-during-build", &[]);
+    app(&run, "System.Console.WriteLine(\"started\");\nSystem.Threading.Thread.Sleep(60000);\n");
+    if !offline(&run) {
+        return;
+    }
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    cx.simulate_keystrokes("ctrl-f5");
+    wait(cx, "the build before the launch", |cx| main.read_with(cx, |main, _| main.is_building()));
+    cx.simulate_keystrokes("shift-f5");
+    let outcome = finished(&main, cx);
+    assert_eq!(outcome.status, RunStatus::Stopped, "{}\n{}", outcome.message, output(&main, cx));
+    assert!(outcome.message.contains("App stopped"), "{}", outcome.message);
+    assert!(!output(&main, cx).contains("started"), "a program started after Stop:\n{}", output(&main, cx));
+}
+
+#[test]
+fn a_build_that_cannot_start_ends_the_run_saying_why() {
+    // Another build already running refuses the run's build: the run ends with that reason instead of staying running.
+    let run = Run::new("run-build-refused", &[]);
+    let gate = if cfg!(windows) {
+        "powershell -NoProfile -Command &quot;while (-not (Test-Path release)) { Start-Sleep -Milliseconds 50 }&quot;"
+    } else {
+        "while [ ! -f release ]; do sleep 0.05; done"
+    };
+    write(
+        &run.folder,
+        "App/App.csproj",
+        &format!(
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework></PropertyGroup>\
+             <Target Name=\"Wait\" BeforeTargets=\"Build\"><Exec Command=\"{gate}\" /></Target></Project>"
+        ),
+    );
+    write(&run.folder, "App/Program.cs", "System.Console.WriteLine(\"started\");");
+    if !offline(&run) {
+        return;
+    }
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    cx.simulate_keystrokes("secondary-shift-b");
+    wait(cx, "the explicit build's start", |cx| main.read_with(cx, |main, _| main.is_building()));
+    cx.simulate_keystrokes("ctrl-f5");
+    wait(cx, "the run's refusal", |cx| {
+        main.read_with(cx, |main, _| !main.is_running() && main.run_outcome().is_some())
+    });
+    let outcome = outcome(&main, cx).unwrap();
+    assert_eq!(outcome.status, RunStatus::Refused, "{}", outcome.message);
+    assert!(outcome.message.contains("did not start"), "{}", outcome.message);
+    assert!(outcome.message.contains("Another build is running"), "{}", outcome.message);
+    // The explicit build is still the one running, and it ends with its gate released.
+    assert!(main.read_with(cx, |main, _| main.is_building()), "the run's refusal ended the explicit build");
+    write(&run.folder, "App/release", "released");
+    wait(cx, "the explicit build's end", |cx| main.read_with(cx, |main, _| !main.is_building()));
+}
+
+#[test]
 fn the_browser_opens_once_the_program_listens() {
     // A web project's browser opens at its URL once something listens there, and only then.
     let run = Run::new("run-browser", &[]);

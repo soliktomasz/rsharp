@@ -254,8 +254,11 @@ pub struct MainWindow {
     /// The build under way is a run's, which only a failure brings forward.
     implicit_build: bool,
     run_console: Entity<crate::console::ConsoleView>,
-    /// The folder's run configurations, made again as its projects and their profiles change.
+    /// The folder's run configurations, made again as its projects and their profiles change, with the projects they
+    /// were made from and why each cannot launch: a drawing of the toolbar's menu reads these, never the disk.
     run_configs: Vec<rsharp_core::run::RunConfiguration>,
+    run_projects: Vec<rsharp_core::project::EvaluatedProject>,
+    run_why_not: Vec<Option<String>>,
     /// The configuration chosen in the toolbar, by name; the first stands while it is gone.
     run_selected: Option<String>,
     /// Whether the toolbar's run menu is open.
@@ -339,6 +342,8 @@ impl MainWindow {
             build,
             run_console,
             run_configs: Vec::new(),
+            run_projects: Vec::new(),
+            run_why_not: Vec::new(),
             run_selected: None,
             run_menu: false,
             run_cancel: None,

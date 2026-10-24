@@ -75,11 +75,15 @@ impl MainWindow {
         self.browser_opener = Arc::new(opener);
     }
 
-    /// Makes the list again from the projects the folder has now, keeping the configuration the person chose while it
-    /// is still there; the first stands when theirs is gone.
+    /// Makes the list again from the projects the folder has now, with why each cannot launch, keeping the
+    /// configuration the person chose while it is still there; the first stands when theirs is gone. It runs when the
+    /// Solution view's rows are made — an open, an evaluation, a solution edit, the watcher's burst — so drawing the
+    /// menu and pressing Run read it instead of walking the folder again.
     pub(super) fn refresh_run_configurations(&mut self) {
-        let known = self.known_projects();
-        self.run_configs = RunConfiguration::generate(&known);
+        self.run_projects = self.discovered_projects();
+        self.run_configs = RunConfiguration::generate(&self.run_projects);
+        self.run_why_not =
+            self.run_configs.iter().map(|configuration| configuration.why_not_here(&self.run_projects)).collect();
         if self
             .run_selected
             .as_deref()
@@ -91,7 +95,7 @@ impl MainWindow {
 
     /// The folder's project files, each with what the window evaluated of it: a launch profile says what runs even
     /// before an evaluation lands, so the list is the person's from the first moment.
-    pub(super) fn known_projects(&self) -> Vec<rsharp_core::project::EvaluatedProject> {
+    fn discovered_projects(&self) -> Vec<rsharp_core::project::EvaluatedProject> {
         use rsharp_core::project::EvaluatedProject;
         let Some(workspace) = &self.workspace else { return Vec::new() };
         let mut projects: Vec<PathBuf> = match &self.tree {
@@ -112,6 +116,13 @@ impl MainWindow {
                     .unwrap_or(EvaluatedProject { path, ..EvaluatedProject::default() })
             })
             .collect()
+    }
+
+    /// Why a configuration cannot launch among the projects as last evaluated; none when it can, or when the list no
+    /// longer holds it and MSBuild has the last word.
+    fn why_not_run(&self, configuration: &RunConfiguration) -> Option<String> {
+        let at = self.run_configs.iter().position(|known| known.name == configuration.name)?;
+        self.run_why_not.get(at).cloned().flatten()
     }
 
     pub(super) fn choose_run_configuration(&mut self, name: String, cx: &mut Context<Self>) {
@@ -161,7 +172,7 @@ impl MainWindow {
             self.refuse_run("Nothing to run: no folder is open", cx);
             return;
         }
-        if let Some(why) = configuration.why_not_here(&self.known_projects()) {
+        if let Some(why) = self.why_not_run(&configuration) {
             self.refuse_run(&format!("{} cannot run here: {why}", configuration.name), cx);
             return;
         }
@@ -170,9 +181,10 @@ impl MainWindow {
             return;
         }
         let project = self
-            .known_projects()
-            .into_iter()
+            .run_projects
+            .iter()
             .find(|project| rsharp_core::paths::same(&project.path, &configuration.project))
+            .cloned()
             .unwrap_or_else(|| rsharp_core::project::EvaluatedProject {
                 path: configuration.project.clone(),
                 ..rsharp_core::project::EvaluatedProject::default()
@@ -288,20 +300,40 @@ impl MainWindow {
             Some(step) => {
                 self.run_after_build = Some((plan, sender));
                 self.implicit_build = true;
+                let generation = self.build_generation;
+                let said = self.said.clone();
                 self.begin_build(rsharp_core::build::Kind::Build, Some(vec![step.project]), cx);
+                // A build that did not start — another one running, a failed save — leaves this run waiting for a build
+                // nothing will end, so the run ends here, saying what the build said rather than staying "running".
+                if self.build_generation == generation
+                    && let Some((plan, _)) = self.run_after_build.take()
+                {
+                    self.implicit_build = false;
+                    let why = self
+                        .said
+                        .clone()
+                        .filter(|now| Some(now) != said.as_ref())
+                        .unwrap_or_else(|| "its build did not start".into());
+                    let message = format!("{} did not start: {why}", plan.name);
+                    self.finish_run(RunOutcome { status: RunStatus::Refused, message }, cx);
+                }
             }
             None => self.start_plan(plan, sender, cx),
         }
     }
 
-    /// The build before the launch has ended: the program starts when it succeeded, and a failed or stopped build
-    /// starts nothing.
+    /// The build before the launch has ended: the program starts when it succeeded, and a failed or stopped build — or
+    /// one whose run was stopped meanwhile — starts nothing.
     pub(super) fn after_run_build(&mut self, ended: BuildStatus, cx: &mut Context<Self>) {
         let Some((plan, sender)) = self.run_after_build.take() else { return };
+        let stopped = self.run_cancel.as_ref().is_some_and(|cancel| cancel.load(Ordering::Acquire));
+        if stopped || ended == BuildStatus::Stopped {
+            let outcome = RunOutcome { status: RunStatus::Stopped, message: format!("{} stopped", plan.name) };
+            self.finish_run(outcome, cx);
+            return;
+        }
         match ended {
             BuildStatus::Succeeded => self.start_plan(plan, sender, cx),
-            BuildStatus::Stopped => self
-                .finish_run(RunOutcome { status: RunStatus::Stopped, message: format!("{} stopped", plan.name) }, cx),
             _ => {
                 let message = format!("{} did not start: its build failed", plan.name);
                 self.finish_run(RunOutcome { status: RunStatus::Refused, message }, cx);
@@ -412,12 +444,15 @@ impl MainWindow {
         }
     }
 
-    /// Stop: the program and everything it started end, and no awaiting start follows.
+    /// Stop: the program and everything it started end, and no awaiting start follows. A run waiting on its build stops
+    /// that build too, and its plan stays until the build's end finishes the run as stopped.
     pub(super) fn stop_run(&mut self, cx: &mut Context<Self>) {
         if let Some(cancel) = &self.run_cancel {
             cancel.store(true, Ordering::Release);
         }
-        self.run_after_build = None;
+        if self.run_after_build.is_some() && self.is_building() {
+            self.cancel_build();
+        }
         self.run_console.update(cx, |view, cx| {
             view.running = false;
             cx.notify();
@@ -463,6 +498,8 @@ impl MainWindow {
         self.run_plan = None;
         self.run_outcome = None;
         self.run_configs.clear();
+        self.run_projects.clear();
+        self.run_why_not.clear();
         self.run_selected = None;
         self.run_menu = false;
         self._run_task = None;
@@ -528,14 +565,13 @@ impl MainWindow {
     }
 
     pub(super) fn run_menu_view(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let projects = self.known_projects();
         let chosen = self.chosen_run_configuration().map(|configuration| configuration.name.clone());
         let rows: Vec<gpui::AnyElement> = self
             .run_configs
             .iter()
             .enumerate()
             .map(|(i, configuration)| {
-                let why = configuration.why_not_here(&projects);
+                let why = self.run_why_not.get(i).cloned().flatten();
                 let name = configuration.name.clone();
                 let selector = format!("run configuration: {name}");
                 let checked = chosen.as_deref() == Some(name.as_str());

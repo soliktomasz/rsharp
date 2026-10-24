@@ -100,22 +100,39 @@ impl Address {
     }
 }
 
-/// Opens `url` in the person's browser: the desktop's opener on macOS and Linux, and the shell's on Windows. The
-/// browser is the one program that outlives the IDE, so it is started detached, and a launcher that fails says why.
+/// Opens `url` in the person's browser as the desktop opens one: `open` on macOS, `xdg-open` on Linux, and Windows'
+/// `rundll32 url.dll,FileProtocolHandler`, which hands the URL to the shell's own handler. No shell parses it, so a
+/// query's `&`, `%` and `^` reach the browser as the profile wrote them. The browser is the one program that outlives
+/// the IDE, so it is started detached, and an opener that fails says why.
 pub fn open(url: &str) -> Result<(), String> {
-    let (program, arguments): (String, Vec<&str>) = if cfg!(target_os = "macos") {
-        ("open".into(), vec![url])
-    } else if cfg!(windows) {
-        ("cmd".into(), vec!["/C", "start", "", url])
-    } else {
-        ("xdg-open".into(), vec![url])
-    };
-    let found = crate::programs::find(&program, &[]).ok_or_else(|| format!("{program} is not installed"))?;
+    #[cfg(windows)]
+    let (program, arguments): (&str, Vec<&str>) = ("rundll32", vec!["url.dll,FileProtocolHandler", url]);
+    #[cfg(not(windows))]
+    let (program, arguments): (&str, Vec<&str>) =
+        if cfg!(target_os = "macos") { ("open", vec![url]) } else { ("xdg-open", vec![url]) };
+    let found = opener(program)?;
     let mut command = std::process::Command::new(found);
     command.args(arguments);
     crate::process::spawn_detached(command)
         .map(|_| ())
         .map_err(|error| format!("{program} could not be started: {error}"))
+}
+
+/// Where the desktop's opener is: on the PATH, as the desktop puts it there.
+#[cfg(not(windows))]
+fn opener(program: &str) -> Result<std::path::PathBuf, String> {
+    crate::programs::find(program, &[]).ok_or_else(|| format!("{program} is not installed"))
+}
+
+/// Where Windows' opener is: System32 holds it, which a GUI program's PATH need not name.
+#[cfg(windows)]
+fn opener(program: &str) -> Result<std::path::PathBuf, String> {
+    let system = std::env::var_os("SystemRoot").map(std::path::PathBuf::from).unwrap_or_else(|| r"C:\Windows".into());
+    let found = system.join("System32").join(format!("{program}.exe"));
+    if found.is_file() {
+        return Ok(found);
+    }
+    crate::programs::find(program, &[]).ok_or_else(|| format!("{program} is not installed"))
 }
 
 /// Waits for something to listen at the address's host and port: true once it does, false when the tries run out,
