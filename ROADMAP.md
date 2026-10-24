@@ -151,8 +151,11 @@ preserving solution writer. Live tests cover source bytes, both solution formats
 multi-project templates and growing a solution to three projects with a reference and Roslyn loading. Automatic build
 remains Phase 5. NuGet is in: the folder's sources as restore reads them (credentials, credential providers and
 the audit sources included), v3, v2 and folder feeds, search, known vulnerabilities, the NuGet window with Install,
-Update and Remove through `dotnet add package`, and the Sources tab editing a nuget.config in place. Next: code help
-in MSBuild files; the whole Phase 4 acceptance below remains open.
+Update and Remove through `dotnet add package`, and the Sources tab editing a nuget.config in place. Code help in
+MSBuild files is in: completion from MSBuild's schemas and the Host's `inspect` (package ids and versions from the
+feeds), the hover's evaluated values, Go to Declaration, and the evaluation's errors as problems; installed MSBuild
+files opening read-only, CPM's PackageVersion on completion and advisories on versions are still to come. Next: the
+Phase 4 acceptance below.
 - **The Solution view as Rider's:** the solution's projects, Dependencies, solution folders, file nesting.
   Cut, copy, paste and drag; every Add kind; Add Reference.
 - **Edits that keep every other byte:** `SolutionEdits` (.sln line by line, .slnx with its whitespace kept) and

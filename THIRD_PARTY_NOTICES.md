@@ -45,6 +45,13 @@ gpui brings about 550 crates of its own. Their notices are not yet written out: 
 
 The colours in `crates/rsharp-app/src/theme.rs` are values read from Rider's Islands Dark and Rider Dark themes.
 
+## Carried data
+
+- **MSBuild's schemas** (`crates/rsharp-core/assets/msbuild/Microsoft.Build.Core.xsd` and
+  `Microsoft.Build.CommonTypes.xsd`): MIT, Copyright (c) .NET Foundation and Contributors, from `src/MSBuild/MSBuild/` of
+  https://github.com/dotnet/msbuild, unchanged, as Passenger carries them (its `src/Passenger.App/MSBuild/Schemas/`).
+  Read for the code help in MSBuild files, which the .NET SDK carries no schemas for.
+
 ## Built from the Passenger submodule
 
 `vendor/passenger` is Passenger (MIT, Copyright (c) 2026 Ted L, https://github.com/Zaneris/passenger), pinned as a git
@@ -59,7 +66,8 @@ nothing into the output.
 The project-template family rules, pack metadata and template-creation behavior in
 `crates/rsharp-core/src/templates/` are ported from Passenger's `src/Passenger.App/Templates/`, and the NuGet
 sources, feeds and window in `crates/rsharp-core/src/nuget/` and `crates/rsharp-app/src/nuget_view.rs` from its
-`src/Passenger.App/Packages/` and `ToolWindows/NuGetView.cs` (MIT, Copyright (c) 2026 Ted L,
+`src/Passenger.App/Packages/` and `ToolWindows/NuGetView.cs`, and the MSBuild code help in `crates/rsharp-core/src/msbuild/`
+from its `src/Passenger.App/MSBuild/` (MIT, Copyright (c) 2026 Ted L,
 https://github.com/Zaneris/passenger).
 
 ## Run, not carried
