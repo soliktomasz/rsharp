@@ -205,8 +205,16 @@ impl NuGetView {
                         Ok((before, after)) => {
                             kept.extend(before.map(|b| (path.clone(), b, None)));
                             kept.push((path.clone(), after, None));
-                            if let Some(buffer) = crate::buffer::find(&path, cx) {
-                                buffer.update(cx, |b, cx| b.reload(cx));
+                            // Edits made since it was saved are kept, and the tab says it is not what was written.
+                            match crate::buffer::find(&path, cx) {
+                                Some(buffer) if buffer.read(cx).is_modified() => {
+                                    v.sources_problem = Some(format!(
+                                        "{} has unsaved edits, so its tab was not reloaded with the change",
+                                        file_name(&path)
+                                    ))
+                                }
+                                Some(buffer) => buffer.update(cx, |b, cx| b.reload(cx)),
+                                None => {}
                             }
                         }
                         Err(why) => v.sources_problem = Some(format!("{}: {why}", file_name(&path))),
