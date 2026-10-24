@@ -179,11 +179,15 @@ struct Console {
     follow: bool,
 }
 
-pub struct ConsoleLink {
-    pub path: PathBuf,
-    pub line: usize,
-    pub column: usize,
+/// What a console's link opens: a place in the code, as a compiler's message and a stack frame both name, or a URL,
+/// which the browser opens.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConsoleTarget {
+    File { path: PathBuf, line: usize, column: usize },
+    Url(String),
 }
+
+pub struct ConsoleLink(pub ConsoleTarget);
 
 impl gpui::EventEmitter<ConsoleLink> for CodeEditor {}
 
@@ -784,20 +788,33 @@ impl CodeEditor {
         let m = event.modifiers;
         if let Some(console) = &mut self.console {
             console.follow = false;
-            let line = self.text.byte_to_line(offset);
-            let start = self.text.line_to_byte(line);
-            let text = self.text.line(line).to_string();
-            let prefix = text.find(": error").or_else(|| text.find(": warning"));
-            // Only Cmd+click (Ctrl+click elsewhere) follows the compiler location, as Rider's console does through a
-            // link: a plain click has to place a caret and start a selection, even at the start of an error's line.
-            if m.secondary() && prefix.is_some_and(|end| offset.saturating_sub(start) <= end) {
-                let mut parser = rsharp_core::build::Parser::new(console.folder.clone());
-                parser.push(&text);
-                if let Some(problem) = parser.finish().into_iter().next()
-                    && let Some(path) = problem.path
-                {
-                    cx.emit(ConsoleLink { path, line: problem.line, column: problem.column });
+            // Only Cmd+click (Ctrl+click elsewhere) follows a console's link, as Rider's console does: a plain click
+            // has to place a caret and start a selection, even at the start of an error's line.
+            if m.secondary() {
+                let line = self.text.byte_to_line(offset);
+                let start = self.text.line_to_byte(line);
+                let text = self.text.line(line).to_string();
+                if let Some(found) = rsharp_core::run::link::find(&text, offset.saturating_sub(start)) {
+                    match found {
+                        rsharp_core::run::link::Link::Url { url, .. } => {
+                            cx.emit(ConsoleLink(ConsoleTarget::Url(url)));
+                        }
+                        rsharp_core::run::link::Link::File { path, line, .. } => {
+                            cx.emit(ConsoleLink(ConsoleTarget::File { path, line, column: 0 }));
+                        }
+                    }
                     return;
+                }
+                let prefix = text.find(": error").or_else(|| text.find(": warning"));
+                if prefix.is_some_and(|end| offset.saturating_sub(start) <= end) {
+                    let mut parser = rsharp_core::build::Parser::new(console.folder.clone());
+                    parser.push(&text);
+                    if let Some(problem) = parser.finish().into_iter().next()
+                        && let Some(path) = problem.path
+                    {
+                        cx.emit(ConsoleLink(ConsoleTarget::File { path, line: problem.line, column: problem.column }));
+                        return;
+                    }
                 }
             }
         }

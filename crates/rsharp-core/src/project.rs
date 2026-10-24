@@ -230,6 +230,15 @@ impl Stamp {
 }
 
 impl EvaluatedProject {
+    /// Whether the project makes a program a person can run: an executable, and one that evaluated.
+    pub fn is_runnable(&self) -> bool {
+        self.problem.is_none()
+            && self
+                .output_type
+                .as_deref()
+                .is_some_and(|output| output.eq_ignore_ascii_case("Exe") || output.eq_ignore_ascii_case("WinExe"))
+    }
+
     /// Whether anything it was evaluated from changed since: its project file, an import, or a folder its wildcards walked.
     pub fn is_stale(&self) -> bool {
         !self.inputs.iter().chain(&self.folders).all(Stamp::holds)

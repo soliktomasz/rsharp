@@ -24,8 +24,8 @@ use crate::find_bar::{Find, FindNext, FindPrevious, Replace};
 use crate::keymap::{OpenSettings, Quit};
 use crate::window::{Back, FindInFiles, Forward, GoToFile, GoToSymbol, GoToType, LastEditLocation, RecentFiles};
 use crate::window::{
-    BuildSelected, BuildSolution, CleanSelected, CleanSolution, RebuildSelected, RebuildSolution, StopBuild,
-    ToggleBuild,
+    BuildSelected, BuildSolution, CleanSelected, CleanSolution, RebuildSelected, RebuildSolution, RerunProgram,
+    RunProgram, Stop, ToggleBuild, ToggleRun,
 };
 use crate::window::{
     CloseAllButPinned, CloseAllTabs, CloseOtherTabs, CloseTabsToLeft, CloseTabsToRight, FileEncoding, LineSeparators,
@@ -62,7 +62,10 @@ pub static ALL: &[IdeAction] = &[
     ide!("Rebuild Selected Projects", "Build", ["compile project again"], RebuildSelected),
     ide!("Clean Selected Projects", "Build", ["clean project"], CleanSelected),
     ide!("Build", "View", ["build output", "console", "tool window"], ToggleBuild),
-    ide!("Stop", "Run", ["stop build", "cancel build"], StopBuild),
+    ide!("Run", "Run", ["run program", "start", "execute"], RunProgram),
+    ide!("Rerun", "Run", ["run again", "restart"], RerunProgram),
+    ide!("Stop", "Run", ["stop build", "cancel build", "stop program"], Stop),
+    ide!("Run Window", "View", ["run output", "console", "tool window"], ToggleRun),
     ide!("New Solution…", "File", ["create solution"], NewSolution),
     ide!("New Project…", "File", ["add project", "create project"], NewProject),
     ide!("Open…", "File", ["open folder", "open solution", "open project"], OpenFolder),

@@ -42,10 +42,11 @@ pub enum Tool {
     Find,
     NuGet,
     Build,
+    Run,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 5] = [Tool::Solution, Tool::Problems, Tool::Find, Tool::NuGet, Tool::Build];
+    pub const ALL: [Tool; 6] = [Tool::Solution, Tool::Problems, Tool::Find, Tool::NuGet, Tool::Build, Tool::Run];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -54,6 +55,7 @@ impl Tool {
             Tool::Find => "Find",
             Tool::NuGet => "NuGet",
             Tool::Build => "Build",
+            Tool::Run => "Run",
         }
     }
 
@@ -64,6 +66,7 @@ impl Tool {
             Tool::Find => "tw-find",
             Tool::NuGet => "package",
             Tool::Build => "tw-build",
+            Tool::Run => "tw-run",
         }
     }
 
@@ -75,6 +78,7 @@ impl Tool {
             Tool::Find => Place::BottomLeft,
             Tool::NuGet => Place::BottomLeft,
             Tool::Build => Place::BottomLeft,
+            Tool::Run => Place::BottomLeft,
         }
     }
 }

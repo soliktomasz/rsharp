@@ -16,6 +16,12 @@ pub fn is_under(path: &Path, folder: &Path) -> bool {
     path.starts_with(folder)
 }
 
+/// Whether two paths name the same file, both canonical: a solution's project and a model's are written the same way,
+/// but a person's configuration is not necessarily.
+pub fn same(one: &Path, other: &Path) -> bool {
+    one == other || canonical(one) == canonical(other)
+}
+
 /// A `file://` URI for an absolute path, as the language server names documents.
 pub fn to_uri(path: &Path) -> String {
     let mut uri = String::from("file://");

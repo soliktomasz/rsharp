@@ -14,6 +14,7 @@ use crate::state::{FolderState, KeptTab, RecentSolutions, store};
 use crate::theme;
 use crate::workspace::Workspace;
 use futures::StreamExt;
+use futures::channel::mpsc;
 use gpui::{
     App, ClickEvent, Context, Entity, FocusHandle, Focusable, FontWeight, InteractiveElement, MouseButton,
     MouseDownEvent, PathPromptOptions, Pixels, Point, SharedString, Task, Window, actions, div, point, prelude::*, px,
@@ -37,13 +38,16 @@ actions!(
         ToggleProblems,
         ToggleNuGet,
         ToggleBuild,
+        ToggleRun,
         BuildSolution,
         RebuildSolution,
         CleanSolution,
         BuildSelected,
         RebuildSelected,
         CleanSelected,
-        StopBuild,
+        Stop,
+        RunProgram,
+        RerunProgram,
         HideToolWindow,
         FloatToolWindow,
         RestoreDefaultLayout,
@@ -89,12 +93,15 @@ actions!(
 
 mod build;
 mod file_moves;
-pub use build::{BuildOutcome, BuildStatus};
 mod file_ops;
 mod msbuild;
 mod new_project;
 mod nuget;
+mod run;
 mod solution_actions;
+
+pub use build::{BuildOutcome, BuildStatus};
+pub use run::{RunOutcome, RunStatus};
 
 use solution_actions::{NameFor, SolutionMenu};
 
@@ -237,18 +244,44 @@ pub struct MainWindow {
     project_menu: bool,
     nuget: Entity<crate::nuget_view::NuGetView>,
     _nuget_subscription: gpui::Subscription,
-    build: Entity<crate::build_view::BuildView>,
+    build: Entity<crate::console::ConsoleView>,
     build_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     build_generation: u64,
     _build_task: Option<Task<()>>,
     last_build: Option<(rsharp_core::build::Kind, Option<Vec<PathBuf>>)>,
     build_problems: Vec<rsharp_core::build::Problem>,
     build_outcome: Option<build::BuildOutcome>,
+    /// The build under way is a run's, which only a failure brings forward.
+    implicit_build: bool,
+    run_console: Entity<crate::console::ConsoleView>,
+    /// The folder's run configurations, made again as its projects and their profiles change, with the projects they
+    /// were made from and why each cannot launch: a drawing of the toolbar's menu reads these, never the disk.
+    run_configs: Vec<rsharp_core::run::RunConfiguration>,
+    run_projects: Vec<rsharp_core::project::EvaluatedProject>,
+    run_why_not: Vec<Option<String>>,
+    /// The configuration chosen in the toolbar, by name; the first stands while it is gone.
+    run_selected: Option<String>,
+    /// Whether the toolbar's run menu is open.
+    run_menu: bool,
+    run_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
+    run_generation: u64,
+    _run_task: Option<Task<()>>,
+    /// The plan Run last resolved, and the one whose build is under way.
+    run_plan: Option<rsharp_core::run::LaunchPlan>,
+    run_after_build: Option<(rsharp_core::run::LaunchPlan, mpsc::Sender<run::Event>)>,
+    /// Rerun was pressed while the program ran: it starts again once the program has ended.
+    run_after_stop: bool,
+    run_outcome: Option<run::RunOutcome>,
+    /// How the browser is opened; a test takes it over, so no browser opens.
+    browser_opener: Arc<dyn Fn(String) + Send + Sync>,
 }
 
 impl Drop for MainWindow {
     fn drop(&mut self) {
         self.cancel_build();
+        if let Some(cancel) = &self.run_cancel {
+            cancel.store(true, std::sync::atomic::Ordering::Release);
+        }
     }
 }
 
@@ -258,6 +291,7 @@ impl MainWindow {
         window.on_window_should_close(cx, move |_, cx| {
             let _ = owner.update(cx, |m, cx| {
                 m.cancel_build();
+                m.stop_run(cx);
                 if let Some(handle) = m.creation_dialog {
                     let _ = handle.update(cx, |d, w, cx| d.cancel(w, cx));
                 }
@@ -267,22 +301,36 @@ impl MainWindow {
         let root_focus = cx.focus_handle();
         window.focus(&root_focus);
         let nuget = cx.new(crate::nuget_view::NuGetView::new);
-        let build = cx.new(crate::build_view::BuildView::new);
-        cx.subscribe_in(&build, window, |m, _, action: &crate::build_view::BuildAction, _, cx| {
+        let build = cx.new(|cx| crate::console::ConsoleView::new("build", cx));
+        let run_console = cx.new(|cx| crate::console::ConsoleView::new("run", cx));
+        cx.subscribe_in(&build, window, |m, _, action: &crate::console::ConsoleAction, _, cx| {
             match action {
-                crate::build_view::BuildAction::Rerun => {
+                crate::console::ConsoleAction::Rerun => {
                     if let Some((kind, targets)) = m.last_build.clone() {
                         m.begin_build(kind, targets, cx);
                     }
                 }
-                crate::build_view::BuildAction::Stop => m.cancel_build(),
+                crate::console::ConsoleAction::Stop => m.stop_everything(cx),
             }
             cx.notify();
         })
         .detach();
+        cx.subscribe_in(&run_console, window, |m, _, action: &crate::console::ConsoleAction, _, cx| {
+            match action {
+                crate::console::ConsoleAction::Rerun => m.rerun(cx),
+                crate::console::ConsoleAction::Stop => m.stop_run(cx),
+            }
+            cx.notify();
+        })
+        .detach();
+        let run_output = run_console.read(cx).editor().clone();
+        cx.subscribe_in(&run_output, window, |m, _, link: &editor::ConsoleLink, window, cx| {
+            m.follow_console_link(link.0.clone(), window, cx)
+        })
+        .detach();
         let console = build.read(cx).editor().clone();
         cx.subscribe_in(&console, window, |m, _, link: &editor::ConsoleLink, window, cx| {
-            m.open_file(&link.path, Some((link.line, link.column)), window, cx);
+            m.follow_console_link(link.0.clone(), window, cx);
         })
         .detach();
         let _nuget_subscription = cx.subscribe(&nuget, |m, _, wrote: &crate::nuget_view::Wrote, cx| {
@@ -292,12 +340,31 @@ impl MainWindow {
         });
         Self {
             build,
+            run_console,
+            run_configs: Vec::new(),
+            run_projects: Vec::new(),
+            run_why_not: Vec::new(),
+            run_selected: None,
+            run_menu: false,
+            run_cancel: None,
+            run_generation: 0,
+            _run_task: None,
+            run_plan: None,
+            run_after_build: None,
+            run_after_stop: false,
+            run_outcome: None,
+            browser_opener: Arc::new(|url| {
+                if let Err(error) = rsharp_core::run::browser::open(&url) {
+                    log::warn!("Could not open {url}: {error}");
+                }
+            }),
             build_cancel: None,
             build_generation: 0,
             _build_task: None,
             last_build: None,
             build_problems: Vec::new(),
             build_outcome: None,
+            implicit_build: false,
             nuget,
             _nuget_subscription,
             root_focus,
@@ -361,6 +428,7 @@ impl MainWindow {
 
     pub fn open_workspace(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
         self.leave_build(cx);
+        self.leave_run(cx);
         self.save_state(cx);
         self.leave_editors();
         let path = rsharp_core::paths::canonical(path);
@@ -389,6 +457,7 @@ impl MainWindow {
             cx.global::<crate::state::Ide>().servers.then(|| rsharp_lsp::SharedHost::carried(&folder)).flatten();
         self.workspace = Some(workspace);
         self.selected = Some(0);
+        self.run_selected = kept.run_configuration.filter(|name| !name.is_empty());
         self.rebuild_rows();
         self.start_server(cx);
         window.focus(&self.explorer_focus);
@@ -442,6 +511,7 @@ impl MainWindow {
                 open: self.tree.as_ref().map(SolutionTree::open_keys).unwrap_or_default(),
                 dock: Some(self.dock.clone()),
                 solution_wide: self.solution_wide,
+                run_configuration: self.run_selected.clone(),
             },
         );
         store.write(&self.dock);
@@ -793,6 +863,8 @@ impl MainWindow {
         if let Some(at) = self.selected {
             self.selected = Some(found.unwrap_or(at).min(self.rows.len().saturating_sub(1)));
         }
+        // A project's evaluation says what it builds, and its launch profiles say what runs: the list follows both.
+        self.refresh_run_configurations();
     }
 
     /// A folder without a solution: its files on disk.
@@ -1524,6 +1596,7 @@ impl MainWindow {
     /// Back to the Welcome screen, the folder's state kept, as Rider's File | Close Solution.
     pub fn close_solution(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.leave_build(cx);
+        self.leave_run(cx);
         self.save_state(cx);
         self.leave_editors();
         self.workspace = None;
@@ -1884,6 +1957,7 @@ impl Render for MainWindow {
             })
             .map(|d| self.tab_actions(d, cx))
             .map(|d| self.build_actions(d, cx))
+            .map(|d| self.run_actions(d, cx))
             .when(self.workspace.is_some(), |d| {
                 use crate::goto::Kind;
                 d.on_action(cx.listener(|w, _: &GoToFile, window, cx| w.open_go_to(Kind::File, window, cx)))
@@ -1956,6 +2030,18 @@ impl Render for MainWindow {
                     .map(|(available, keys, _)| self.main_menu_dropdown(available, keys, window, cx)),
             )
             .children(self.project_menu.then(|| self.project_widget_menu(cx)))
+            .children(self.run_menu.then(|| {
+                div()
+                    .absolute()
+                    .top(px(TOOLBAR_HEIGHT))
+                    .left(px(if cfg!(target_os = "macos") { 300. } else { 264. }))
+                    .rounded(px(6.))
+                    .bg(theme::popup())
+                    .border_1()
+                    .border_color(theme::popup_border())
+                    .shadow_lg()
+                    .child(self.run_menu_view(cx))
+            }))
             .children(self.tab_menu.map(|at| self.tab_menu_view(at, window, cx)))
             .children(self.status_menu.map(|kind| self.status_menu_view(kind, cx)))
             .children(self.refactoring.clone().map(|dialog| {
@@ -2053,6 +2139,7 @@ impl MainWindow {
                         cx.notify();
                     }))
             }))
+            .children(self.workspace.is_some().then(|| self.run_widget(cx)))
             .children(
                 self.branch.clone().map(|branch| widget("branch-widget").child(icon("branch", 16.)).child(branch)),
             )
@@ -2241,6 +2328,7 @@ impl MainWindow {
             Tool::Find => self.find_content(cx).into_any_element(),
             Tool::NuGet => self.nuget.clone().into_any_element(),
             Tool::Build => self.build.clone().into_any_element(),
+            Tool::Run => self.run_console.clone().into_any_element(),
         };
         island().child(header).child(content)
     }
@@ -2254,6 +2342,7 @@ impl MainWindow {
             Tool::Find => self.found.as_ref().map(|(title, found)| format!("{title}: {}", found.len())),
             Tool::NuGet => None,
             Tool::Build => self.build_outcome.as_ref().map(|outcome| outcome.message.clone()),
+            Tool::Run => self.run_outcome.as_ref().map(|outcome| outcome.message.clone()),
         }
     }
 
@@ -2349,6 +2438,7 @@ impl MainWindow {
             Tool::Find => self.find_focus.clone(),
             Tool::NuGet => self.nuget.focus_handle(cx),
             Tool::Build => self.build.focus_handle(cx),
+            Tool::Run => self.run_console.focus_handle(cx),
         }
     }
 
@@ -3224,27 +3314,37 @@ impl MainWindow {
             .child(div().flex_1())
             .children(self.said.clone().map(|said| {
                 let result = self.build_outcome.as_ref().filter(|outcome| outcome.message == said.as_ref());
-                let error = result.map_or(!self.is_building(), |outcome| {
-                    matches!(outcome.status, BuildStatus::Failed | BuildStatus::NotStarted)
-                });
+                let ran = self.run_outcome.as_ref().filter(|outcome| outcome.message == said.as_ref());
+                let error = match (result, ran) {
+                    (Some(outcome), _) => {
+                        matches!(outcome.status, BuildStatus::Failed | BuildStatus::NotStarted)
+                    }
+                    (None, Some(outcome)) => matches!(outcome.status, RunStatus::Refused | RunStatus::Stopped),
+                    (None, None) => !self.is_building(),
+                };
                 status_widget(said.to_string())
                     .id("status-message")
                     .debug_selector(|| "status message".to_string())
                     .text_color(if error { theme::error() } else { theme::text_muted() })
-                    .when(result.is_some(), |d| {
+                    .when(result.is_some() || ran.is_some(), |d| {
                         d.hover(|d| d.bg(theme::button_hover())).on_click(cx.listener(
                             |m, _: &ClickEvent, window, cx| {
-                                if m.build_problems.is_empty() {
-                                    m.dock.show(Tool::Build);
+                                // A run's message opens the Run window; a build's opens what says what it found.
+                                let tool = if m.said.clone().is_some_and(|said| {
+                                    m.run_outcome.as_ref().is_some_and(|outcome| outcome.message == said.as_ref())
+                                }) {
+                                    Tool::Run
+                                } else if m.build_problems.is_empty() {
+                                    Tool::Build
                                 } else {
-                                    m.dock.show(Tool::Problems);
                                     m.problems_tab = ProblemsTab::Build;
+                                    Tool::Problems
+                                };
+                                if !m.dock.is_open(tool) {
+                                    m.dock.show(tool);
                                 }
                                 m.save_state(cx);
-                                window.focus(&m.tool_focus(
-                                    if m.build_problems.is_empty() { Tool::Build } else { Tool::Problems },
-                                    cx,
-                                ));
+                                window.focus(&m.tool_focus(tool, cx));
                                 cx.notify();
                             },
                         ))

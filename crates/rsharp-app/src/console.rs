@@ -1,4 +1,5 @@
-//! The Build console: the editor's plain text, selection and visible-line rendering, with bounded output.
+//! A console: the editor's plain text, selection and visible-line rendering, with bounded output. Build's and Run's
+//! are the same view, each under its own name and its own window.
 
 use crate::assets::icon;
 use crate::buffer::Buffer;
@@ -9,16 +10,18 @@ use rsharp_text::Rope;
 use std::ops::Range;
 use std::path::PathBuf;
 
-pub enum BuildAction {
+pub enum ConsoleAction {
     Rerun,
     Stop,
 }
 
-impl EventEmitter<BuildAction> for BuildView {}
+impl EventEmitter<ConsoleAction> for ConsoleView {}
 
 pub const OUTPUT_LIMIT: usize = 1024 * 1024;
 
-pub struct BuildView {
+pub struct ConsoleView {
+    /// Which console this is, as its selectors and its output's name say: "build" or "run".
+    pub name: &'static str,
     editor: Entity<CodeEditor>,
     text: Rope,
     errors: Vec<Range<usize>>,
@@ -26,15 +29,15 @@ pub struct BuildView {
     pub can_rerun: bool,
 }
 
-impl BuildView {
-    pub fn new(cx: &mut Context<Self>) -> Self {
-        let buffer = cx.new(|cx| Buffer::new(PathBuf::from("Build.output"), b"", cx));
+impl ConsoleView {
+    pub fn new(name: &'static str, cx: &mut Context<Self>) -> Self {
+        let buffer = cx.new(|cx| Buffer::new(PathBuf::from(format!("{name}.output")), b"", cx));
         let editor = cx.new(|cx| {
             let mut editor = CodeEditor::new(buffer, cx);
             editor.console(PathBuf::new());
             editor
         });
-        Self { editor, text: Rope::new(), errors: Vec::new(), running: false, can_rerun: false }
+        Self { name, editor, text: Rope::new(), errors: Vec::new(), running: false, can_rerun: false }
     }
 
     pub fn editor(&self) -> &Entity<CodeEditor> {
@@ -95,18 +98,19 @@ impl BuildView {
     }
 }
 
-impl Focusable for BuildView {
+impl Focusable for ConsoleView {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
         self.editor.focus_handle(cx)
     }
 }
 
-impl Render for BuildView {
+impl Render for ConsoleView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let tool = |id: &'static str, image: &'static str, enabled: bool| {
+        let console = self.name;
+        let tool = move |id: &'static str, image: &'static str, enabled: bool| {
             div()
                 .id(id)
-                .debug_selector(move || format!("build: {id}"))
+                .debug_selector(move || format!("{console}: {id}"))
                 .size(px(28.))
                 .flex_none()
                 .rounded(px(4.))
@@ -120,8 +124,9 @@ impl Render for BuildView {
         };
         let rerun = self.can_rerun && !self.running;
         let running = self.running;
+        let name = self.name;
         div()
-            .debug_selector(|| "build console".to_string())
+            .debug_selector(move || format!("{name} console"))
             .flex_1()
             .min_h_0()
             .flex()
@@ -136,12 +141,12 @@ impl Render for BuildView {
                     .py(px(4.))
                     .child(tool("Rerun", "rerun", rerun).on_click(cx.listener(move |_, _, _, cx| {
                         if rerun {
-                            cx.emit(BuildAction::Rerun);
+                            cx.emit(ConsoleAction::Rerun);
                         }
                     })))
                     .child(tool("Stop", "stop", running).on_click(cx.listener(move |_, _, _, cx| {
                         if running {
-                            cx.emit(BuildAction::Stop);
+                            cx.emit(ConsoleAction::Stop);
                         }
                     })))
                     .child(tool("Clear", "clear", true).on_click(cx.listener(|v, _, _, cx| v.clear(cx)))),
