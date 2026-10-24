@@ -186,7 +186,10 @@ pub struct MainWindow {
     problems_tab: ProblemsTab,
     /// Roslyn's errors and warnings in every file of the solution, as last asked.
     solution_problems: Vec<(PathBuf, Vec<rsharp_lsp::Problem>)>,
-    solution_task: Option<Task<()>>,
+    /// Requests for them, counted; and the latest whose answer is shown. Roslyn holds a request open until something
+    /// changes and may answer an older one first, so none is dropped and no older answer replaces a newer one.
+    solution_asked: u64,
+    solution_shown: u64,
     /// Rider's solution-wide analysis: every file analysed, not only the open ones; off until turned on, as it costs.
     solution_wide: bool,
     /// What Roslyn said last (its log, its notifications, its error output), for a failure to say where it was.
@@ -269,7 +272,8 @@ impl MainWindow {
             refactoring: None,
             problems_tab: ProblemsTab::File,
             solution_problems: Vec::new(),
-            solution_task: None,
+            solution_asked: 0,
+            solution_shown: 0,
             solution_wide: false,
             roslyn_said: Default::default(),
             load_problems: Vec::new(),
@@ -529,6 +533,8 @@ impl MainWindow {
                         (None, false) => ServerState::Loading("Loading solution".into()),
                     };
                 }
+                // An answer asked before Roslyn read solution-wide analysis's scope was the open files' only.
+                "workspace/configuration" => self.refresh_solution_problems(cx),
                 // Roslyn's answers about the files changed (its load went on, a file on disk changed): asked again.
                 "workspace/semanticTokens/refresh" | "workspace/inlayHint/refresh" | "workspace/diagnostic/refresh" => {
                     if method == "workspace/diagnostic/refresh" {
@@ -619,15 +625,22 @@ impl MainWindow {
         let Some(server) = self.server.clone().filter(|_| self.solution_wide) else { return };
         let answer =
             crate::language::ask(&server, "workspace/diagnostic", serde_json::json!({ "previousResultIds": [] }), cx);
-        self.solution_task = Some(cx.spawn(async move |this, cx| {
+        self.solution_asked += 1;
+        let asked = self.solution_asked;
+        cx.spawn(async move |this, cx| {
             let Some(answer) = answer.await else { return };
             let found = cx.background_executor().spawn(async move { rsharp_lsp::workspace_problems(&answer) }).await;
             let _ = this.update(cx, |w, cx| {
+                if !w.solution_wide || asked <= w.solution_shown {
+                    return;
+                }
+                w.solution_shown = asked;
                 w.solution_problems = found;
                 w.solution_problems.sort_by(|a, b| a.0.cmp(&b.0));
                 cx.notify();
             });
-        }));
+        })
+        .detach();
     }
 
     /// Turns solution-wide analysis on or off: Roslyn told, and the Solution tab asked again or emptied.
@@ -640,6 +653,8 @@ impl MainWindow {
             }
         }
         self.solution_problems.clear();
+        // An answer to a request made before this no longer belongs to the tab.
+        self.solution_shown = self.solution_asked;
         if on {
             self.refresh_solution_problems(cx);
         }
@@ -1490,6 +1505,7 @@ impl MainWindow {
         &self,
         available: &[bool],
         keys: &[Option<SharedString>],
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let mut rows: Vec<gpui::AnyElement> = Vec::new();
@@ -1533,7 +1549,11 @@ impl MainWindow {
         div().absolute().top(px(TOOLBAR_HEIGHT - 2.)).left(px(8.)).child(
             div()
                 .id("main-menu-dropdown")
+                .debug_selector(|| "main menu dropdown".into())
                 .w(px(300.))
+                // Every menu as one list is taller than most windows; it scrolls within the window instead.
+                .max_h(window.viewport_size().height - px(TOOLBAR_HEIGHT + GAP))
+                .overflow_y_scroll()
                 .py(px(6.))
                 .rounded(px(8.))
                 .bg(theme::popup())
@@ -1847,7 +1867,11 @@ impl Render for MainWindow {
             })
             .child(self.status_bar(cx))
             .children(floating)
-            .children(self.main_menu.as_ref().map(|(available, keys, _)| self.main_menu_dropdown(available, keys, cx)))
+            .children(
+                self.main_menu
+                    .as_ref()
+                    .map(|(available, keys, _)| self.main_menu_dropdown(available, keys, window, cx)),
+            )
             .children(self.project_menu.then(|| self.project_widget_menu(cx)))
             .children(self.tab_menu.map(|at| self.tab_menu_view(at, window, cx)))
             .children(self.status_menu.map(|kind| self.status_menu_view(kind, cx)))

@@ -172,8 +172,11 @@ fn read(
                     input,
                     &json!({ "jsonrpc": "2.0", "id": id, "result": answer_for(method, &message["params"], &options.lock().unwrap()) }),
                 );
-                // A refresh asks the client to ask again; it reaches the client as a notification would.
-                if method.starts_with("workspace/") && method.ends_with("/refresh") {
+                // A refresh asks the client to ask again, and a configuration read means options it was just given
+                // now hold; each reaches the client as a notification would.
+                if method == "workspace/configuration"
+                    || method.starts_with("workspace/") && method.ends_with("/refresh")
+                {
                     events(ServerEvent::Notification { method: method.to_string(), params: Value::Null });
                 }
             }
