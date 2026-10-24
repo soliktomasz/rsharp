@@ -31,6 +31,8 @@ actions!(
         CloseSolution,
         FindAction,
         OpenFolder,
+        NewSolution,
+        NewProject,
         ToggleSolution,
         ToggleProblems,
         HideToolWindow,
@@ -78,6 +80,7 @@ actions!(
 
 mod file_moves;
 mod file_ops;
+mod new_project;
 mod solution_actions;
 
 use solution_actions::{NameFor, SolutionMenu};
@@ -183,7 +186,10 @@ pub struct MainWindow {
     problems_tab: ProblemsTab,
     /// Roslyn's errors and warnings in every file of the solution, as last asked.
     solution_problems: Vec<(PathBuf, Vec<rsharp_lsp::Problem>)>,
-    solution_task: Option<Task<()>>,
+    /// Requests for them, counted; and the latest whose answer is shown. Roslyn holds a request open until something
+    /// changes and may answer an older one first, so none is dropped and no older answer replaces a newer one.
+    solution_asked: u64,
+    solution_shown: u64,
     /// Rider's solution-wide analysis: every file analysed, not only the open ones; off until turned on, as it costs.
     solution_wide: bool,
     /// What Roslyn said last (its log, its notifications, its error output), for a failure to say where it was.
@@ -211,10 +217,23 @@ pub struct MainWindow {
     evaluating: bool,
     evaluate_again: bool,
     _evaluate_task: Option<Task<()>>,
+    creation_dialog: Option<gpui::WindowHandle<crate::new_project_dialog::NewProjectDialog>>,
+    creation_opening: bool,
+    _creation_subscription: Option<gpui::Subscription>,
+    project_menu: bool,
 }
 
 impl MainWindow {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let owner = cx.weak_entity();
+        window.on_window_should_close(cx, move |_, cx| {
+            let _ = owner.update(cx, |m, cx| {
+                if let Some(handle) = m.creation_dialog {
+                    let _ = handle.update(cx, |d, w, cx| d.cancel(w, cx));
+                }
+            });
+            true
+        });
         let root_focus = cx.focus_handle();
         window.focus(&root_focus);
         Self {
@@ -253,7 +272,8 @@ impl MainWindow {
             refactoring: None,
             problems_tab: ProblemsTab::File,
             solution_problems: Vec::new(),
-            solution_task: None,
+            solution_asked: 0,
+            solution_shown: 0,
             solution_wide: false,
             roslyn_said: Default::default(),
             load_problems: Vec::new(),
@@ -269,6 +289,10 @@ impl MainWindow {
             evaluating: false,
             evaluate_again: false,
             _evaluate_task: None,
+            creation_dialog: None,
+            creation_opening: false,
+            _creation_subscription: None,
+            project_menu: false,
         }
     }
 
@@ -509,6 +533,8 @@ impl MainWindow {
                         (None, false) => ServerState::Loading("Loading solution".into()),
                     };
                 }
+                // An answer asked before Roslyn read solution-wide analysis's scope was the open files' only.
+                "workspace/configuration" => self.refresh_solution_problems(cx),
                 // Roslyn's answers about the files changed (its load went on, a file on disk changed): asked again.
                 "workspace/semanticTokens/refresh" | "workspace/inlayHint/refresh" | "workspace/diagnostic/refresh" => {
                     if method == "workspace/diagnostic/refresh" {
@@ -599,15 +625,22 @@ impl MainWindow {
         let Some(server) = self.server.clone().filter(|_| self.solution_wide) else { return };
         let answer =
             crate::language::ask(&server, "workspace/diagnostic", serde_json::json!({ "previousResultIds": [] }), cx);
-        self.solution_task = Some(cx.spawn(async move |this, cx| {
+        self.solution_asked += 1;
+        let asked = self.solution_asked;
+        cx.spawn(async move |this, cx| {
             let Some(answer) = answer.await else { return };
             let found = cx.background_executor().spawn(async move { rsharp_lsp::workspace_problems(&answer) }).await;
             let _ = this.update(cx, |w, cx| {
+                if !w.solution_wide || asked <= w.solution_shown {
+                    return;
+                }
+                w.solution_shown = asked;
                 w.solution_problems = found;
                 w.solution_problems.sort_by(|a, b| a.0.cmp(&b.0));
                 cx.notify();
             });
-        }));
+        })
+        .detach();
     }
 
     /// Turns solution-wide analysis on or off: Roslyn told, and the Solution tab asked again or emptied.
@@ -620,6 +653,8 @@ impl MainWindow {
             }
         }
         self.solution_problems.clear();
+        // An answer to a request made before this no longer belongs to the tab.
+        self.solution_shown = self.solution_asked;
         if on {
             self.refresh_solution_problems(cx);
         }
@@ -1454,7 +1489,7 @@ impl MainWindow {
                 if available[*index] {
                     window.dispatch_action((ALL[*index].action)(), cx);
                 } else {
-                    w.said = Some(format!("{} is not available here", ALL[*index].title.trim_end_matches('…')).into());
+                    w.said = Some(unavailable_action(*index));
                 }
             }
             cx.notify();
@@ -1470,6 +1505,7 @@ impl MainWindow {
         &self,
         available: &[bool],
         keys: &[Option<SharedString>],
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let mut rows: Vec<gpui::AnyElement> = Vec::new();
@@ -1513,7 +1549,11 @@ impl MainWindow {
         div().absolute().top(px(TOOLBAR_HEIGHT - 2.)).left(px(8.)).child(
             div()
                 .id("main-menu-dropdown")
+                .debug_selector(|| "main menu dropdown".into())
                 .w(px(300.))
+                // Every menu as one list is taller than most windows; it scrolls within the window instead.
+                .max_h(window.viewport_size().height - px(TOOLBAR_HEIGHT + GAP))
+                .overflow_y_scroll()
                 .py(px(6.))
                 .rounded(px(8.))
                 .bg(theme::popup())
@@ -1549,7 +1589,7 @@ impl MainWindow {
         if available[index] {
             window.dispatch_action((ALL[index].action)(), cx);
         } else {
-            self.said = Some(format!("{} is not available here", ALL[index].title.trim_end_matches('…')).into());
+            self.said = Some(unavailable_action(index));
         }
         cx.notify();
     }
@@ -1647,6 +1687,14 @@ fn is_csharp(path: &Path) -> bool {
     path.extension().is_some_and(|e| e == "cs" || e == "csx")
 }
 
+fn unavailable_action(index: usize) -> SharedString {
+    if ALL[index].title == "New Project…" {
+        "New Project requires an open solution".into()
+    } else {
+        format!("{} is not available here", ALL[index].title.trim_end_matches('…')).into()
+    }
+}
+
 /// The branch `.git/HEAD` names, or the commit's short hash when detached.
 fn current_branch(folder: &Path) -> Option<String> {
     let head = folder.ancestors().map(|f| f.join(".git/HEAD")).find(|h| h.is_file())?;
@@ -1686,6 +1734,17 @@ impl Render for MainWindow {
                 }),
             )
             .on_action(cx.listener(Self::choose_folder))
+            .on_action(cx.listener(|m, _: &NewSolution, w, cx| m.show_new_solution(w, cx)))
+            .when(self.tree.is_some(), |d| {
+                d.on_action(cx.listener(|m, _: &NewProject, w, cx| {
+                    let into = m
+                        .selected
+                        .and_then(|i| m.rows.get(i))
+                        .filter(|r| r.kind == NodeKind::SolutionFolder)
+                        .and_then(|r| r.key.strip_prefix("sf:").map(str::to_string));
+                    m.show_new_project(into, w, cx);
+                }))
+            })
             .on_action(cx.listener(|w, _: &FindAction, window, cx| w.find_action(window, cx)))
             // Each acts only while it has something to act on, so menus and Find Action grey it otherwise.
             .when(self.workspace.is_some(), |d| {
@@ -1808,7 +1867,12 @@ impl Render for MainWindow {
             })
             .child(self.status_bar(cx))
             .children(floating)
-            .children(self.main_menu.as_ref().map(|(available, keys, _)| self.main_menu_dropdown(available, keys, cx)))
+            .children(
+                self.main_menu
+                    .as_ref()
+                    .map(|(available, keys, _)| self.main_menu_dropdown(available, keys, window, cx)),
+            )
+            .children(self.project_menu.then(|| self.project_widget_menu(cx)))
             .children(self.tab_menu.map(|at| self.tab_menu_view(at, window, cx)))
             .children(self.status_menu.map(|kind| self.status_menu_view(kind, cx)))
             .children(self.refactoring.clone().map(|dialog| {
@@ -1896,8 +1960,15 @@ impl MainWindow {
             })
             .children(name.map(|name| {
                 widget("project-widget")
+                    .debug_selector(|| "project widget".into())
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(project_badge(&name, 20.))
                     .child(div().font_weight(FontWeight::SEMIBOLD).child(name))
+                    .child(icon("chevron-down", 12.))
+                    .on_click(cx.listener(|m, _: &ClickEvent, _, cx| {
+                        m.project_menu = !m.project_menu;
+                        cx.notify();
+                    }))
             }))
             .children(
                 self.branch.clone().map(|branch| widget("branch-widget").child(icon("branch", 16.)).child(branch)),
@@ -2961,6 +3032,11 @@ impl MainWindow {
             .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("RSharp"))
             .child(div().text_color(theme::text_muted()).child("Open a folder, solution or project to start."))
             .child(
+                crate::settings_dialog::button("New Solution", true, true)
+                    .mt(px(12.))
+                    .on_click(cx.listener(|m, _: &ClickEvent, w, cx| m.show_new_solution(w, cx))),
+            )
+            .child(
                 div()
                     .id("open")
                     .mt(px(12.))
@@ -3257,11 +3333,12 @@ impl Render for FloatDrag {
 
 /// A tool window's stripe button, carried in a drag, drawn as a chip of its title.
 /// A tooltip: a line of text on a popup, as Rider's.
-struct Tip(SharedString);
+pub(crate) struct Tip(pub(crate) SharedString);
 
 impl Render for Tip {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
+            .max_w(px(480.))
             .px(px(8.))
             .py(px(4.))
             .rounded(px(6.))

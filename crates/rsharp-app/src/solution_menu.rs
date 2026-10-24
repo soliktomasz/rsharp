@@ -51,13 +51,21 @@ pub fn menu_for(row: &TreeRow) -> Vec<MenuItem> {
     let copy_path = Action("Copy Path", None);
     match row.kind {
         NodeKind::Solution => vec![
-            Submenu("Add", vec![Action("New Solution Folder...", None), Action("Existing Project...", None)]),
+            Submenu(
+                "Add",
+                vec![
+                    Action("New Project...", key("⇧⌘N", "Ctrl+Shift+N")),
+                    Action("New Solution Folder...", None),
+                    Action("Existing Project...", None),
+                ],
+            ),
             copy_path,
         ],
         NodeKind::SolutionFolder => vec![
             Submenu(
                 "Add",
                 vec![
+                    Action("New Project...", key("⇧⌘N", "Ctrl+Shift+N")),
                     Action("New Solution Folder...", None),
                     Action("Existing Project...", None),
                     Action("Existing Item...", None),

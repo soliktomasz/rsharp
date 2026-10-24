@@ -4,8 +4,26 @@
 
 mod support;
 
-use gpui::{Modifiers, TestAppContext, VisualTestContext};
+use gpui::{Modifiers, ScrollDelta, ScrollWheelEvent, TestAppContext, VisualTestContext, point, px};
 use support::Run;
+
+/// Scrolls the main menu until `selector` is inside the window, as a person would to reach a later menu.
+fn scroll_to(cx: &mut VisualTestContext, selector: &'static str) {
+    let height = cx.update(|w, _| w.viewport_size().height);
+    let menu = cx.debug_bounds("main menu dropdown").expect("the main menu did not open");
+    for _ in 0..100 {
+        if cx.debug_bounds(selector).is_some_and(|b| b.bottom() <= height) {
+            return;
+        }
+        cx.simulate_event(ScrollWheelEvent {
+            position: menu.center(),
+            delta: ScrollDelta::Pixels(point(px(0.), px(-200.))),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+    }
+    panic!("{selector} cannot be scrolled into the window");
+}
 
 fn click(cx: &mut VisualTestContext, selector: &'static str) {
     let at = cx.debug_bounds(selector).unwrap_or_else(|| panic!("nothing on screen is {selector}")).center();
@@ -24,6 +42,12 @@ fn a_menu_choice_runs_where_the_person_was(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     click(cx, "main menu");
+    let height = cx.update(|w, _| w.viewport_size().height);
+    assert!(
+        cx.debug_bounds("main menu dropdown").is_some_and(|b| b.bottom() <= height),
+        "the main menu runs past the bottom of the window"
+    );
+    scroll_to(cx, "menu: Close Tab");
     click(cx, "menu: Close Tab");
 
     assert!(

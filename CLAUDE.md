@@ -55,6 +55,10 @@ terminal and takes focus for a moment.
   text out, every other byte kept: never `dotnet sln` or `dotnet add`), `trash` (the system's Trash, or a test's
   folder), `watcher` (the folder watched through `notify`, a burst gathered for 150 ms, build output and Git's objects
   passed over),
+  `templates` (Passenger's effective-SDK catalog and IDE metadata from mounted folders or ZIPs, Rider's families,
+  options and missing-pack offers; `cache::Catalogs` shares reads, watches packages.json and SDK/template roots,
+  and retries failed reads; `create` runs literal dotnet arguments, takes Avalonia Accelerate out before restore,
+  and owns generated output until `CreatedProjects::keep`, with guarded cancellation cleanup),
   `editorconfig` (the .editorconfig files over a file, its own parser and globs), `history` (Local History: each version
   of a file under `localHistory/`, content once by hash in `blobs/`, a JSON line per version in `changes.log`), `state` (the one `StateStore`: `RSHARP_STATE` or the local app data; app documents
   at its root, each folder's under `workspaces/<name>-<hash>/`; writes debounced on its own thread, merged over
@@ -100,7 +104,15 @@ terminal and takes focus for a moment.
   `projects.rs` is the process's windows: every open (command line, Open, the recent list) goes through
   `open_project`, which brings forward the window that has the folder, else fills a Welcome window, else opens
   one; quit keeps them all (`session.json`). `actions.rs` is every action by name for the main menu and
-  `find_action.rs`; `field.rs` the single-line text field, its editing `rsharp-text`'s commands under the
+  `find_action.rs`.
+  `new_project_dialog.rs` is the owner-scoped New Solution / New Project window: `state.rs` keeps choices and
+  name-following, `render.rs` its controls; `templates.rs` shares the service and preloads after first paint.
+  `window/new_project.rs` attaches through the preserving solution writer and opens through `projects`;
+  creation restores and opens now, automatic build is Phase 5. Live template tests prepare an isolated local feed
+  with `python tools/prepare-template-tests.py` (Avalonia.Templates 12.1.4, matching Passenger), then use private
+  CLI homes, hives and package caches. `RSHARP_PROFILE_STARTUP=1` uses the bench timing hooks on a normal launch,
+  typing during preload instead of waiting for Roslyn to settle.
+  `field.rs` is the single-line text field, its editing `rsharp-text`'s commands under the
   editor's own actions; `fuzzy.rs` how a query matches a name. `settings.rs` is `AppSettings` (`settings.json`),
   a gpui global that editors observe; `settings_dialog.rs` Rider's searchable Settings window (a new setting is
   a field, an `Opt` on a page, and what follows it). `solution_view.rs` is the Solution view's tree for a folder with a solution (only open nodes walked, each kept

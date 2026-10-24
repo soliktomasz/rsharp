@@ -144,8 +144,12 @@ projects and items (`solution_edits`, a .sln line by line and a .slnx spliced at
 and Rider's five C# types in their folder's namespace; Rename (a type named after its file renamed by Roslyn with it)
 and Delete to the Trash; Add Reference and Remove of one (`project_edits`); Cut, Copy, Paste and drags, a file's
 dependents and the project's items following; every write saving an open file first, keeping the old bytes in Local
-History and every other byte of the file; and the folder watcher (`watcher`). Next: New Solution and New Project from
-dotnet new's templates, then NuGet, then code help in MSBuild files.
+History and every other byte of the file; and the folder watcher (`watcher`). New Solution and New Project now use
+the effective SDK's dotnet new catalog, Rider's families and IDE options, and missing-pack Install. The shared native
+dialog retains names and choices; creation removes Accelerate tools, restores, then opens or adds through the same
+preserving solution writer. Live tests cover source bytes, both solution formats, local Avalonia installation,
+multi-project templates and growing a solution to three projects with a reference and Roslyn loading. Automatic build
+remains Phase 5. Next: NuGet, then code help in MSBuild files; the whole Phase 4 acceptance below remains open.
 - **The Solution view as Rider's:** the solution's projects, Dependencies, solution folders, file nesting.
   Cut, copy, paste and drag; every Add kind; Add Reference.
 - **Edits that keep every other byte:** `SolutionEdits` (.sln line by line, .slnx with its whitespace kept) and

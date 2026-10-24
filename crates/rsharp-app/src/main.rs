@@ -62,7 +62,13 @@ fn main() {
         cx.on_app_quit(move |cx| {
             projects::keep_session(cx);
             quitting.flush();
-            async { rsharp_core::process::end_all() }
+            let templates = rsharp_app::templates::shutdown(cx);
+            async move {
+                if let Some(templates) = templates {
+                    templates.shutdown();
+                }
+                rsharp_core::process::end_all()
+            }
         })
         .detach();
         // With nothing named, what was open at the last quit opens again, as Rider's Reopen projects on startup.
@@ -88,8 +94,14 @@ fn main() {
             let _ = window.update(cx, |main, window, cx| main.open_file(&file, caret, window, cx));
         }
         cx.activate(true);
-        if options.bench {
-            cx.spawn(async move |cx| rsharp_app::bench::run(window, started, cx).await).detach();
+        if !options.bench && keystrokes.is_empty() && std::env::var_os("RSHARP_SCREENSHOT").is_none() {
+            let last = store(cx).read::<rsharp_app::state::RecentSolutions>().entries.first().map(|r| r.path.clone());
+            let _ = window
+                .update(cx, |_, window, _| window.on_next_frame(move |_, cx| rsharp_app::templates::preload(last, cx)));
+        }
+        let profile_startup = std::env::var_os("RSHARP_PROFILE_STARTUP").is_some();
+        if options.bench || profile_startup {
+            cx.spawn(async move |cx| rsharp_app::bench::run(window, started, profile_startup, cx).await).detach();
         }
         if !keystrokes.is_empty() {
             let any = window.into();

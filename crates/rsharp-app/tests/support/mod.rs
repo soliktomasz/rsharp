@@ -32,6 +32,7 @@ impl Run {
             cx.update(|cx| {
                 rsharp_app::init(state, cx);
                 cx.global_mut::<rsharp_app::state::Ide>().servers = false;
+                cx.global_mut::<rsharp_app::templates::Templates>().enabled = false;
             });
         }
         cx.add_window_view(MainWindow::new)

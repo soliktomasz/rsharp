@@ -1,0 +1,2 @@
+# Passenger byte-parity fixtures must keep their authored BOMs and line endings on every test host.
+crates/rsharp-app/tests/fixtures/new_project/** -text

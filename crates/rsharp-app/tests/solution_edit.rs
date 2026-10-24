@@ -86,10 +86,19 @@ fn the_solution_view_menus_offer_riders_items_with_their_keys(cx: &mut TestAppCo
         let at = row(&main, cx, name);
         main.read_with(cx, |main, _| main.solution_menu(at))
     };
-    assert_eq!(menu(cx, "Shop"), ["Add > New Solution Folder...", "Add > Existing Project...", "Copy Path"]);
+    assert_eq!(
+        menu(cx, "Shop"),
+        [
+            format!("Add > New Project... ({})", key("⇧⌘N", "Ctrl+Shift+N")),
+            "Add > New Solution Folder...".into(),
+            "Add > Existing Project...".into(),
+            "Copy Path".into()
+        ]
+    );
     assert_eq!(
         menu(cx, "src"),
         [
+            format!("Add > New Project... ({})", key("⇧⌘N", "Ctrl+Shift+N")),
             "Add > New Solution Folder...".to_string(),
             "Add > Existing Project...".into(),
             "Add > Existing Item...".into(),
@@ -265,7 +274,12 @@ fn the_new_key_offers_the_add_items_and_the_rename_key_asks_the_name(cx: &mut Te
     let shown = main.read_with(cx, |main, _| main.shown_menu());
     assert_eq!(
         shown,
-        Some(vec!["New Solution Folder...".to_string(), "Existing Project...".into(), "Existing Item...".into()]),
+        Some(vec![
+            format!("New Project... ({})", key("⇧⌘N", "Ctrl+Shift+N")),
+            "New Solution Folder...".to_string(),
+            "Existing Project...".into(),
+            "Existing Item...".into()
+        ]),
         "the New key would not offer the row's Add items"
     );
     cx.simulate_keystrokes("escape");

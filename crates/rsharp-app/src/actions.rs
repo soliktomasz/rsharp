@@ -31,6 +31,7 @@ use crate::window::{
     CloseSolution, CloseTab, FindAction, FloatToolWindow, HideToolWindow, OpenFolder, RestoreDefaultLayout,
     ToggleProblems, ToggleSolution,
 };
+use crate::window::{NewProject, NewSolution};
 use crate::window::{RecentLocations, ReplaceInFiles, SearchEverywhere};
 use gpui::{Action, Menu, MenuItem};
 
@@ -50,6 +51,8 @@ macro_rules! ide {
 }
 
 pub static ALL: &[IdeAction] = &[
+    ide!("New Solution…", "File", ["create solution"], NewSolution),
+    ide!("New Project…", "File", ["add project", "create project"], NewProject),
     ide!("Open…", "File", ["open folder", "open solution", "open project"], OpenFolder),
     ide!("Close Solution", "File", ["close project"], CloseSolution),
     ide!("Save", "File", ["save all"], Save),

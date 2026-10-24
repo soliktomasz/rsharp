@@ -9,6 +9,8 @@ license = "MIT"
 rust-version = "1.95"
 
 [workspace.dependencies]
+async_zip = { version = "0.0.17", default-features = false, features = ["deflate"] }
+serde_json_lenient = { version = "0.2.4", features = ["preserve_order"] }
 rsharp-core = { path = "crates/rsharp-core" }
 rsharp-text = { path = "crates/rsharp-text" }
 rsharp-lsp = { path = "crates/rsharp-lsp" }
