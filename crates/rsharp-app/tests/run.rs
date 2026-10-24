@@ -320,6 +320,200 @@ fn the_selector_lists_the_configurations_and_keeps_the_one_chosen() {
     assert_eq!(chosen.as_deref(), Some("App: https"), "the choice is kept with the folder");
 }
 
+/// Opens Rider's dialog from the toolbar's run menu, as a person does.
+fn open_dialog(main: &Entity<MainWindow>, cx: &mut VisualTestContext) {
+    click(cx, "run widget");
+    click(cx, "run configuration: Edit Configurations…");
+    assert!(main.read_with(cx, |main, _| main.run_dialog().is_some()), "Edit Configurations opened no dialog");
+}
+
+fn dialog(main: &Entity<MainWindow>, cx: &mut VisualTestContext) -> Entity<rsharp_app::run_dialog::RunDialog> {
+    main.read_with(cx, |main, _| main.run_dialog()).expect("the dialog is closed")
+}
+
+#[test]
+fn edit_configurations_makes_a_configuration_that_runs_with_its_arguments_and_environment() {
+    // Rider's dialog makes a configuration of the folder's own, and Run launches it as it launches a generated one.
+    let run = Run::new("run-dialog-make", &[]);
+    app(
+        &run,
+        "System.Console.WriteLine(string.Join(\" \", args));\n\
+         System.Console.WriteLine($\"greeting={System.Environment.GetEnvironmentVariable(\"GREETING\")}\");\n",
+    );
+    if !offline(&run) {
+        return;
+    }
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    open_dialog(&main, cx);
+    click(cx, "run: Add");
+    let made = dialog(&main, cx);
+    made.update(cx, |dialog, cx| {
+        dialog.set_text(rsharp_app::run_dialog::Field::Name, "Mine", cx);
+        dialog.set_text(rsharp_app::run_dialog::Field::Arguments, "--seed 5", cx);
+        dialog.set_variable(0, "GREETING", "hello", cx);
+    });
+    click(cx, "button: OK");
+    assert!(main.read_with(cx, |main, _| main.run_dialog().is_none()), "OK left the dialog open");
+    assert_eq!(
+        main.read_with(cx, |main, _| main.run_own().iter().map(|c| c.name.clone()).collect::<Vec<_>>()),
+        ["Mine"],
+        "the configuration was not kept with the folder"
+    );
+    assert_eq!(
+        main.read_with(cx, |main, _| main.run_configurations().iter().map(|c| c.name.clone()).collect::<Vec<_>>()),
+        ["Mine", "App"],
+        "the folder's own are listed before the projects' ones"
+    );
+    let chosen = main.read_with(cx, |main, _| main.chosen_run_configuration().map(|c| c.name.clone()));
+    assert_eq!(chosen.as_deref(), Some("Mine"), "the configuration made is not the one Run launches");
+    cx.simulate_keystrokes("ctrl-f5");
+    let outcome = finished(&main, cx);
+    assert_eq!(outcome.status, RunStatus::Exited(0), "{}\n{}", outcome.message, output(&main, cx));
+    let shown = output(&main, cx);
+    assert!(shown.contains("--seed 5"), "the configuration's arguments did not reach the program:\n{shown}");
+    assert!(shown.contains("greeting=hello"), "its environment did not reach it:\n{shown}");
+}
+
+#[test]
+fn a_configuration_without_a_name_cannot_be_kept() {
+    // Rider keeps nothing that cannot launch: a name and a project are what Apply asks for, and it says which is missing.
+    let run = Run::new("run-dialog-nameless", &[("App/App.csproj", EXE_PROJECT)]);
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    open_dialog(&main, cx);
+    click(cx, "run: Add");
+    let made = dialog(&main, cx);
+    made.update(cx, |dialog, cx| dialog.set_text(rsharp_app::run_dialog::Field::Name, "  ", cx));
+    click(cx, "button: OK");
+    let said = made.read_with(cx, |dialog, _| dialog.problem());
+    assert_eq!(said, "A configuration needs a name", "Apply kept a configuration with no name");
+    assert!(main.read_with(cx, |main, _| main.run_dialog().is_some()), "a refusal closed the dialog");
+    assert!(main.read_with(cx, |main, _| main.run_own().is_empty()), "a refused configuration was kept");
+}
+
+#[test]
+fn cancel_changes_nothing_and_apply_keeps_the_dialog_open() {
+    // Apply keeps the list and lets the person keep editing; Cancel writes nothing at all.
+    let run = Run::new("run-dialog-apply", &[("App/App.csproj", EXE_PROJECT)]);
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    open_dialog(&main, cx);
+    click(cx, "run: Add");
+    let made = dialog(&main, cx);
+    made.update(cx, |dialog, cx| dialog.set_text(rsharp_app::run_dialog::Field::Name, "Applied", cx));
+    click(cx, "button: Apply");
+    assert!(main.read_with(cx, |main, _| main.run_dialog().is_some()), "Apply closed the dialog");
+    assert_eq!(
+        main.read_with(cx, |main, _| main.run_own().iter().map(|c| c.name.clone()).collect::<Vec<_>>()),
+        ["Applied"],
+        "Apply did not keep the configuration with the folder"
+    );
+    // A second one, cancelled, leaves the first as it was.
+    click(cx, "run: Add");
+    let made = dialog(&main, cx);
+    made.update(cx, |dialog, cx| dialog.set_text(rsharp_app::run_dialog::Field::Name, "Discarded", cx));
+    click(cx, "button: Cancel");
+    assert!(main.read_with(cx, |main, _| main.run_dialog().is_none()), "Cancel left the dialog open");
+    assert_eq!(
+        main.read_with(cx, |main, _| main.run_own().iter().map(|c| c.name.clone()).collect::<Vec<_>>()),
+        ["Applied"],
+        "Cancel kept the configuration it was meant to discard"
+    );
+}
+
+#[test]
+fn a_copy_of_a_generated_configuration_keeps_its_launch_profiles_values() {
+    // A generated configuration changes only by copying it, as Rider shows a project's launch profiles.
+    let run = Run::new("run-dialog-copy", &[("App/App.csproj", EXE_PROJECT)]);
+    profile(
+        &run,
+        r#"{"profiles":{"Args":{"commandName":"Project","commandLineArgs":"--seed 7","environmentVariables":{"GREETING":"hi"}}}}"#,
+    );
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    open_dialog(&main, cx);
+    assert_eq!(
+        dialog(&main, cx).read_with(cx, |dialog, _| dialog.rows()),
+        [("App: Args".to_string(), true)],
+        "the dialog does not list the project's configurations"
+    );
+    click(cx, "run row: App: Args");
+    click(cx, "run: Copy");
+    assert_eq!(
+        dialog(&main, cx).read_with(cx, |dialog, _| dialog.rows()),
+        [("App: Args (1)".to_string(), false), ("App: Args".to_string(), true)],
+        "the copy is not one of the folder's own, under a name no other has"
+    );
+    click(cx, "button: OK");
+    let own = main.read_with(cx, |main, _| main.run_own().to_vec());
+    assert_eq!(own.len(), 1);
+    assert_eq!(own[0].arguments, "--seed 7", "the copy lost its launch profile's arguments");
+    assert_eq!(own[0].environment.get("GREETING").map(String::as_str), Some("hi"));
+    assert_eq!(own[0].launch_profile.as_deref(), Some("Args"));
+}
+
+#[test]
+fn removing_the_chosen_configuration_leaves_the_first_generated_one_chosen() {
+    // A configuration the person removes cannot stay chosen: the list's first stands, as Rider's toolbar does.
+    let run = Run::new("run-dialog-remove", &[("App/App.csproj", EXE_PROJECT)]);
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    open_dialog(&main, cx);
+    click(cx, "run: Add");
+    let made = dialog(&main, cx);
+    made.update(cx, |dialog, cx| dialog.set_text(rsharp_app::run_dialog::Field::Name, "Mine", cx));
+    click(cx, "button: OK");
+    let chosen = main.read_with(cx, |main, _| main.chosen_run_configuration().map(|c| c.name.clone()));
+    assert_eq!(chosen.as_deref(), Some("Mine"));
+    open_dialog(&main, cx);
+    click(cx, "run row: Mine");
+    click(cx, "run: Remove");
+    click(cx, "button: OK");
+    let chosen = main.read_with(cx, |main, _| main.chosen_run_configuration().map(|c| c.name.clone()));
+    assert_eq!(chosen.as_deref(), Some("App"), "the removed configuration is still the one Run would launch");
+    assert!(main.read_with(cx, |main, _| main.run_own().is_empty()), "the removed configuration is still kept");
+}
+
+#[test]
+fn the_chosen_configuration_and_the_folders_own_are_kept_with_it() {
+    // Being kept with the folder means a window opened again shows the same list and the same choice.
+    let run = Run::new("run-dialog-kept", &[("App/App.csproj", EXE_PROJECT)]);
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    open_dialog(&main, cx);
+    click(cx, "run: Add");
+    let made = dialog(&main, cx);
+    made.update(cx, |dialog, cx| {
+        dialog.set_text(rsharp_app::run_dialog::Field::Name, "Kept", cx);
+        dialog.set_text(rsharp_app::run_dialog::Field::Arguments, "--kept", cx);
+    });
+    click(cx, "button: OK");
+    let (main, cx) = open(&run, cx);
+    let own = main.read_with(cx, |main, _| main.run_own().to_vec());
+    assert_eq!(own.iter().map(|c| c.name.clone()).collect::<Vec<_>>(), ["Kept"], "the folder's own were not kept");
+    assert_eq!(own[0].arguments, "--kept");
+    assert_eq!(own[0].project, run.folder.join("App/App.csproj"), "a stored project is read back against the folder");
+    let chosen = main.read_with(cx, |main, _| main.chosen_run_configuration().map(|c| c.name.clone()));
+    assert_eq!(chosen.as_deref(), Some("Kept"), "the choice was not kept with the folder");
+}
+
+#[test]
+fn find_action_runs_edit_configurations_by_name() {
+    // Rider has no key for it: the Run menu and Find Action are how a person opens it.
+    let run = Run::new("run-dialog-find", &[("App/App.csproj", EXE_PROJECT)]);
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    cx.simulate_keystrokes("secondary-shift-a");
+    cx.simulate_input("edit configurations");
+    cx.run_until_parked();
+    let listed = main.read_with(cx, |main, cx| main.find_action_listed(cx)).unwrap();
+    assert_eq!(listed.first(), Some(&"Edit Configurations…"), "Find Action cannot find it: {listed:?}");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(main.read_with(cx, |main, _| main.run_dialog().is_some()), "Find Action opened no dialog");
+}
+
 #[test]
 fn leaving_the_folder_ends_the_program() {
     // A program does not outlive its workspace: closing the solution ends it, as Rider ends a run with its folder.

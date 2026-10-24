@@ -6,7 +6,7 @@ use super::profile::LaunchProfile;
 use crate::project::EvaluatedProject;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -117,6 +117,25 @@ impl RunConfiguration {
             .unwrap()
     }
 
+    /// Why the configuration cannot be kept with its folder, in the person's words; none when it can. A name another
+    /// has, a project missing or one outside the folder are Rider's own checks.
+    pub fn problem(&self, taken: &[String], folder: &Path) -> Option<String> {
+        if self.name.trim().is_empty() {
+            return Some("A configuration needs a name".into());
+        }
+        if taken.iter().any(|other| other.eq_ignore_ascii_case(self.name.trim())) {
+            return Some(format!("Two configurations are named {}", self.name.trim()));
+        }
+        if self.project.as_os_str().is_empty() {
+            return Some(format!("{} has no project to run", self.name));
+        }
+        let project = resolved_project(folder, &self.project);
+        if !crate::paths::is_under(&crate::paths::canonical(&project), &crate::paths::canonical(folder)) {
+            return Some(format!("{} runs a project outside the folder, which this window cannot launch", self.name));
+        }
+        None
+    }
+
     /// Why its launch profile does not run here, read from the project's settings when the window asks; none either
     /// when its profile runs here or when the settings no longer hold that profile.
     fn profile_why(&self) -> Option<String> {
@@ -127,6 +146,72 @@ impl RunConfiguration {
             .find(|found| found.name == profile)
             .and_then(|found| found.unsupported())
     }
+}
+
+/// A folder's run configurations of its own, and the one the toolbar shows, as `runConfigurations.json` keeps them in the
+/// folder's state.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct RunConfigurations {
+    pub configurations: Vec<RunConfiguration>,
+    pub selected: Option<String>,
+}
+
+impl crate::state::StateDocument for RunConfigurations {
+    const FILE: &'static str = "runConfigurations.json";
+}
+
+impl RunConfigurations {
+    /// The document as the folder's state keeps it: each project relative to the folder, so the file reads plainly and a
+    /// folder moved keeps its configurations.
+    pub fn for_store(&self, folder: &Path) -> Self {
+        let folder = crate::paths::canonical(folder);
+        Self {
+            configurations: self
+                .configurations
+                .iter()
+                .map(|configuration| match configuration.project.strip_prefix(&folder) {
+                    Ok(inside) => RunConfiguration { project: inside.to_path_buf(), ..configuration.clone() },
+                    Err(_) => configuration.clone(),
+                })
+                .collect(),
+            selected: self.selected.clone(),
+        }
+    }
+
+    /// The document with each project absolute again, as a launch needs it.
+    pub fn resolved(&self, folder: &Path) -> Self {
+        Self {
+            configurations: self
+                .configurations
+                .iter()
+                .map(|configuration| RunConfiguration {
+                    project: resolved_project(folder, &configuration.project),
+                    ..configuration.clone()
+                })
+                .collect(),
+            selected: self.selected.clone(),
+        }
+    }
+}
+
+/// A project as a launch names it: an absolute path as it is, and a stored one against the folder, with `.` and `..`
+/// folded so a hand-written `../Shop/Shop.csproj` names the file it looks like.
+pub fn resolved_project(folder: &Path, project: &Path) -> PathBuf {
+    if project.is_absolute() {
+        return crate::paths::canonical(project);
+    }
+    let mut at = folder.to_path_buf();
+    for component in project.components() {
+        match component {
+            Component::ParentDir => {
+                at.pop();
+            }
+            Component::CurDir => {}
+            other => at.push(other),
+        }
+    }
+    at
 }
 
 pub fn project_folder(project: &Path) -> PathBuf {
@@ -258,5 +343,73 @@ mod tests {
         } else {
             assert!(reason.unwrap().contains("Windows' desktop"), "a WPF program off Windows says why it cannot run");
         }
+    }
+
+    #[test]
+    fn a_configurations_project_is_kept_relative_to_its_folder_and_read_back_absolute() {
+        // The file reads plainly and a folder moved keeps its configurations, so the project is stored against it.
+        let folder = std::env::temp_dir().join(format!("rsharp-config-store-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(folder.join("Shop")).unwrap();
+        let canonical = crate::paths::canonical(&folder);
+        let inside = canonical.join("Shop/Shop.csproj");
+        let outside = PathBuf::from("/elsewhere/Other/Other.csproj");
+        let document = RunConfigurations {
+            configurations: vec![
+                RunConfiguration { name: "Shop".into(), project: inside.clone(), ..RunConfiguration::default() },
+                RunConfiguration { name: "Other".into(), project: outside.clone(), ..RunConfiguration::default() },
+            ],
+            selected: Some("Shop".into()),
+        };
+        let stored = document.for_store(&canonical);
+        assert_eq!(
+            stored.configurations[0].project,
+            Path::new("Shop/Shop.csproj"),
+            "a project inside is stored relative"
+        );
+        assert_eq!(stored.configurations[1].project, outside, "one outside the folder is kept as written");
+        assert_eq!(stored.selected.as_deref(), Some("Shop"));
+        assert_eq!(stored.resolved(&canonical).configurations[0].project, inside, "it is read back absolute");
+        assert_eq!(stored.resolved(&canonical).configurations[1].project, outside);
+
+        let hand_written = RunConfiguration {
+            name: "Shop".into(),
+            project: PathBuf::from("../Shop/./Shop.csproj"),
+            ..RunConfiguration::default()
+        };
+        assert_eq!(
+            resolved_project(&canonical.join("App"), &hand_written.project),
+            inside,
+            "a hand-written path is folded to the file it names"
+        );
+        assert_eq!(
+            <RunConfigurations as crate::state::StateDocument>::FILE,
+            "runConfigurations.json",
+            "the document lives beside the folder's other state"
+        );
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn a_configuration_that_cannot_be_kept_says_why() {
+        let folder = crate::paths::canonical(&std::env::temp_dir());
+        let inside = folder.join("App/App.csproj");
+        let kept = |name: &str, project: PathBuf| RunConfiguration {
+            name: name.into(),
+            project,
+            ..RunConfiguration::default()
+        };
+        let taken = vec!["Shop".to_string()];
+        let problem = |configuration: &RunConfiguration| configuration.problem(&taken, &folder);
+        assert_eq!(problem(&kept("Shop", inside.clone())).as_deref(), Some("Two configurations are named Shop"));
+        assert_eq!(problem(&kept("shop", inside.clone())).as_deref(), Some("Two configurations are named shop"));
+        assert_eq!(problem(&kept("  ", inside.clone())).as_deref(), Some("A configuration needs a name"));
+        assert_eq!(problem(&kept("Mine", PathBuf::new())).as_deref(), Some("Mine has no project to run"));
+        let outside = Path::new("/somewhere/else/App.csproj").to_path_buf();
+        assert!(
+            problem(&kept("Mine", outside)).unwrap().contains("outside the folder"),
+            "a project outside the folder is not kept"
+        );
+        assert_eq!(problem(&kept("Mine", inside)), None, "a named configuration of the folder's project is kept");
     }
 }

@@ -48,6 +48,7 @@ actions!(
         Stop,
         RunProgram,
         RerunProgram,
+        EditRunConfigurations,
         HideToolWindow,
         FloatToolWindow,
         RestoreDefaultLayout,
@@ -254,8 +255,10 @@ pub struct MainWindow {
     /// The build under way is a run's, which only a failure brings forward.
     implicit_build: bool,
     run_console: Entity<crate::console::ConsoleView>,
-    /// The folder's run configurations, made again as its projects and their profiles change, with the projects they
-    /// were made from and why each cannot launch: a drawing of the toolbar's menu reads these, never the disk.
+    /// The run configurations of the folder's own, from `runConfigurations.json`, then the ones its projects make: made
+    /// again as its projects and their profiles change, with the projects they came from and why each cannot launch, so
+    /// a drawing of the toolbar's menu reads these and never the disk.
+    run_own: Vec<rsharp_core::run::RunConfiguration>,
     run_configs: Vec<rsharp_core::run::RunConfiguration>,
     run_projects: Vec<rsharp_core::project::EvaluatedProject>,
     run_why_not: Vec<Option<String>>,
@@ -274,6 +277,8 @@ pub struct MainWindow {
     run_outcome: Option<run::RunOutcome>,
     /// How the browser is opened; a test takes it over, so no browser opens.
     browser_opener: Arc<dyn Fn(String) + Send + Sync>,
+    /// Rider's Run/Debug Configurations dialog while it is open.
+    run_dialog: Option<Entity<crate::run_dialog::RunDialog>>,
 }
 
 impl Drop for MainWindow {
@@ -341,6 +346,7 @@ impl MainWindow {
         Self {
             build,
             run_console,
+            run_own: Vec::new(),
             run_configs: Vec::new(),
             run_projects: Vec::new(),
             run_why_not: Vec::new(),
@@ -353,6 +359,7 @@ impl MainWindow {
             run_after_build: None,
             run_after_stop: false,
             run_outcome: None,
+            run_dialog: None,
             browser_opener: Arc::new(|url| {
                 if let Err(error) = rsharp_core::run::browser::open(&url) {
                     log::warn!("Could not open {url}: {error}");
@@ -457,7 +464,10 @@ impl MainWindow {
             cx.global::<crate::state::Ide>().servers.then(|| rsharp_lsp::SharedHost::carried(&folder)).flatten();
         self.workspace = Some(workspace);
         self.selected = Some(0);
-        self.run_selected = kept.run_configuration.filter(|name| !name.is_empty());
+        let kept_runs: rsharp_core::run::configuration::RunConfigurations = store.read_for(&folder);
+        let kept_runs = kept_runs.resolved(&folder);
+        self.run_own = kept_runs.configurations;
+        self.run_selected = kept_runs.selected.filter(|name| !name.is_empty());
         self.rebuild_rows();
         self.start_server(cx);
         window.focus(&self.explorer_focus);
@@ -511,7 +521,6 @@ impl MainWindow {
                 open: self.tree.as_ref().map(SolutionTree::open_keys).unwrap_or_default(),
                 dock: Some(self.dock.clone()),
                 solution_wide: self.solution_wide,
-                run_configuration: self.run_selected.clone(),
             },
         );
         store.write(&self.dock);
@@ -2046,6 +2055,9 @@ impl Render for MainWindow {
             .children(self.status_menu.map(|kind| self.status_menu_view(kind, cx)))
             .children(self.refactoring.clone().map(|dialog| {
                 div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(dialog)
+            }))
+            .children(self.run_dialog.clone().map(|dialog| {
+                div().absolute().top(px(TOOLBAR_HEIGHT + 40.)).left_0().right_0().flex().justify_center().child(dialog)
             }))
             .children(self.go_to.clone().map(|popup| {
                 div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(

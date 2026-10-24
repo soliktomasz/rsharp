@@ -24,8 +24,8 @@ use crate::find_bar::{Find, FindNext, FindPrevious, Replace};
 use crate::keymap::{OpenSettings, Quit};
 use crate::window::{Back, FindInFiles, Forward, GoToFile, GoToSymbol, GoToType, LastEditLocation, RecentFiles};
 use crate::window::{
-    BuildSelected, BuildSolution, CleanSelected, CleanSolution, RebuildSelected, RebuildSolution, RerunProgram,
-    RunProgram, Stop, ToggleBuild, ToggleRun,
+    BuildSelected, BuildSolution, CleanSelected, CleanSolution, EditRunConfigurations, RebuildSelected,
+    RebuildSolution, RerunProgram, RunProgram, Stop, ToggleBuild, ToggleRun,
 };
 use crate::window::{
     CloseAllButPinned, CloseAllTabs, CloseOtherTabs, CloseTabsToLeft, CloseTabsToRight, FileEncoding, LineSeparators,
@@ -64,6 +64,7 @@ pub static ALL: &[IdeAction] = &[
     ide!("Build", "View", ["build output", "console", "tool window"], ToggleBuild),
     ide!("Run", "Run", ["run program", "start", "execute"], RunProgram),
     ide!("Rerun", "Run", ["run again", "restart"], RerunProgram),
+    ide!("Edit Configurations…", "Run", ["run configurations", "edit configurations"], EditRunConfigurations),
     ide!("Stop", "Run", ["stop build", "cancel build", "stop program"], Stop),
     ide!("Run Window", "View", ["run output", "console", "tool window"], ToggleRun),
     ide!("New Solution…", "File", ["create solution"], NewSolution),
