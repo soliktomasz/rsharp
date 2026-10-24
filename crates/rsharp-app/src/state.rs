@@ -64,6 +64,8 @@ pub struct FolderState {
     pub dock: Option<crate::dock::DockLayout>,
     /// Whether Roslyn analyses every file, not only the open ones, for Problems' Solution tab.
     pub solution_wide: bool,
+    /// The run configuration chosen in the toolbar, by name.
+    pub run_configuration: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]

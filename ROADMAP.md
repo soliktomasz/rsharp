@@ -180,11 +180,17 @@ concurrent requests and holds its generating design-time builds off until the ex
 a dockable console with bounded output, Rerun/Stop/Clear and compiler links; Problems has a separate Build tab.
 Dirty workspace buffers, including detached editors, save first. Stop and leaving the workspace end the build's
 process tree; New Solution builds once after opening. Presentation settings control opening Build and showing
-its results. Run configurations, Run, Hot Reload and Unit Tests remain the next slices. Run in the terminal
-waits for Phase 6.
+its results. The second slice, Run: the folder's run configurations from its executable projects and their
+launch profiles, chosen in the toolbar and kept with the folder; Run, Rerun and Stop on Rider's keys, the plan
+resolved from MSBuild's properties (the project's assembly under `dotnet`, or a profile's program, with its
+arguments, working folder and environment), the build before the launch, the program in a Run console with
+bounded output and its exit code in the status bar, URL and stack-frame links in that console, and the browser
+opened once the program listens at its profile's URL. Hot Reload and Unit Tests remain the next slices, and
+Edit Configurations with the folder's own configurations follows Run. Run in the terminal waits for Phase 6.
 - Builds through `DotnetCommand` with the host's hold, read for errors, and the Build window.
 - Run configurations: from launchSettings, the folder's own, and Edit Configurations; `LaunchPlan`; Run in the
-  terminal; console links; the browser opened once the port answers.
+  terminal; console links; the browser opened once the port answers. (launchSettings, the plan, Run and the
+  browser are in; the folder's own configurations and Edit Configurations are not yet.)
 - Hot Reload under dotnet watch.
 - **Unit tests:**
   - `TestFinder` reads tests from code before any build, with tree-sitter, so no parse runs in .NET.

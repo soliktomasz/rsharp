@@ -117,9 +117,13 @@ terminal and takes focus for a moment.
   divide; each action registers only while it has something to act on, so menus and Find Action grey it
   otherwise; the root has a focus of its own, so window-wide keys work on the Welcome screen.
   `window/build.rs` owns the workspace's Build/Rebuild/Clean: saves shared buffers, waits for the Host's hold,
-  builds targets in order, and stops on Stop, close or workspace change. `build_view.rs` is its bounded plain
-  console over the editor's selection and visible-line drawing, with Rerun/Stop/Clear and compiler source links.
-  Build diagnostics have their own Problems tab; presentation settings decide when Build comes forward.
+  builds targets in order, and stops on Stop, close or workspace change. `console.rs` is its bounded plain
+  console over the editor's selection and visible-line drawing, with Rerun/Stop/Clear and compiler source links:
+  Build's and Run's are the same view in two windows. Build diagnostics have their own Problems tab;
+  presentation settings decide when Build comes forward. `window/run.rs` owns the folder's run configurations
+  (its executable projects' launch profiles, kept in the toolbar and with the folder), the plan a launch resolves
+  from MSBuild's properties off the UI thread, the build before it, the program in the Run console, and the
+  browser opened once it listens.
   New Solution builds once after opening. `dock.rs` is the frame's layout: IntelliJ's six places, which window is where and open, the islands' sizes,
   kept with the folder (`state.rs`'s `FolderState`) and as `layout.json`, the default for a folder with none.
   A new tool window is a `Tool` with its title, icon and home place, and its content in `window.rs`.

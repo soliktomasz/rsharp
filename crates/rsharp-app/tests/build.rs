@@ -3,7 +3,7 @@
 mod support;
 
 use gpui::{AppContext, Entity, Focusable, Modifiers, TestAppContext, VisualTestContext};
-use rsharp_app::build_view::OUTPUT_LIMIT;
+use rsharp_app::console::OUTPUT_LIMIT;
 use rsharp_app::dock::{Place, Tool};
 use rsharp_app::settings::{self, BuildResults};
 use rsharp_app::window::{

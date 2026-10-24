@@ -32,6 +32,16 @@ pub fn spawn(mut command: Command) -> io::Result<Child> {
     }
 }
 
+/// Starts a program that must outlive the IDE — the person's browser, opened at a project's URL — in a group of its
+/// own, with nothing watching it. Nothing else is started this way: every other program is [`spawn`]'s, and ends with
+/// the IDE. Its output goes nowhere, so a launcher that talks cannot hold the IDE's pipes open.
+pub fn spawn_detached(mut command: Command) -> io::Result<std::process::Child> {
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    command.spawn()
+}
+
 impl Child {
     pub fn id(&self) -> u32 {
         self.process.id()

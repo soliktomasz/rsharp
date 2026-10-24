@@ -1,7 +1,7 @@
 //! One workspace's builds, held against the Host, with bounded output crossing to the UI.
 
 use super::*;
-use crate::build_view::BuildView;
+use crate::console::ConsoleView;
 use crate::settings::{BuildResults, settings};
 use futures::{FutureExt, channel::mpsc};
 use rsharp_core::build::{Kind, Parser, Problem, Severity};
@@ -41,7 +41,7 @@ impl MainWindow {
         self.build.read(cx).text()
     }
 
-    pub fn build_view(&self) -> &Entity<BuildView> {
+    pub fn build_view(&self) -> &Entity<ConsoleView> {
         &self.build
     }
 
@@ -61,6 +61,7 @@ impl MainWindow {
 
     pub(super) fn leave_build(&mut self, cx: &mut Context<Self>) {
         self.cancel_build();
+        self.implicit_build = false;
         self.build_cancel = None;
         self.build_generation += 1;
         self._build_task = None;
@@ -72,6 +73,26 @@ impl MainWindow {
             view.can_rerun = false;
             view.clear(cx);
         });
+    }
+
+    /// Saves every open buffer in the workspace, including the editors of a split or a window of their own, saying
+    /// which file could not be saved: what a build and a launch do first, so what they run is what the person sees.
+    pub(super) fn save_all(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        let Some(folder) = self.workspace.as_ref().map(|workspace| workspace.folder.clone()) else { return Ok(()) };
+        let mut roots = vec![folder];
+        if let Some(tree) = &self.tree {
+            roots.extend(
+                tree.solution().projects().iter().filter_map(|project| project.path.parent().map(Path::to_path_buf)),
+            );
+        }
+        for buffer in crate::buffer::in_folders(&roots, cx) {
+            if buffer.read(cx).is_modified()
+                && let Err(error) = buffer.update(cx, |buffer, cx| buffer.save(cx))
+            {
+                return Err(format!("Could not save {}: {error}", buffer.read(cx).path.display()));
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn selected_build_targets(&self) -> Option<Vec<PathBuf>> {
@@ -116,6 +137,9 @@ impl MainWindow {
     }
 
     pub(super) fn begin_build(&mut self, kind: Kind, selected: Option<Vec<PathBuf>>, cx: &mut Context<Self>) {
+        // A run's build is implicit: it still reports to the Build window and Problems, but only a failure there
+        // brings the Build window forward, since the person is looking at the Run window it is starting.
+        let implicit = std::mem::take(&mut self.implicit_build);
         let refused = if self.workspace.is_none() {
             Some("Nothing to build: no folder is open")
         } else if self.is_building() {
@@ -140,28 +164,18 @@ impl MainWindow {
                 tree.solution().projects().into_iter().filter_map(|project| tree.evaluated(&project.path).cloned())
             })
             .collect();
-        let mut roots = vec![folder.clone()];
-        if let Some(tree) = &self.tree {
-            roots.extend(
-                tree.solution().projects().iter().filter_map(|project| project.path.parent().map(Path::to_path_buf)),
-            );
+        if let Err(message) = self.save_all(cx) {
+            self.said = Some(message.clone().into());
+            self.build_outcome = Some(BuildOutcome {
+                status: BuildStatus::NotStarted,
+                message,
+                problems: Vec::new(),
+                output: Vec::new(),
+            });
+            cx.notify();
+            return;
         }
-        for buffer in crate::buffer::in_folders(&roots, cx) {
-            if buffer.read(cx).is_modified()
-                && let Err(error) = buffer.update(cx, |buffer, cx| buffer.save(cx))
-            {
-                let message = format!("Could not save {}: {error}", buffer.read(cx).path.display());
-                self.said = Some(message.clone().into());
-                self.build_outcome = Some(BuildOutcome {
-                    status: BuildStatus::NotStarted,
-                    message,
-                    problems: Vec::new(),
-                    output: Vec::new(),
-                });
-                cx.notify();
-                return;
-            }
-        }
+        self.implicit_build = implicit;
         self.last_build = Some((kind, selected.clone()));
         self.build_problems.clear();
         self.build_outcome = None;
@@ -170,7 +184,7 @@ impl MainWindow {
         let cancel = Arc::new(AtomicBool::new(false));
         self.build_cancel = Some(cancel.clone());
         self.build.update(cx, |view, cx| view.start(folder.clone(), cx));
-        if settings(cx).open_build_window {
+        if !implicit && settings(cx).open_build_window {
             self.dock.show(Tool::Build);
             self.save_state(cx);
         }
@@ -232,6 +246,7 @@ impl MainWindow {
     }
 
     fn finish_build(&mut self, outcome: BuildOutcome, cx: &mut Context<Self>) {
+        let implicit = std::mem::take(&mut self.implicit_build);
         self.build_cancel = None;
         self.build_problems = outcome.problems.clone();
         let failed = matches!(outcome.status, BuildStatus::Failed | BuildStatus::NotStarted);
@@ -242,16 +257,19 @@ impl MainWindow {
             BuildResults::Errors => failed,
             BuildResults::Never => false,
         };
+        let show = if implicit { failed } else { show };
         self.build.update(cx, |view, cx| {
             view.running = false;
             cx.notify();
         });
         self.said = Some(outcome.message.clone().into());
+        let ended = outcome.status;
         self.build_outcome = Some(outcome);
         if show {
             self.dock.show(Tool::Build);
             self.save_state(cx);
         }
+        self.after_run_build(ended, cx);
     }
 
     pub(super) fn build_problems_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -304,12 +322,7 @@ impl MainWindow {
                             }))
                         })
                 })
-                .when(self.is_building(), |d| {
-                    d.on_action(cx.listener(|m, _: &StopBuild, _, cx| {
-                        m.cancel_build();
-                        cx.notify();
-                    }))
-                })
+                .when(self.is_building(), |d| d.on_action(cx.listener(|m, _: &Stop, _, cx| m.stop_everything(cx))))
         })
     }
 }
