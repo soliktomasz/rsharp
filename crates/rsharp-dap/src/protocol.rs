@@ -133,6 +133,27 @@ pub struct Breakpoints {
     pub breakpoints: Vec<Breakpoint>,
 }
 
+/// A stop at an exception, as the adapter describes it: what was thrown and where.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ExceptionInfo {
+    pub exception_id: String,
+    pub description: Option<String>,
+    pub break_mode: String,
+    pub code: Option<i64>,
+    pub details: Option<ExceptionDetails>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ExceptionDetails {
+    pub message: Option<String>,
+    pub type_name: Option<String>,
+    pub full_type_name: Option<String>,
+    pub evaluate_name: Option<String>,
+    pub stack_trace: Option<String>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct SetValue {

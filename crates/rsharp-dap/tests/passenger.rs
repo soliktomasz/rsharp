@@ -120,6 +120,7 @@ fn started(
 /// Starts a debuggee with exception breakpoints, as a case that stops at a throw asks.
 fn started_filtering(
     program: &Path,
+    arguments: &[&str],
     breakpoints: Vec<(PathBuf, Vec<SourceBreakpoint>)>,
     exceptions: Vec<rsharp_dap::ExceptionFilter>,
 ) -> (Session, Receiver<Event>) {
@@ -130,7 +131,7 @@ fn started_filtering(
         &adapter,
         Start::Launch(Launch {
             program: program.to_path_buf(),
-            arguments: Vec::new(),
+            arguments: arguments.iter().map(|argument| argument.to_string()).collect(),
             working_directory,
             environment: BTreeMap::new(),
             stop_at_entry: false,
@@ -607,6 +608,7 @@ fn a_stop_at_an_exception_lists_it_as_exception_and_an_expression_reads_its_mess
     let line = line_of("SteppingConsoleApp", "Throws.Run();");
     let (session, events) = started_filtering(
         &program,
+        &[],
         vec![(source, vec![SourceBreakpoint { line: line - 1, ..SourceBreakpoint::default() }])],
         // Every exception, wherever it is thrown and whether it is handled, as Passenger's ["all"] does: the client's
         // empty-path filter with every scenario is breakMode "always".
@@ -864,5 +866,57 @@ fn a_paused_frame_lists_its_locals_and_their_members() {
     let values = session.variables(statics.variables_reference).expect("the enum's values read");
     let names: Vec<&str> = values.iter().map(|variable| variable.name.as_str()).collect();
     assert_eq!(names, ["FirstValue", "SecondValue", "ThirdValue"], "the enum's values: {values:?}");
+    session.disconnect(true);
+}
+
+#[test]
+fn an_exception_in_a_parallel_loop_whose_iterations_test_a_condition_stops_where_it_was_thrown() {
+    let _serial = one_at_a_time();
+    let Some(program) = looping_program() else { return };
+    let source = rsharp_core::paths::canonical(
+        &debuggees().expect("the debuggees are there").join("LoopingConsoleApp/Program.cs"),
+    );
+    let line = line_of("LoopingConsoleApp", "each iteration");
+    let (session, events) = started_filtering(
+        &program,
+        &["parallel", "throws"],
+        vec![(
+            source,
+            vec![SourceBreakpoint {
+                line: line - 1,
+                // Never true, but each iteration's test runs code in the program while the other threads wait.
+                condition: Some("i.ToString() == \"none\"".into()),
+                ..SourceBreakpoint::default()
+            }],
+        )],
+        vec![rsharp_dap::ExceptionFilter {
+            scenarios: [
+                "thrownInUserCode",
+                "thrownInExternalCode",
+                "handledInUserCode",
+                "handledInExternalCode",
+                "unhandled",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+            ..rsharp_dap::ExceptionFilter::default()
+        }],
+    );
+
+    let stopped = stop(&events, "exception");
+    let frames = session.stack_trace(stopped.thread).expect("the stack reads");
+    let locals = locals_of(&session, frames.first().expect("the stop has a frame"));
+    assert_eq!(
+        locals.iter().find(|variable| variable.name == "i").map(|variable| variable.value.as_str()),
+        Some("200"),
+        "the iteration that threw: {locals:?}"
+    );
+    let info = session.exception_info(stopped.thread).expect("the exception is described");
+    assert_eq!(
+        info.details.as_ref().and_then(|details| details.message.as_deref()),
+        Some("iteration 200"),
+        "the exception's message: {info:?}"
+    );
     session.disconnect(true);
 }

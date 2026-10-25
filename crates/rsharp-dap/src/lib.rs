@@ -459,6 +459,12 @@ impl Session {
             .collect())
     }
 
+    /// The exception a stopped thread is at, as the adapter describes it: its type, message and place.
+    pub fn exception_info(&self, thread: i64) -> Result<protocol::ExceptionInfo, String> {
+        let body = self.connection.request("exceptionInfo", json!({ "threadId": thread }), REQUEST)?;
+        serde_json::from_value(body).map_err(|error| format!("The debugger's exception did not read: {error}"))
+    }
+
     pub fn scopes(&self, frame: i64) -> Result<Vec<Scope>, String> {
         let body = self.connection.request("scopes", json!({ "frameId": frame }), REQUEST)?;
         let answered: protocol::Scopes =

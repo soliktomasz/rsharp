@@ -351,8 +351,9 @@ chosen stepped into, and the second of two `Add` calls), and its synthetic varia
 returned, named `$ReturnValue1` and `$ReturnValue` and readable in an expression, replaced by the next step's, what a
 step out's method returned, `$exception` at a throw, whose `Message` an expression reads, and a lambda stepped into
 from a breakpoint on its statement's column), an evaluation in a paused frame answering for fields, properties, static
-members and calls, and a paused frame's locals and their members (a struct's, the object's, an enum's values) on
-`DebuggableConsoleApp`.
+members and calls, a paused frame's locals and their members (a struct's, the object's, an enum's values) on
+`DebuggableConsoleApp`, and an exception thrown in a parallel loop stopping where it was thrown, its message read
+through `exceptionInfo`.
 
 ### Phase 9: Avalonia and WPF (L)
 - A XAML host: `Passenger.Xaml` behind a thin JSON-lines (or LSP) process, giving completion, diagnostics,

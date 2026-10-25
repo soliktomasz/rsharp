@@ -144,7 +144,8 @@ terminal and takes focus for a moment.
   whose answer waits for the program's runtime. Threads, a thread's frames, a frame's scopes and values, an
   expression (Evaluate and a watch), continue/next/stepIn/stepOut/pause, and disconnect/terminate are typed
   requests, as are Set Next Statement's `gotoTargets` and `goto`, Set Value's `setExpression`, Smart Step Into's
-  `stepInTargets` (a step into one call of a statement) and the function breakpoints' `setFunctionBreakpoints`. A
+  `stepInTargets` (a step into one call of a statement), the function breakpoints' `setFunctionBreakpoints` and the
+  exception a stop is at (`exceptionInfo`). A
   source breakpoint carries its line or its column too, which binds one call of a line several share (a lambda's body). What the adapter says unasked (stops, output, exit,
   termination) comes as `Event`s on its own threads; its own request, a program started in the client's terminal,
   is answered when the app gives it a terminal runner (announced as `supportsRunInTerminalRequest`) and refused
@@ -299,7 +300,8 @@ handed to runs it, from a breakpoint on the statement's column; and an evaluatio
 fields, properties, static members and method calls on `DebuggableConsoleApp` (`myInt + 10`, `_instanceField + 4`,
 `ClassProperty.IntField + 4`, `this.Get14() + 4`, `GetObject().IntProperty`), and a paused frame lists its eleven
 locals with their types, a struct's `Id` and `Name`, the object's properties and fields, and an enum's value and
-`Static members`; `crates/rsharp-dap/tests/session.rs` stops one
+`Static members`, and an exception thrown in a parallel loop stops where it was thrown, its `exceptionInfo` giving
+the message; `crates/rsharp-dap/tests/session.rs` stops one
 at a breakpoint through the client alone (frames, locals, evaluate, a step, its output) and `crates/rsharp-app/tests/debugger.rs` the same
 through the window (F9, F5, the Debug window's buttons and lists, the marked line, resume to the end), along with
 the Breakpoints dialog's condition and mute, a false condition and a logpoint as the adapter runs them, Any
