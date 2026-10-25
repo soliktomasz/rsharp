@@ -30,6 +30,8 @@ pub mod solution_menu;
 pub mod solution_view;
 pub mod state;
 pub mod templates;
+pub mod test_finder;
+pub mod test_view;
 pub mod theme;
 pub mod window;
 pub mod workspace;

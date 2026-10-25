@@ -39,6 +39,11 @@ actions!(
         ToggleNuGet,
         ToggleBuild,
         ToggleRun,
+        ToggleUnitTests,
+        RunAllTests,
+        RunTests,
+        RerunFailedTests,
+        RefreshTests,
         BuildSolution,
         RebuildSolution,
         CleanSolution,
@@ -101,6 +106,7 @@ mod new_project;
 mod nuget;
 mod run;
 mod solution_actions;
+mod tests;
 
 pub use build::{BuildOutcome, BuildStatus};
 pub use run::{RunOutcome, RunStatus};
@@ -282,11 +288,13 @@ pub struct MainWindow {
     browser_opener: Arc<dyn Fn(String) + Send + Sync>,
     /// Rider's Run/Debug Configurations dialog while it is open.
     run_dialog: Option<Entity<crate::run_dialog::RunDialog>>,
+    tests: tests::Tests,
 }
 
 impl Drop for MainWindow {
     fn drop(&mut self) {
         self.cancel_build();
+        self.cancel_tests();
         if let Some(cancel) = &self.run_cancel {
             cancel.store(true, std::sync::atomic::Ordering::Release);
         }
@@ -300,6 +308,7 @@ impl MainWindow {
             let _ = owner.update(cx, |m, cx| {
                 m.cancel_build();
                 m.stop_run(cx);
+                m.cancel_tests();
                 if let Some(handle) = m.creation_dialog {
                     let _ = handle.update(cx, |d, w, cx| d.cancel(w, cx));
                 }
@@ -311,6 +320,11 @@ impl MainWindow {
         let nuget = cx.new(crate::nuget_view::NuGetView::new);
         let build = cx.new(|cx| crate::console::ConsoleView::new("build", cx));
         let run_console = cx.new(|cx| crate::console::ConsoleView::new("run", cx));
+        let test_view = cx.new(crate::test_view::TestView::new);
+        cx.subscribe_in(&test_view, window, |m, _, action: &crate::test_view::TestAction, window, cx| {
+            m.test_action(action, window, cx);
+        })
+        .detach();
         cx.subscribe_in(&build, window, |m, _, action: &crate::console::ConsoleAction, _, cx| {
             match action {
                 crate::console::ConsoleAction::Rerun => {
@@ -347,6 +361,7 @@ impl MainWindow {
             }
         });
         Self {
+            tests: tests::Tests::new(test_view),
             build,
             run_console,
             run_own: Vec::new(),
@@ -438,6 +453,7 @@ impl MainWindow {
     }
 
     pub fn open_workspace(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        self.leave_tests(cx);
         self.leave_build(cx);
         self.leave_run(cx);
         self.save_state(cx);
@@ -467,6 +483,8 @@ impl MainWindow {
         self.host =
             cx.global::<crate::state::Ide>().servers.then(|| rsharp_lsp::SharedHost::carried(&folder)).flatten();
         self.workspace = Some(workspace);
+        let test_state = store.read_for::<crate::test_view::UnitTestsState>(&folder);
+        self.tests.view.update(cx, |view, cx| view.restore(test_state, cx));
         self.selected = Some(0);
         let kept_runs: rsharp_core::run::configuration::RunConfigurations = store.read_for(&folder);
         let kept_runs = kept_runs.resolved(&folder);
@@ -490,6 +508,7 @@ impl MainWindow {
             self.show_tab(0, active, window, cx);
         }
         self.sync_nuget(cx);
+        self.sync_tests(cx);
         cx.notify();
     }
 
@@ -1008,6 +1027,7 @@ impl MainWindow {
         tree.set_evaluated(project);
         self.rebuild_rows();
         self.sync_nuget(cx);
+        self.sync_tests(cx);
         cx.notify();
     }
 
@@ -1408,12 +1428,20 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) -> Entity<CodeEditor> {
         let editor = cx.new(|cx| CodeEditor::new(buffer.clone(), cx));
-        let edits_by = editor.clone();
+        cx.subscribe(&buffer, |w, _, event: &crate::buffer::BufferEvent, cx| match event {
+            crate::buffer::BufferEvent::Parsed => w.refresh_open_tests(cx),
+            crate::buffer::BufferEvent::Moved(_) => w.refresh_tests(cx),
+            _ => {}
+        })
+        .detach();
+        cx.observe_release(&buffer, |w, _, cx| w.refresh_tests(cx)).detach();
+        let edits_by = editor.downgrade();
         cx.subscribe(&buffer, move |w, _, event: &crate::buffer::BufferEvent, cx| {
             if let crate::buffer::BufferEvent::Edited { by, .. } = event
                 && *by == edits_by.entity_id()
+                && let Some(editor) = edits_by.upgrade()
             {
-                w.edited_at(&edits_by, cx);
+                w.edited_at(&editor, cx);
             }
         })
         .detach();
@@ -1436,6 +1464,7 @@ impl MainWindow {
             cx.notify()
         })
         .detach();
+        self.refresh_open_tests(cx);
         editor
     }
 
@@ -1466,6 +1495,7 @@ impl MainWindow {
             self.area.close(group, index, cx);
         }
         self.focus_editor(window, cx);
+        self.refresh_tests(cx);
     }
 
     /// Split Right or Down: the file the current group shows, in a new group beside it, at the same caret.
@@ -1525,6 +1555,7 @@ impl MainWindow {
     fn close_tab(&mut self, group: usize, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.area.close(group, index, cx);
         self.focus_editor(window, cx);
+        self.refresh_tests(cx);
     }
 
     /// The find bar on the active tab's file, or gone with the last tab.
@@ -1608,6 +1639,7 @@ impl MainWindow {
 
     /// Back to the Welcome screen, the folder's state kept, as Rider's File | Close Solution.
     pub fn close_solution(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.leave_tests(cx);
         self.leave_build(cx);
         self.leave_run(cx);
         self.save_state(cx);
@@ -1971,6 +2003,7 @@ impl Render for MainWindow {
             .map(|d| self.tab_actions(d, cx))
             .map(|d| self.build_actions(d, cx))
             .map(|d| self.run_actions(d, cx))
+            .map(|d| self.test_actions(d, cx))
             .when(self.workspace.is_some(), |d| {
                 use crate::goto::Kind;
                 d.on_action(cx.listener(|w, _: &GoToFile, window, cx| w.open_go_to(Kind::File, window, cx)))
@@ -2345,6 +2378,7 @@ impl MainWindow {
             Tool::NuGet => self.nuget.clone().into_any_element(),
             Tool::Build => self.build.clone().into_any_element(),
             Tool::Run => self.run_console.clone().into_any_element(),
+            Tool::UnitTests => self.tests.view.clone().into_any_element(),
         };
         island().child(header).child(content)
     }
@@ -2359,6 +2393,7 @@ impl MainWindow {
             Tool::NuGet => None,
             Tool::Build => self.build_outcome.as_ref().map(|outcome| outcome.message.clone()),
             Tool::Run => self.run_outcome.as_ref().map(|outcome| outcome.message.clone()),
+            Tool::UnitTests => None,
         }
     }
 
@@ -2455,6 +2490,7 @@ impl MainWindow {
             Tool::NuGet => self.nuget.focus_handle(cx),
             Tool::Build => self.build.focus_handle(cx),
             Tool::Run => self.run_console.focus_handle(cx),
+            Tool::UnitTests => self.tests.view.focus_handle(cx),
         }
     }
 

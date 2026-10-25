@@ -802,12 +802,14 @@ impl MainWindow {
         })
         .detach();
         self.rebuild_rows();
+        self.sync_tests(cx);
         self.evaluate_projects(cx);
         cx.notify();
     }
 
     /// The tree, the projects and Roslyn after a solution or project file changed on disk.
     pub(super) fn follow_written(&mut self, path: &Path, cx: &mut Context<Self>) {
+        self.refresh_tests(cx);
         let is_solution = self.tree.as_ref().is_some_and(|t| t.solution().path == path);
         if is_solution && let Some(solution) = rsharp_core::solution::read(path) {
             if let Some(tree) = &mut self.tree {

@@ -85,7 +85,15 @@ impl MainWindow {
                 tree.solution().projects().iter().filter_map(|project| project.path.parent().map(Path::to_path_buf)),
             );
         }
-        for buffer in crate::buffer::in_folders(&roots, cx) {
+        let mut buffers = crate::buffer::in_folders(&roots, cx);
+        for item in self.run_projects.iter().chain(self.tests.projects.iter()).flat_map(|p| &p.items) {
+            if let Some(buffer) = crate::buffer::find(&item.path, cx)
+                && !buffers.iter().any(|known| known.entity_id() == buffer.entity_id())
+            {
+                buffers.push(buffer);
+            }
+        }
+        for buffer in buffers {
             if buffer.read(cx).is_modified()
                 && let Err(error) = buffer.update(cx, |buffer, cx| buffer.save(cx))
             {
@@ -270,6 +278,7 @@ impl MainWindow {
             self.save_state(cx);
         }
         self.after_run_build(ended, cx);
+        self.after_tests_build(ended, cx);
     }
 
     pub(super) fn build_problems_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
