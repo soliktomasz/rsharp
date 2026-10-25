@@ -272,8 +272,9 @@ Soft rounded rectangles at four radii: 10px for islands, 6px for tabs, toolbar w
   Executable / Process ID / User / Command Line headings over 24px rows (Recently attached first), and Cancel beside
   the primary "Attach with .NET Debugger" in a 56px footer.
 - Rider's Breakpoints dialog is 760×540 over the window: a 44px title row with Mute Breakpoints, a 300px list
-  (26px rows, the chosen one in selection, a 16px tick before each name) and the chosen item's form on the right,
-  with Add Exception Breakpoint, Remove and Done in a 56px footer.
+  (26px rows, the chosen one in selection, a 16px tick before each name) of Line breakpoints, Function breakpoints
+  (whose form has a Function name field) and Exception breakpoints, and the chosen item's form on the right, with
+  Add Function Breakpoint, Add Exception Breakpoint, Remove and Done in a 56px footer.
 
 ### Empty Editor Hints
 - Two aligned columns 10px apart: instructions right-aligned in text-secondary, the keys left-aligned in the accent (an instruction that is not a key stays text-secondary).

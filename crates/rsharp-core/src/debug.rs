@@ -80,12 +80,38 @@ impl ExceptionBreakpoint {
     }
 }
 
-/// The folder's breakpoints: each file's lines, the exception breakpoints ("Any exception" never removed) and whether
-/// every breakpoint is muted.
+/// Rider's function breakpoint: a method's name as `Namespace.Type.Method`, with `*` at its end for a suffix that
+/// matches any, and what a hit asks of the debugger.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FunctionBreakpoint {
+    pub name: String,
+    pub enabled: bool,
+    pub condition: String,
+    pub hit_count: String,
+    pub log_message: String,
+}
+
+impl Default for FunctionBreakpoint {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            enabled: true,
+            condition: String::new(),
+            hit_count: String::new(),
+            log_message: String::new(),
+        }
+    }
+}
+
+/// The folder's breakpoints: each file's lines, the function breakpoints, the exception breakpoints ("Any exception"
+/// never removed) and whether every breakpoint is muted.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Breakpoints {
     files: BTreeMap<PathBuf, Vec<LineBreakpoint>>,
+    /// The method names the debugger stops at, wherever they are.
+    functions: Vec<FunctionBreakpoint>,
     /// Rider's "Any exception", which every folder has and none removes.
     any_exception: ExceptionBreakpoint,
     /// The other CLR exception breakpoints, by type.
@@ -199,7 +225,7 @@ impl Breakpoints {
 
     /// How many breakpoints there are, on or off: what the window says.
     pub fn count(&self) -> usize {
-        self.files.values().map(Vec::len).sum::<usize>() + self.exceptions.len() + 1
+        self.files.values().map(Vec::len).sum::<usize>() + self.functions.len() + self.exceptions.len() + 1
     }
 
     pub fn any_exception(&self) -> &ExceptionBreakpoint {
@@ -208,6 +234,37 @@ impl Breakpoints {
 
     pub fn any_exception_mut(&mut self) -> &mut ExceptionBreakpoint {
         &mut self.any_exception
+    }
+
+    pub fn functions(&self) -> &[FunctionBreakpoint] {
+        &self.functions
+    }
+
+    pub fn function_mut(&mut self, index: usize) -> Option<&mut FunctionBreakpoint> {
+        self.functions.get_mut(index)
+    }
+
+    /// Adds a function breakpoint, as the dialog's Add does: a name to be typed, stopping where the method does.
+    pub fn add_function(&mut self) {
+        self.functions.push(FunctionBreakpoint::default());
+    }
+
+    pub fn remove_function(&mut self, index: usize) {
+        if index < self.functions.len() {
+            self.functions.remove(index);
+        }
+    }
+
+    /// Every function breakpoint that is on and names a method, as a session is told of them. Muted, there are none.
+    pub fn enabled_functions(&self) -> Vec<FunctionBreakpoint> {
+        if self.muted {
+            return Vec::new();
+        }
+        self.functions
+            .iter()
+            .filter(|breakpoint| breakpoint.enabled && !breakpoint.name.trim().is_empty())
+            .cloned()
+            .collect()
     }
 
     pub fn exceptions(&self) -> &[ExceptionBreakpoint] {
@@ -404,6 +461,38 @@ mod tests {
         breakpoints.remove_exception(0);
         assert!(breakpoints.exceptions().is_empty());
         let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn a_function_breakpoint_keeps_its_name_and_asks() {
+        let mut breakpoints = Breakpoints::default();
+        breakpoints.add_function();
+        assert_eq!(breakpoints.count(), 2, "a function breakpoint and Any exception");
+        assert!(breakpoints.enabled_functions().is_empty(), "an unnamed one is not sent");
+        let function = breakpoints.function_mut(0).expect("the one just added");
+        function.name = "Program.Double".into();
+        function.condition = "x > 0".into();
+        function.hit_count = "> 2".into();
+        function.log_message = "x is {x}".into();
+        let sent = breakpoints.enabled_functions();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].name, "Program.Double");
+        assert_eq!(sent[0].condition, "x > 0");
+
+        breakpoints.function_mut(0).unwrap().enabled = false;
+        assert!(breakpoints.enabled_functions().is_empty(), "a disabled one is not sent");
+        breakpoints.function_mut(0).unwrap().enabled = true;
+        breakpoints.set_muted(true);
+        assert!(breakpoints.enabled_functions().is_empty(), "Mute Breakpoints silences it too");
+        breakpoints.set_muted(false);
+
+        let json = serde_json::to_string(&breakpoints.for_store(Path::new("/work"))).unwrap();
+        let kept: Breakpoints = serde_json::from_str(&json).unwrap();
+        assert_eq!(kept.functions()[0].name, "Program.Double", "it is kept with the folder");
+
+        breakpoints.remove_function(0);
+        assert!(breakpoints.functions().is_empty());
+        assert_eq!(breakpoints.count(), 1);
     }
 }
 

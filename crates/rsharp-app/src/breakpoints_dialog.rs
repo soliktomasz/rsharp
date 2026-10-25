@@ -21,10 +21,12 @@ pub enum Ended {
 
 impl EventEmitter<Ended> for BreakpointsDialog {}
 
-/// What the form edits: a line's breakpoint, "Any exception", or one of the typed exception breakpoints.
+/// What the form edits: a line's breakpoint, one of the function breakpoints, "Any exception", or one of the typed
+/// exception breakpoints.
 #[derive(Clone, PartialEq)]
 enum Chosen {
     Line { path: PathBuf, line: usize },
+    Function(usize),
     AnyException,
     Exception(usize),
 }
@@ -43,6 +45,8 @@ pub struct BreakpointsDialog {
     chosen: Chosen,
     /// What the debugger made of each line's breakpoint when the dialog opened: whether it will be hit, and why not.
     verification: Vec<(PathBuf, usize, bool, Option<String>)>,
+    /// The function breakpoint's method name; the other kinds leave it empty.
+    name: Entity<TextField>,
     condition: Entity<TextField>,
     hit_count: Entity<TextField>,
     log_message: Entity<TextField>,
@@ -84,6 +88,7 @@ impl BreakpointsDialog {
             breakpoints,
             chosen,
             verification,
+            name: field("", cx),
             condition: field("", cx),
             hit_count: field("", cx),
             log_message: field("", cx),
@@ -92,7 +97,7 @@ impl BreakpointsDialog {
             focus: cx.focus_handle(),
             _fields: Vec::new(),
         };
-        for input in [&dialog.condition, &dialog.hit_count, &dialog.log_message, &dialog.types] {
+        for input in [&dialog.name, &dialog.condition, &dialog.hit_count, &dialog.log_message, &dialog.types] {
             dialog._fields.push(cx.subscribe(input, |dialog, _, _: &Changed, cx| dialog.write_back(cx)));
         }
         dialog.show(cx);
@@ -118,6 +123,19 @@ impl BreakpointsDialog {
     pub fn chosen(&self) -> String {
         match &self.chosen {
             Chosen::Line { path, line } => format!("{}:{}", file_name(path), line + 1),
+            Chosen::Function(index) => {
+                self.breakpoints
+                    .functions()
+                    .get(*index)
+                    .map(|function| {
+                        if function.name.trim().is_empty() {
+                            "Function breakpoint".into()
+                        } else {
+                            function.name.clone()
+                        }
+                    })
+                    .unwrap_or_else(|| "Function breakpoint".into())
+            }
             Chosen::AnyException => "Any exception".into(),
             Chosen::Exception(index) => self
                 .breakpoints
@@ -130,31 +148,50 @@ impl BreakpointsDialog {
 
     /// Fills the form from the chosen item without making that an edit.
     fn show(&mut self, cx: &mut Context<Self>) {
-        let (condition, hit, log, types) = match &self.chosen {
+        let (name, condition, hit, log, types) = match &self.chosen {
             Chosen::Line { path, line } => match self.breakpoints.breakpoint(path, *line) {
                 Some(breakpoint) => (
+                    String::new(),
                     breakpoint.condition.clone(),
                     breakpoint.hit_count.clone(),
                     breakpoint.log_message.clone(),
                     String::new(),
                 ),
-                None => (String::new(), String::new(), String::new(), String::new()),
+                None => Default::default(),
+            },
+            Chosen::Function(index) => match self.breakpoints.functions().get(*index) {
+                Some(function) => (
+                    function.name.clone(),
+                    function.condition.clone(),
+                    function.hit_count.clone(),
+                    function.log_message.clone(),
+                    String::new(),
+                ),
+                None => Default::default(),
             },
             Chosen::AnyException => {
                 let exception = self.breakpoints.any_exception();
-                (exception.condition.clone(), exception.hit_count.clone(), exception.log_message.clone(), String::new())
+                (
+                    String::new(),
+                    exception.condition.clone(),
+                    exception.hit_count.clone(),
+                    exception.log_message.clone(),
+                    String::new(),
+                )
             }
             Chosen::Exception(index) => match self.breakpoints.exceptions().get(*index) {
                 Some(exception) => (
+                    String::new(),
                     exception.condition.clone(),
                     exception.hit_count.clone(),
                     exception.log_message.clone(),
                     exception.types.join(", "),
                 ),
-                None => (String::new(), String::new(), String::new(), String::new()),
+                None => Default::default(),
             },
         };
         self.showing = true;
+        self.name.update(cx, |field, cx| field.set_text(&name, cx));
         self.condition.update(cx, |field, cx| field.set_text(&condition, cx));
         self.hit_count.update(cx, |field, cx| field.set_text(&hit, cx));
         self.log_message.update(cx, |field, cx| field.set_text(&log, cx));
@@ -167,6 +204,7 @@ impl BreakpointsDialog {
         if self.showing {
             return;
         }
+        let name = self.name.read(cx).text();
         let condition = self.condition.read(cx).text();
         let hit = self.hit_count.read(cx).text();
         let log = self.log_message.read(cx).text();
@@ -178,6 +216,14 @@ impl BreakpointsDialog {
                     breakpoint.hit_count = hit;
                     breakpoint.log_message = log;
                 });
+            }
+            Chosen::Function(index) => {
+                if let Some(function) = self.breakpoints.function_mut(index) {
+                    function.name = name;
+                    function.condition = condition;
+                    function.hit_count = hit;
+                    function.log_message = log;
+                }
             }
             Chosen::AnyException => {
                 let exception = self.breakpoints.any_exception_mut();
@@ -219,6 +265,11 @@ impl BreakpointsDialog {
                 let enabled = self.breakpoints.breakpoint(&path, line).is_none_or(|breakpoint| !breakpoint.enabled);
                 self.breakpoints.set_enabled(&path, line, enabled);
             }
+            Chosen::Function(index) => {
+                if let Some(function) = self.breakpoints.function_mut(index) {
+                    function.enabled = !function.enabled;
+                }
+            }
             Chosen::AnyException => {
                 let any = self.breakpoints.any_exception_mut();
                 any.enabled = !any.enabled;
@@ -236,7 +287,7 @@ impl BreakpointsDialog {
         let exception = match self.chosen {
             Chosen::AnyException => Some(self.breakpoints.any_exception_mut()),
             Chosen::Exception(index) => self.breakpoints.exceptions_mut().get_mut(index),
-            Chosen::Line { .. } => None,
+            Chosen::Line { .. } | Chosen::Function(_) => None,
         };
         if let Some(exception) = exception {
             match exception.scenarios.iter().position(|known| known == scenario) {
@@ -258,13 +309,14 @@ impl BreakpointsDialog {
                 .get(index)
                 .map(|exception| exception.scenarios.clone())
                 .unwrap_or_default(),
-            Chosen::Line { .. } => Vec::new(),
+            Chosen::Line { .. } | Chosen::Function(_) => Vec::new(),
         }
     }
 
     fn enabled(&self) -> bool {
         match &self.chosen {
             Chosen::Line { path, line } => self.breakpoints.breakpoint(path, *line).is_some_and(|b| b.enabled),
+            Chosen::Function(index) => self.breakpoints.functions().get(*index).is_some_and(|f| f.enabled),
             Chosen::AnyException => self.breakpoints.any_exception().enabled,
             Chosen::Exception(index) => self.breakpoints.exceptions().get(*index).is_some_and(|b| b.enabled),
         }
@@ -279,6 +331,10 @@ impl BreakpointsDialog {
                     .first()
                     .map_or(Chosen::AnyException, |breakpoint| Chosen::Line { path, line: breakpoint.line })
             }
+            Chosen::Function(index) => {
+                self.breakpoints.remove_function(index);
+                if index >= self.breakpoints.functions().len() { Chosen::AnyException } else { Chosen::Function(index) }
+            }
             Chosen::Exception(index) => {
                 self.breakpoints.remove_exception(index);
                 if index >= self.breakpoints.exceptions().len() {
@@ -290,6 +346,13 @@ impl BreakpointsDialog {
             Chosen::AnyException => Chosen::AnyException,
         };
         self.choose(chosen, cx);
+        self.changed(cx);
+    }
+
+    fn add_function(&mut self, cx: &mut Context<Self>) {
+        self.breakpoints.add_function();
+        let index = self.breakpoints.functions().len().saturating_sub(1);
+        self.choose(Chosen::Function(index), cx);
         self.changed(cx);
     }
 
@@ -335,6 +398,27 @@ impl BreakpointsDialog {
                         )),
                 );
             }
+        }
+        rows
+    }
+
+    fn function_rows(&self, cx: &mut Context<Self>) -> Vec<gpui::Stateful<gpui::Div>> {
+        let mut rows = Vec::new();
+        for (index, function) in self.breakpoints.functions().iter().enumerate() {
+            let chosen = Chosen::Function(index);
+            let name =
+                if function.name.trim().is_empty() { "Function breakpoint".to_string() } else { function.name.clone() };
+            let summary = summary(&function.condition, &function.hit_count, &function.log_message);
+            let checked = function.enabled;
+            rows.push(
+                row(name, checked, summary, self.chosen == chosen)
+                    .on_click(
+                        cx.listener(move |dialog, _: &ClickEvent, _, cx| dialog.choose(Chosen::Function(index), cx)),
+                    )
+                    .child(tick(("function-enabled", index), checked).on_click(cx.listener(
+                        move |dialog, _: &ClickEvent, _, cx| dialog.toggle_enabled(Chosen::Function(index), cx),
+                    ))),
+            );
         }
         rows
     }
@@ -482,9 +566,11 @@ fn scenario_summary(scenarios: &[String]) -> Option<SharedString> {
 impl Render for BreakpointsDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let line_rows = self.line_rows(cx);
+        let function_rows = self.function_rows(cx);
         let exception_rows = self.exception_rows(cx);
-        let is_line = matches!(self.chosen, Chosen::Line { .. });
+        let is_function = matches!(self.chosen, Chosen::Function(_));
         let is_any = self.chosen == Chosen::AnyException;
+        let is_exception = matches!(self.chosen, Chosen::Exception(_) | Chosen::AnyException);
         let chosen_name = self.chosen();
         let verification = match &self.chosen {
             Chosen::Line { path, line } => self.verification(path, *line),
@@ -546,6 +632,8 @@ impl Render for BreakpointsDialog {
                             .border_color(theme::popup_border())
                             .child(section("Line breakpoints"))
                             .children(line_rows)
+                            .child(section("Function breakpoints"))
+                            .children(function_rows)
                             .child(section("Exception breakpoints"))
                             .children(exception_rows),
                     )
@@ -568,11 +656,15 @@ impl Render for BreakpointsDialog {
                                 },
                             )))
                             .children(
-                                (!is_line && !is_any).then(|| {
+                                is_function
+                                    .then(|| labelled("Function name", boxed(&self.name, 380., "Function name", cx))),
+                            )
+                            .children(
+                                matches!(self.chosen, Chosen::Exception(_)).then(|| {
                                     labelled("Exception types", boxed(&self.types, 380., "Exception types", cx))
                                 }),
                             )
-                            .when(!is_line, |d| {
+                            .when(is_exception, |d| {
                                 d.child(
                                     div()
                                         .text_color(theme::text_secondary())
@@ -622,6 +714,10 @@ impl Render for BreakpointsDialog {
                     .px(px(16.))
                     .border_t_1()
                     .border_color(theme::frame())
+                    .child(
+                        button("Add Function Breakpoint", false, true)
+                            .on_click(cx.listener(|dialog, _: &ClickEvent, _, cx| dialog.add_function(cx))),
+                    )
                     .child(
                         button("Add Exception Breakpoint", false, true)
                             .on_click(cx.listener(|dialog, _: &ClickEvent, _, cx| dialog.add_exception(cx))),

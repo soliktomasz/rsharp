@@ -62,6 +62,8 @@ fn a_breakpoint_stops_the_program_and_its_values_are_read() {
             source.clone(),
             vec![SourceBreakpoint { line: 7, hit_condition: Some("1".into()), ..SourceBreakpoint::default() }],
         )],
+        // Nothing by name: the breakpoint stops it.
+        Vec::new(),
         // Every exception nothing handles stops the program, as Rider's Any exception does.
         vec![ExceptionFilter { scenarios: vec!["unhandled".into()], ..ExceptionFilter::default() }],
         None,

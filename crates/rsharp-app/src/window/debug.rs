@@ -509,6 +509,7 @@ impl MainWindow {
             stop_at_entry: false,
         };
         let breakpoints = self.session_breakpoints(&folder);
+        let functions = self.session_function_breakpoints();
         let exceptions = self.enabled_exceptions();
         let symbols = store(cx).root().join("cache").join("symbols");
         let (sender, receiver) = mpsc::unbounded();
@@ -533,6 +534,7 @@ impl MainWindow {
                 Start::Launch(launch),
                 &symbols,
                 breakpoints,
+                functions,
                 exceptions,
                 terminal,
                 move |said| {
@@ -570,6 +572,42 @@ impl MainWindow {
                 (path, lines)
             })
             .collect()
+    }
+
+    /// The folder's function breakpoints as a session is told of them: only the named ones that are on.
+    fn session_function_breakpoints(&self) -> Vec<rsharp_dap::FunctionBreakpoint> {
+        self.debug
+            .breakpoints
+            .enabled_functions()
+            .into_iter()
+            .map(|breakpoint| rsharp_dap::FunctionBreakpoint {
+                name: breakpoint.name.trim().to_string(),
+                condition: filled(&breakpoint.condition),
+                hit_condition: filled(&breakpoint.hit_count),
+                log_message: filled(&breakpoint.log_message),
+            })
+            .collect()
+    }
+
+    /// Sends the function breakpoints to the session that runs, as the dialog's changes ask.
+    fn push_function_breakpoints(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.debug.session.clone() else { return };
+        let functions = self.session_function_breakpoints();
+        let generation = self.debug.generation;
+        let handle = self.handle;
+        cx.spawn(async move |_, cx| {
+            let answer =
+                cx.background_executor().spawn(async move { session.set_function_breakpoints(&functions) }).await;
+            let _ = handle.update(cx, |m, _, cx| {
+                if m.debug.generation != generation {
+                    return;
+                }
+                if let Err(why) = answer {
+                    m.fail_debug(&why, cx);
+                }
+            });
+        })
+        .detach();
     }
 
     /// Drains a session's events into the window until it ends, each event applied only while its generation stands.
@@ -639,6 +677,7 @@ impl MainWindow {
             self.save_state(cx);
         }
         let breakpoints = self.session_breakpoints(&folder);
+        let functions = self.session_function_breakpoints();
         let exceptions = self.enabled_exceptions();
         let symbols = store(cx).root().join("cache").join("symbols");
         let id = process.id;
@@ -650,6 +689,7 @@ impl MainWindow {
                 Start::Attach { process_id: id },
                 &symbols,
                 breakpoints,
+                functions,
                 exceptions,
                 None,
                 move |said| {
@@ -1245,6 +1285,7 @@ impl MainWindow {
         for path in paths {
             self.push_breakpoints(path, cx);
         }
+        self.push_function_breakpoints(cx);
         self.push_exceptions(cx);
     }
 

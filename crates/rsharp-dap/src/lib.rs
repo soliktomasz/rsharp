@@ -94,6 +94,16 @@ pub struct SourceBreakpoint {
     pub log_message: Option<String>,
 }
 
+/// Rider's function breakpoint as the debugger is told of it: the method's name and what a hit asks.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FunctionBreakpoint {
+    /// `Namespace.Type.Method`, with `*` at its end for a suffix that matches any.
+    pub name: String,
+    pub condition: Option<String>,
+    pub hit_condition: Option<String>,
+    pub log_message: Option<String>,
+}
+
 /// A CLR exception breakpoint as the debugger is told of it: the types it is about (none for every exception), the
 /// cases that stop the program, and what a hit asks besides.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -166,6 +176,7 @@ impl Session {
         start: Start,
         symbols: &Path,
         breakpoints: Vec<(PathBuf, Vec<SourceBreakpoint>)>,
+        functions: Vec<FunctionBreakpoint>,
         exceptions: Vec<ExceptionFilter>,
         terminal: Option<TerminalRun>,
         events: impl Fn(Event) + Send + Sync + 'static,
@@ -253,7 +264,7 @@ impl Session {
                 Start::Attach { process_id } => format!("process {process_id}"),
             },
         };
-        match session.begin(start, breakpoints, exceptions, terminal.is_some(), &initialized) {
+        match session.begin(start, breakpoints, functions, exceptions, terminal.is_some(), &initialized) {
             Ok(capabilities) => {
                 session.capabilities = capabilities;
                 Ok(session)
@@ -271,6 +282,7 @@ impl Session {
         &self,
         start: Start,
         breakpoints: Vec<(PathBuf, Vec<SourceBreakpoint>)>,
+        functions: Vec<FunctionBreakpoint>,
         exceptions: Vec<ExceptionFilter>,
         runs_in_terminal: bool,
         initialized: &Arc<(Mutex<bool>, Condvar)>,
@@ -325,6 +337,7 @@ impl Session {
             verified.push((path, answer));
         }
         *self.verified.lock().unwrap() = verified;
+        self.set_function_breakpoints(&functions)?;
         self.set_exceptions(&exceptions)?;
         self.connection.request("configurationDone", json!({}), CONFIGURED)?;
         Ok(capabilities)
@@ -338,6 +351,30 @@ impl Session {
     }
 
     /// Sends a file's breakpoints, replacing what the debugger had there; its answer says what it made of each.
+    /// Stops at methods by name, wherever they are: Rider's function breakpoints.
+    pub fn set_function_breakpoints(&self, breakpoints: &[FunctionBreakpoint]) -> Result<Vec<Breakpoint>, String> {
+        let list: Vec<Value> = breakpoints
+            .iter()
+            .map(|breakpoint| {
+                let mut sent = json!({ "name": breakpoint.name });
+                if let Some(condition) = &breakpoint.condition {
+                    sent["condition"] = json!(condition);
+                }
+                if let Some(hit_condition) = &breakpoint.hit_condition {
+                    sent["hitCondition"] = json!(hit_condition);
+                }
+                if let Some(log_message) = &breakpoint.log_message {
+                    sent["logMessage"] = json!(log_message);
+                }
+                sent
+            })
+            .collect();
+        let body = self.connection.request("setFunctionBreakpoints", json!({ "breakpoints": list }), REQUEST)?;
+        let answered: protocol::Breakpoints = serde_json::from_value(body)
+            .map_err(|error| format!("The debugger's function breakpoints did not read: {error}"))?;
+        Ok(answered.breakpoints)
+    }
+
     pub fn set_breakpoints(&self, path: &Path, breakpoints: &[SourceBreakpoint]) -> Result<Vec<Breakpoint>, String> {
         let list: Vec<Value> = breakpoints
             .iter()

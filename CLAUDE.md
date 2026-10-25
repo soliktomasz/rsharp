@@ -143,8 +143,8 @@ terminal and takes focus for a moment.
   or attach, the adapter's `initialized`, each file's breakpoints, the exception filters, then `configurationDone`,
   whose answer waits for the program's runtime. Threads, a thread's frames, a frame's scopes and values, an
   expression (Evaluate and a watch), continue/next/stepIn/stepOut/pause, and disconnect/terminate are typed
-  requests, as are Set Next Statement's `gotoTargets` and `goto`, Set Value's `setExpression` and Smart Step Into's
-  `stepInTargets` (a step into one call of a statement). What the adapter says unasked (stops, output, exit,
+  requests, as are Set Next Statement's `gotoTargets` and `goto`, Set Value's `setExpression`, Smart Step Into's
+  `stepInTargets` (a step into one call of a statement) and the function breakpoints' `setFunctionBreakpoints`. What the adapter says unasked (stops, output, exit,
   termination) comes as `Event`s on its own threads; its own request, a program started in the client's terminal,
   is answered when the app gives it a terminal runner (announced as `supportsRunInTerminalRequest`) and refused
   otherwise, so the adapter goes on rather than waiting.
@@ -177,8 +177,8 @@ terminal and takes focus for a moment.
   `terminal/view.rs` its gpui element: only the visible grid is shaped and painted, with selection, mouse
   reporting, scrolling, the context menu and links (URLs through the console's handler, stack frames, and
   plain paths with Cmd/Ctrl resolved against the session's folder). `terminal.rs` is the module root.
-  `window/debug.rs` owns debugging: the folder's breakpoints (loaded with it, set from the gutter or F9 and sent
-  to a running session at once), the plan a Debug resolves and the build before it, the `rsharp-dap` session on
+  `window/debug.rs` owns debugging: the folder's breakpoints (line, function and exception, loaded with it, set
+  from the gutter or F9 or the Breakpoints dialog and sent to a running session at once), the plan a Debug resolves and the build before it, the `rsharp-dap` session on
   the background executor with a generation that drops a stopped session's replies, the stopped thread's frames
   and the chosen frame's values, watches answered as they are typed, and Stop/leave ending the session. A stop
   opens its file with the statement marked. `debug_view.rs` is Rider's Debug window: its step and run keys, Frames,
@@ -291,9 +291,10 @@ Set Next Statement moves the thread back to the caret's line, and a local set wi
 print its new total, a program's Main and worker threads listed before the other is chosen and its frames read, and
 Smart Step Into choosing Sum of a statement's two calls and stopping in its body, a configuration with Use external
 console starting its program in a Terminal tab whose text carries what it wrote, a step over showing what Double(21)
-returned, Evaluate Expression showing a paused List's members, a step over an await stopping after it, and a stop
-setting its frame's values in at the end of its line (cleared when the program runs on); both skip, saying why, when
-dotnet or the adapter is not there.
+returned, Evaluate Expression showing a paused List's members, a step over an await stopping after it, a stop
+setting its frame's values in at the end of its line (cleared when the program runs on), and a function breakpoint
+added as Program.Double in the dialog stopping the program in that method; both skip, saying why, when dotnet or the
+adapter is not there.
 
 Git tests build real repositories and, when a remote is needed, a bare one beside them — never the person's and
 never a network service: `crates/rsharp-core/tests/git.rs` the repository alone (porcelain records, odd paths,

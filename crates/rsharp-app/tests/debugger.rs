@@ -878,3 +878,45 @@ fn a_stop_sets_the_frame_values_in_at_the_end_of_its_line() {
     });
     assert!(cleared.is_none(), "running on cleared the values: {cleared:?}");
 }
+
+#[test]
+fn a_function_breakpoint_stops_the_program_in_its_method() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-function-breakpoint", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(
+        &run.folder,
+        "App/Program.cs",
+        "using System;\n\nclass Program\n{\n    static int Double(int x)\n    {\n        return x * 2;\n    }\n\n    static void Main()\n    {\n        Console.WriteLine(Double(21));\n    }\n}\n",
+    );
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+
+    // Rider's Add Function Breakpoint, and its name typed in the form.
+    cx.simulate_keystrokes("cmd-shift-f8");
+    assert!(pump(cx, |cx| cx.debug_bounds("breakpoints dialog").is_some()), "Cmd+Shift+F8 did not open the dialog");
+    click(cx, "button: Add Function Breakpoint");
+    click(cx, "breakpoint field: Function name");
+    cx.simulate_input("Program.Double");
+    assert!(
+        pump(cx, |cx| cx.debug_bounds("breakpoint row: Program.Double").is_some()),
+        "the dialog lists the function breakpoint by its name"
+    );
+    click(cx, "button: Done");
+
+    cx.simulate_keystrokes("f5");
+    assert!(pump(cx, |cx| main.read_with(cx, |main, _| main.debug_phase() == Phase::Paused)));
+    let frame =
+        main.read_with(cx, |main, _| main.debug_frames().first().map(|frame| (frame.name.clone(), frame.path())));
+    let (name, path) = frame.clone().unwrap_or_default();
+    assert!(name.contains("Double"), "the program stopped in the method the breakpoint names: {frame:?}");
+    assert_eq!(path, Some(source), "and in its own file");
+    cx.simulate_keystrokes("shift-f5");
+}
