@@ -455,9 +455,13 @@ impl MainWindow {
                             if let Some(problem) = panel.problem(id) {
                                 return Some(Err(problem.to_string()));
                             }
-                            let Some(session) = panel.session(id) else {
+                            if !panel.has_tab(id) {
                                 // The person closed the program's tab, and its process with it: the run stops.
                                 return Some(Ok(None));
+                            }
+                            let Some(session) = panel.session(id) else {
+                                // The tab is there but its shell has not started yet.
+                                return None;
                             };
                             if cancelled.load(Ordering::Acquire) {
                                 session.stop();

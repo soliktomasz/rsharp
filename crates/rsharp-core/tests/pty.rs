@@ -9,8 +9,18 @@ fn a_pty_program_has_a_controlling_terminal_and_keeps_its_last_output_and_exit_c
         portable_pty::PtySize { rows: 31, cols: 93, pixel_width: 0, pixel_height: 0 },
     )
     .unwrap();
+    let mut reader = child.master.try_clone_reader().unwrap();
     let mut output = String::new();
-    child.master.try_clone_reader().unwrap().read_to_string(&mut output).unwrap();
+    let mut bytes = [0; 4096];
+    loop {
+        match reader.read(&mut bytes) {
+            Ok(0) => break,
+            Ok(count) => output.push_str(&String::from_utf8_lossy(&bytes[..count])),
+            // Linux reports a terminal whose program has ended as EIO rather than as end of file.
+            Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
+            Err(error) => panic!("reading the PTY failed: {error}"),
+        }
+    }
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;

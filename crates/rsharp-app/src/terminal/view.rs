@@ -20,7 +20,8 @@ pub struct TerminalView {
     dims: (usize, usize),
     selecting: bool,
     problem: Option<String>,
-    cache: HashMap<(String, u16, u32), ShapedLine>,
+    /// Shaped cells by their text, attributes, colour and font size: a size change makes new shapes.
+    cache: HashMap<(String, u16, u32, u32), ShapedLine>,
     marked: String,
     program: bool,
     context_menu: bool,
@@ -38,7 +39,10 @@ impl TerminalView {
                 let key = &event.keystroke;
                 let m = key.modifiers;
                 let mac = cfg!(target_os = "macos");
-                let copy = (mac && m.platform && !m.control && !m.alt) || (!mac && m.control && m.shift && !m.alt);
+                // A chord the IDE owns is the IDE's: on macOS Cmd is the platform key, and Shift together with it
+                // is Find Action, not this terminal's Select All.
+                let copy =
+                    (mac && m.platform && !m.control && !m.alt && !m.shift) || (!mac && m.control && m.shift && !m.alt);
                 if copy {
                     match key.key.as_str() {
                         "c" => v.copy(cx),
@@ -563,7 +567,7 @@ impl Element for GridElement {
                         | ((fg.g * 255.) as u32) << 16
                         | ((fg.b * 255.) as u32) << 8
                         | (fg.a * 255.) as u32;
-                    let key = (cell.text.clone(), cell.flags.bits(), color);
+                    let key = (cell.text.clone(), cell.flags.bits(), color, f32::from(font_size).to_bits());
                     let shaped = v.cache.entry(key).or_insert_with(|| {
                         let mut font =
                             gpui::Font { features: gpui::FontFeatures::disable_ligatures(), ..font(theme::CODE_FONT) };

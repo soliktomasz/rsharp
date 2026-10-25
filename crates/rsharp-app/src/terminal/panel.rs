@@ -179,6 +179,10 @@ impl TerminalPanel {
             }
         }
     }
+    /// Whether the panel still shows the tab: a session that has not started yet is not a closed tab.
+    pub fn has_tab(&self, id: usize) -> bool {
+        self.tabs.iter().any(|tab| tab.id == id)
+    }
     pub fn session(&self, id: usize) -> Option<Arc<Session>> {
         self.tabs.iter().find(|t| t.id == id)?.session.clone()
     }

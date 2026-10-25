@@ -68,6 +68,41 @@ fn ask_folder(main: &Entity<MainWindow>, cx: &mut VisualTestContext) -> String {
     said.unwrap_or_default()
 }
 
+/// Where a phrase starts on the terminal's screen, so a click lands on it however the line wrapped.
+fn cell_of(
+    panel: &Entity<rsharp_app::terminal::TerminalPanel>,
+    id: usize,
+    cx: &mut VisualTestContext,
+    phrase: &str,
+) -> (usize, usize) {
+    let cells: Vec<(usize, usize, String)> = panel.read_with(cx, |panel, _| {
+        panel
+            .session(id)
+            .map(|session| session.snapshot().cells.into_iter().map(|c| (c.row, c.col, c.text)).collect())
+            .unwrap_or_default()
+    });
+    let mut text = String::new();
+    let mut starts = Vec::new();
+    for (row, col, piece) in &cells {
+        starts.push((text.len(), *row, *col));
+        text.push_str(piece);
+    }
+    let found = text.find(phrase).unwrap_or_else(|| panic!("{phrase:?} is not on the terminal screen: {text:?}"));
+    let cell = starts.iter().find(|(start, ..)| *start == found).expect("a cell holds the phrase's start");
+    (cell.1, cell.2)
+}
+
+/// A click in the middle of a terminal cell, where that cell is.
+fn cell_click(
+    main: &Entity<MainWindow>,
+    cx: &mut VisualTestContext,
+    (row, col): (usize, usize),
+) -> gpui::Point<gpui::Pixels> {
+    let screen = cx.debug_bounds("terminal screen").expect("the terminal is on screen");
+    let cell = main.read_with(cx, |main, cx| main.terminal().read(cx).view().read(cx).cell());
+    screen.origin + point(cell.width * (col as f32 + 0.5), cell.height * (row as f32 + 0.5))
+}
+
 /// Something the panel draws, clicked where the debug selector says it is.
 fn click(cx: &mut VisualTestContext, selector: &'static str) {
     cx.run_until_parked();
@@ -143,6 +178,9 @@ fn an_agent_tab_takes_typed_input_and_tool_window_keys_still_reach_the_ide(cx: &
 
 #[gpui::test]
 fn shells_open_in_their_own_folder_and_a_closed_tab_takes_its_shell_with_it(cx: &mut TestAppContext) {
+    if cfg!(windows) {
+        return;
+    }
     let run = Run::new("terminal-folders", &[("src/a.cs", "class A { }\n")]);
     let (main, cx) = open_terminal(&run, cx);
     assert_eq!(tabs(&main, cx), 1, "opening the Terminal should start one shell");
@@ -255,8 +293,7 @@ fn ten_megabytes_of_output_leave_the_editor_typing_and_the_scrollback_bounded(cx
     let folder = run.folder.clone();
     let id = main.update_in(cx, |m, _, cx| {
         m.terminal().update(cx, |panel, cx| {
-            let command = rsharp_terminal::CommandBuilder::new("/bin/sh");
-            let mut command = command;
+            let mut command = rsharp_terminal::CommandBuilder::new("/bin/sh");
             command.args([
                 "-c",
                 "dd if=/dev/zero bs=1048576 count=10 2>/dev/null | tr '\\000' x; printf '\\r\\nflood done\\r\\n'",
@@ -317,6 +354,47 @@ fn the_context_menus_copy_takes_the_selection_it_was_opened_over(cx: &mut TestAp
 }
 
 #[gpui::test]
+fn a_shifted_cmd_chord_is_the_ides_and_leaves_the_terminals_selection_alone(cx: &mut TestAppContext) {
+    // On macOS Cmd is the IDE's; with Shift too it is Find Action, not this terminal's Select All. Elsewhere
+    // Ctrl+Shift+A *is* Select All, so there is nothing to tell apart.
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    let run = Run::new("terminal-chord", &[("file.cs", "class C { }\n")]);
+    let (main, cx) = open_terminal(&run, cx);
+    let id = main.update_in(cx, |m, w, cx| {
+        m.run_agent(vec!["/bin/sh".into(), "-c".into(), "printf 'alpha\r\nbeta\r\n'; sleep 30".into()], w, cx)
+    });
+    let panel = main.read_with(cx, |m, _| m.terminal().clone());
+    wait_for(cx, "the program's two lines", |cx| {
+        panel.read_with(cx, |p, _| p.session(id).is_some_and(|s| s.text().contains("beta")))
+    });
+    // A selection of one word only, so a Select All would show.
+    let start = cell_of(&panel, id, cx, "alpha");
+    let end = cell_of(&panel, id, cx, "beta");
+    let from = cell_click(&main, cx, start);
+    let to = cell_click(&main, cx, end);
+    cx.simulate_mouse_down(from, gpui::MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(to, Some(gpui::MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(to, gpui::MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+
+    let selection = |cx: &mut VisualTestContext| {
+        panel.read_with(cx, |p, _| p.session(id).and_then(|s| s.screen.lock().unwrap().selected_text()))
+    };
+    let dragged = selection(cx).expect("dragging over the text selected nothing");
+    assert!(!dragged.contains("beta"), "the drag should not have reached the second line: {dragged:?}");
+
+    cx.simulate_keystrokes("cmd-shift-a");
+    cx.run_until_parked();
+    assert_eq!(
+        selection(cx).as_deref(),
+        Some(dragged.as_str()),
+        "Cmd+Shift+A selected the whole screen instead of staying with the IDE"
+    );
+}
+
+#[gpui::test]
 fn a_url_opens_the_browser_and_a_stack_frames_place_opens_the_file(cx: &mut TestAppContext) {
     if cfg!(windows) {
         return;
@@ -338,31 +416,10 @@ fn a_url_opens_the_browser_and_a_stack_frames_place_opens_the_file(cx: &mut Test
         panel.read_with(cx, |p, _| p.session(id).is_some_and(|s| s.text().contains(":line 4")))
     });
 
-    let screen = cx.debug_bounds("terminal screen").expect("the terminal is on screen");
-    let cell = main.read_with(cx, |m, cx| m.terminal().read(cx).view().read(cx).cell());
-    let in_cell = |(row, col): (usize, usize)| {
-        screen.origin + point(cell.width * (col as f32 + 0.5), cell.height * (row as f32 + 0.5))
-    };
-    // Where a phrase starts on screen, so the click lands on it however the line wrapped.
-    let at = |cx: &mut VisualTestContext, phrase: &str| {
-        let cells: Vec<(usize, usize, String)> = panel.read_with(cx, |p, _| {
-            p.session(id)
-                .map(|s| s.snapshot().cells.into_iter().map(|c| (c.row, c.col, c.text)).collect())
-                .unwrap_or_default()
-        });
-        let mut text = String::new();
-        let mut starts = Vec::new();
-        for (row, col, piece) in &cells {
-            starts.push((text.len(), *row, *col));
-            text.push_str(piece);
-        }
-        let found = text.find(phrase).unwrap_or_else(|| panic!("{phrase:?} is not on the terminal screen: {text:?}"));
-        let cell = starts.iter().find(|(start, ..)| *start == found).expect("a cell holds the phrase's start");
-        (cell.1, cell.2)
-    };
-
-    let target = at(cx, "http://localhost:5000/swagger");
-    cx.simulate_click(in_cell(target), Modifiers::default());
+    let cell = cell_of(&panel, id, cx, "http://localhost:5000/swagger");
+    let at = cell_click(&main, cx, cell);
+    cx.simulate_click(at, Modifiers::default());
+    cx.run_until_parked();
     cx.run_until_parked();
     assert_eq!(
         opened.lock().unwrap().as_slice(),
@@ -370,8 +427,10 @@ fn a_url_opens_the_browser_and_a_stack_frames_place_opens_the_file(cx: &mut Test
         "clicking the URL did not open the browser"
     );
 
-    let target = at(cx, "My App/Program.cs");
-    cx.simulate_click(in_cell(target), Modifiers::default());
+    let cell = cell_of(&panel, id, cx, "My App/Program.cs");
+    let at = cell_click(&main, cx, cell);
+    cx.simulate_click(at, Modifiers::default());
+    cx.run_until_parked();
     cx.run_until_parked();
     let (name, line) = main.read_with(cx, |m, cx| {
         let editor = m.editor().expect("the stack frame's place opened no file").read(cx);

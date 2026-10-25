@@ -131,15 +131,25 @@ fn main() {
                                         if let Some(problem) = panel.problem(id) {
                                             return Some(Err(problem.to_string()));
                                         }
+                                        // The tab going away ends the step: nothing is left to wait for.
+                                        if !panel.has_tab(id) {
+                                            return Some(Err("the Agent tab was closed".into()));
+                                        }
+                                        // A tab whose program has not started yet is not a finished step.
                                         panel.session(id).and_then(|s| s.exit_code()).map(Ok)
                                     })
-                                    .unwrap_or(Some(Err("Agent window closed".into())));
+                                    .unwrap_or(Some(Err("the window closed".into())));
                                 match outcome {
                                     Some(Ok(0)) => break,
-                                    Some(result) => {
-                                        eprintln!("rsharp: Agent failed: {result:?}");
-                                        let _ = cx.update(|cx| cx.quit());
-                                        std::process::exit(2);
+                                    // The Agent tab keeps its output and its exit status, so a program that
+                                    // failed is said here rather than taking the window down with it.
+                                    Some(Ok(code)) => {
+                                        log::error!("rsharp: Agent exited with code {code}");
+                                        break;
+                                    }
+                                    Some(Err(why)) => {
+                                        log::error!("rsharp: Agent failed: {why}");
+                                        break;
                                     }
                                     None => {}
                                 }

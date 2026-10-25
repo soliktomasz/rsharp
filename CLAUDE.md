@@ -30,8 +30,8 @@ tools/bench.sh             # the release build on 1, 3 and 10 projects: start, l
 `--key` and `--type` are steps through the window's real input once it has opened, in order, each waiting for
 what the one before opened, and all of them for Roslyn to load the projects (at most a minute): `--key cmd-shift-a
 --type clo` shows Find Action with "clo" typed. `--agent CMD` runs an explicitly named program in a Terminal tab
-and waits for it to end well; it is the only way an agent runs. A malformed key or command is
-fatal, as every malformed flag is.
+and waits for it to end, logging what it made of a failure while the tab keeps its output and exit status; it is
+the only way an agent runs. A malformed key or command is fatal, as every malformed flag is.
 
 `just` isn't required: each recipe is one cargo command. A Debug build optimises dependencies (gpui and
 tree-sitter are slow unoptimised). gpui compiles its Metal shaders at start (`runtime_shaders`), so no Metal

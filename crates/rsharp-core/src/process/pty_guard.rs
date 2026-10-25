@@ -52,7 +52,10 @@ fn main() {
     }
     // Let a shell waiting for a job reap it before taking away the controlling terminal.
     std::thread::sleep(std::time::Duration::from_millis(20));
-    unsafe {
-        kill(sid, 9);
+    // The leader may have ended, giving its pid back: only a session the kernel still names that way is ours.
+    if unsafe { getsid(sid) } == sid {
+        unsafe {
+            kill(sid, 9);
+        }
     }
 }

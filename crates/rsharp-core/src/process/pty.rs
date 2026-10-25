@@ -46,12 +46,19 @@ impl PtyChild {
     pub fn kill(&mut self) {
         // Let the watchdog end every group in the session before reaping its leader.
         drop(self.lifeline.take());
+        // A child already reaped has given its pid back, which another program may hold by now: signalling then
+        // would end someone else's process.
+        let ended = matches!(self.child.try_wait(), Ok(Some(_)));
         #[cfg(unix)]
-        unsafe {
-            libc::kill(self.pid as i32, libc::SIGKILL);
+        if !ended {
+            unsafe {
+                libc::kill(self.pid as i32, libc::SIGKILL);
+            }
         }
         #[cfg(windows)]
-        let _ = self.child.kill();
+        if !ended {
+            let _ = self.child.kill();
+        }
         let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while matches!(self.child.try_wait(), Ok(None)) && std::time::Instant::now() < until {
             std::thread::sleep(std::time::Duration::from_millis(5));
