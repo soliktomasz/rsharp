@@ -43,6 +43,7 @@ pub enum Tool {
     NuGet,
     Build,
     Run,
+    Debug,
     UnitTests,
     Terminal,
     Commit,
@@ -50,13 +51,14 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 10] = [
+    pub const ALL: [Tool; 11] = [
         Tool::Solution,
         Tool::Problems,
         Tool::Find,
         Tool::NuGet,
         Tool::Build,
         Tool::Run,
+        Tool::Debug,
         Tool::UnitTests,
         Tool::Terminal,
         Tool::Commit,
@@ -71,6 +73,7 @@ impl Tool {
             Tool::NuGet => "NuGet",
             Tool::Build => "Build",
             Tool::Run => "Run",
+            Tool::Debug => "Debug",
             Tool::UnitTests => "Unit Tests",
             Tool::Terminal => "Terminal",
             Tool::Commit => "Commit",
@@ -86,6 +89,7 @@ impl Tool {
             Tool::NuGet => "package",
             Tool::Build => "tw-build",
             Tool::Run => "tw-run",
+            Tool::Debug => "tw-debug",
             Tool::UnitTests => "check",
             Tool::Terminal => "tw-terminal",
             Tool::Commit => "check",
@@ -102,6 +106,7 @@ impl Tool {
             Tool::NuGet => Place::BottomLeft,
             Tool::Build => Place::BottomLeft,
             Tool::Run => Place::BottomLeft,
+            Tool::Debug => Place::BottomLeft,
             Tool::UnitTests => Place::BottomLeft,
             Tool::Terminal => Place::BottomLeft,
             Tool::Commit => Place::LeftTop,

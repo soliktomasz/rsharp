@@ -136,6 +136,15 @@ terminal and takes focus for a moment.
   `hold` keeps generating design-time builds away from an explicit build until it ends), a
   build's problem passed on as the project's error. Without dotnet or the submodule at build time it warns and runs
   the person's `roslyn-language-server` tool, which opens the solution (`solution/open`) or finds the projects.
+- `crates/rsharp-dap`: the Debug Adapter Protocol client and Passenger's debug adapter it runs. `build.rs`
+  publishes Passenger's `Passenger.DebugAdapter` from the same submodule into `target/<profile>/sidecars/debugger`
+  (its engine, ICorDebug behind DAP, with ILSpy's decompiler). `Session` starts it through `process::spawn` — so it
+  and the program under it end with the IDE — and opens the conversation in the protocol's order: initialize, launch
+  or attach, the adapter's `initialized`, each file's breakpoints, the exception filters, then `configurationDone`,
+  whose answer waits for the program's runtime. Threads, a thread's frames, a frame's scopes and values, an
+  expression (Evaluate and a watch), continue/next/stepIn/stepOut/pause, and disconnect/terminate are typed
+  requests; what the adapter says unasked (stops, output, exit, termination) comes as `Event`s on its own threads,
+  and a request the client does not offer — a program in the terminal — is refused rather than left waiting.
 - `crates/rsharp-mcp`: no UI. RSharp as an MCP server (`rsharp --mcp [FOLDER]`, JSON-RPC a line at a time on
   standard input and output), Roslyn on the folder behind its tools: `workspace`, `diagnostics` (a file's, or the
   solution's with solution-wide analysis), `find_symbol`, `outline`, `usages`, `rename` (a type's file renamed with it)
@@ -165,6 +174,13 @@ terminal and takes focus for a moment.
   `terminal/view.rs` its gpui element: only the visible grid is shaped and painted, with selection, mouse
   reporting, scrolling, the context menu and links (URLs through the console's handler, stack frames, and
   plain paths with Cmd/Ctrl resolved against the session's folder). `terminal.rs` is the module root.
+  `window/debug.rs` owns debugging: the folder's breakpoints (loaded with it, set from the gutter or F9 and sent
+  to a running session at once), the plan a Debug resolves and the build before it, the `rsharp-dap` session on
+  the background executor with a generation that drops a stopped session's replies, the stopped thread's frames
+  and the chosen frame's values, watches answered as they are typed, and Stop/leave ending the session. A stop
+  opens its file with the statement marked. `debug_view.rs` is Rider's Debug window: its step and run keys, Frames,
+  Variables (members opened a level at a time), Watches and the debug console. The editor's gutter shows a
+  breakpoint dot per line and toggles one on a click in its column, and the buffer carries the stopped line's band.
   `run_dialog.rs` is Rider's Run/Debug
   Configurations dialog over the window: Add, Copy and Remove of the folder's own, the chosen one's fields, OK,
   Cancel and Apply, a generated one changing only by copying it.
@@ -261,6 +277,11 @@ Tests say what a person would see or get, and their failure message names the co
 editing session (`rsharp-text/tests/editing_session.rs`) checks 40,000 keys, undo and redo against a plain
 string: keep it passing rather than narrowing it. The Roslyn test runs the real server on a fresh project and
 skips, saying why, when the tool is not installed.
+
+Debug tests use real dotnet programs: `crates/rsharp-dap/tests/session.rs` stops one at a breakpoint through the
+client alone (frames, locals, evaluate, a step, its output) and `crates/rsharp-app/tests/debugger.rs` the same
+through the window (F9, F5, the Debug window's buttons and lists, the marked line, resume to the end); both skip,
+saying why, when dotnet or the adapter is not there.
 
 Git tests build real repositories and, when a remote is needed, a bare one beside them — never the person's and
 never a network service: `crates/rsharp-core/tests/git.rs` the repository alone (porcelain records, odd paths,

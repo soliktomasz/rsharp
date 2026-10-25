@@ -56,6 +56,10 @@ pub struct Buffer {
     pub tree_version: u64,
     pub git_base: Option<Arc<str>>,
     pub git_hunks: Arc<Vec<rsharp_text::DiffHunk>>,
+    /// The lines with a breakpoint, from 0, as the folder's breakpoints have them.
+    pub breakpoints: Vec<usize>,
+    /// The line the debugger is stopped at, if it is stopped in this file.
+    pub execution_line: Option<usize>,
     git_comparing: Option<Task<()>>,
     is_csharp: bool,
     parsing: Option<Task<()>>,
@@ -206,6 +210,8 @@ impl Buffer {
             tree_version: u64::MAX,
             git_base: None,
             git_hunks: Arc::new(Vec::new()),
+            breakpoints: Vec::new(),
+            execution_line: None,
             git_comparing: None,
             is_csharp,
             parsing: None,
@@ -321,6 +327,22 @@ impl Buffer {
         self.inspect(Duration::from_millis(500), cx);
         cx.emit(BufferEvent::Edited { changes, by });
         cx.notify();
+    }
+
+    /// A file's breakpoints as the folder has them: the gutter shows a dot at each.
+    pub fn set_breakpoints(&mut self, lines: Vec<usize>, cx: &mut Context<Self>) {
+        if self.breakpoints != lines {
+            self.breakpoints = lines;
+            cx.notify();
+        }
+    }
+
+    /// The line the program is stopped at here, or none.
+    pub fn set_execution_line(&mut self, line: Option<usize>, cx: &mut Context<Self>) {
+        if self.execution_line != line {
+            self.execution_line = line;
+            cx.notify();
+        }
     }
 
     pub fn set_git_base(&mut self, baseline: Option<String>, cx: &mut Context<Self>) {

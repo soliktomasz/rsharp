@@ -5,6 +5,7 @@ pub mod assets;
 pub mod bench;
 pub mod buffer;
 pub mod console;
+pub mod debug_view;
 pub mod dock;
 pub mod editor;
 pub mod editor_area;

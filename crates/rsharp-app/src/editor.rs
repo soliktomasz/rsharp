@@ -202,6 +202,13 @@ pub struct ConsoleLink(pub ConsoleTarget);
 
 impl gpui::EventEmitter<ConsoleLink> for CodeEditor {}
 
+/// A click in the gutter's breakpoint column, on a line from 0: set one there or clear the one there.
+pub struct ToggleBreakpoint {
+    pub line: usize,
+}
+
+impl gpui::EventEmitter<ToggleBreakpoint> for CodeEditor {}
+
 /// An edit refused because the file is read-only: the window asks to clear that.
 pub struct ReadOnlyEdit;
 
@@ -839,6 +846,21 @@ impl CodeEditor {
             self.toggle_fold(fold, cx);
             return;
         }
+        // Rider's gutter: a click in the breakpoint column sets or clears one on its line.
+        if self.console.is_none()
+            && let Some(layout) = &self.layout
+            && layout.viewport.contains(&event.position)
+            && event.position.x < layout.viewport.origin.x + px(20.)
+        {
+            let rows = self.rows.len(&self.text);
+            let y = event.position.y - layout.viewport.origin.y + self.scroll_y;
+            let row = (f32::from(y) / f32::from(self.line_height)).floor().max(0.) as usize;
+            let line = self.rows.row(&self.text, row.min(rows.saturating_sub(1))).line;
+            self.selecting = false;
+            cx.emit(ToggleBreakpoint { line });
+            cx.notify();
+            return;
+        }
         let offset = self.offset_for_point(event.position);
         let m = event.modifiers;
         if let Some(console) = &mut self.console {
@@ -1406,6 +1428,9 @@ struct Prepainted {
     /// The bracket by the caret and its pair, in a tree that is current.
     braces: Vec<Range<usize>>,
     show_whitespace: bool,
+    /// The lines with a breakpoint, from 0, and the line the debugger is stopped at.
+    breakpoints: Vec<usize>,
+    execution_line: Option<usize>,
 }
 
 impl IntoElement for EditorElement {
@@ -1503,6 +1528,8 @@ impl Element for EditorElement {
             let byte_range = shown.first().map_or(0, |r| r.start)..shown.last().map_or(0, |r| r.end);
             let buffer = editor.buffer.clone();
             let buffer = buffer.read(cx);
+            let breakpoints = buffer.breakpoints.clone();
+            let execution_line = buffer.execution_line;
             let syntax: Vec<Highlight> =
                 buffer.tree.as_ref().map(|tree| highlights(tree, text, byte_range.clone())).unwrap_or_default();
             // Roslyn's colours win where it named a word; the syntax's fill the rest.
@@ -1593,6 +1620,8 @@ impl Element for EditorElement {
                 placeholder,
                 braces,
                 show_whitespace: settings.show_whitespace,
+                breakpoints,
+                execution_line,
             }
         })
     }
@@ -1643,6 +1672,12 @@ impl Element for EditorElement {
                 let span = state.rows[i];
                 let (start, end) = (span.start, span.end);
                 let top = top_of(row);
+                if span.first && state.execution_line == Some(span.line) {
+                    window.paint_quad(fill(
+                        Bounds::new(point(bounds.origin.x, top), size(bounds.size.width, line_height)),
+                        theme::editor::execution_point(),
+                    ));
+                }
                 let left = state.text_origin.x + state.char_width * span.indent as f32;
                 let band = |window: &mut Window, x0: Pixels, x1: Pixels, colour: gpui::Rgba| {
                     window.paint_quad(fill(
@@ -1729,6 +1764,13 @@ impl Element for EditorElement {
                         git_changes
                             .push((Bounds::new(point(bounds.origin.x, top), size(px(10.), line_height)), hunk.clone()));
                     }
+                }
+                if span.first && state.breakpoints.contains(&span.line) {
+                    let dot = Bounds::new(
+                        point(bounds.origin.x + px(7.), top + (line_height - px(10.)) / 2.),
+                        size(px(10.), px(10.)),
+                    );
+                    window.paint_quad(fill(dot, theme::editor::breakpoint()).corner_radii(px(5.)));
                 }
                 if let Some(Some(number)) = state.line_numbers.get(i) {
                     let _ = number.paint(

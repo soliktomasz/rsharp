@@ -23,8 +23,9 @@ use crate::editor::{
 use crate::find_bar::{Find, FindNext, FindPrevious, Replace};
 use crate::keymap::{OpenSettings, Quit};
 use crate::window::{
-    ApplyHotReloadChanges, BuildSelected, BuildSolution, CleanSelected, CleanSolution, EditRunConfigurations,
-    RebuildSelected, RebuildSolution, RerunProgram, RunProgram, Stop, ToggleBuild, ToggleRun,
+    ApplyHotReloadChanges, BuildSelected, BuildSolution, CleanSelected, CleanSolution, DebugProgram,
+    EditRunConfigurations, PauseDebug, RebuildSelected, RebuildSolution, RerunProgram, ResumeDebug, RunProgram,
+    StepInto, StepOut, StepOver, Stop, StopDebug, ToggleBreakpoint, ToggleBuild, ToggleDebug, ToggleRun,
 };
 use crate::window::{Back, FindInFiles, Forward, GoToFile, GoToSymbol, GoToType, LastEditLocation, RecentFiles};
 use crate::window::{
@@ -78,11 +79,20 @@ pub static ALL: &[IdeAction] = &[
     ide!("Clean Selected Projects", "Build", ["clean project"], CleanSelected),
     ide!("Build", "View", ["build output", "console", "tool window"], ToggleBuild),
     ide!("Run", "Run", ["run program", "start", "execute"], RunProgram),
+    ide!("Debug", "Run", ["debug program", "start debugging", "f5"], DebugProgram),
+    ide!("Resume Program", "Run", ["continue", "resume", "f5"], ResumeDebug),
+    ide!("Pause Program", "Run", ["break all", "pause"], PauseDebug),
+    ide!("Step Over", "Run", ["next statement", "f10"], StepOver),
+    ide!("Step Into", "Run", ["step into", "f11"], StepInto),
+    ide!("Step Out", "Run", ["step out"], StepOut),
+    ide!("Stop Debugging", "Run", ["stop debugger", "stop program"], StopDebug),
+    ide!("Toggle Line Breakpoint", "Run", ["breakpoint", "f9"], ToggleBreakpoint),
     ide!("Rerun", "Run", ["run again", "restart"], RerunProgram),
     ide!("Edit Configurations…", "Run", ["run configurations", "edit configurations"], EditRunConfigurations),
     ide!("Apply Hot Reload Changes", "Run", ["hot reload", "apply changes", "dotnet watch"], ApplyHotReloadChanges),
     ide!("Stop", "Run", ["stop build", "cancel build", "stop program"], Stop),
     ide!("Run Window", "View", ["run output", "console", "tool window"], ToggleRun),
+    ide!("Debug Window", "View", ["frames", "variables", "debugger", "tool window"], ToggleDebug),
     ide!("Unit Tests", "View", ["unit tests window", "test tree", "tool window"], ToggleUnitTests),
     ide!("Terminal", "View", ["shell", "console", "tool window"], ToggleTerminal),
     ide!("Run All Tests", "Run", ["unit tests", "test solution"], RunAllTests),

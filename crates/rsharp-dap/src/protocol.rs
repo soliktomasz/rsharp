@@ -1,0 +1,140 @@
+//! The protocol's answers as RSharp reads them: a frame, a scope, a value, a breakpoint and what the adapter says it can
+//! do. What is sent is built where it is sent; this is the shape of what arrives.
+
+use serde::Deserialize;
+use std::path::PathBuf;
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Capabilities {
+    pub supports_configuration_done_request: bool,
+    pub supports_conditional_breakpoints: bool,
+    pub supports_hit_conditional_breakpoints: bool,
+    pub supports_log_points: bool,
+    pub supports_evaluate_for_hovers: bool,
+    pub supports_terminate_request: bool,
+    pub supports_restart_request: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Source {
+    pub name: Option<String>,
+    pub path: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Thread {
+    pub id: i64,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Threads {
+    #[serde(default)]
+    pub threads: Vec<Thread>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Frame {
+    pub id: i64,
+    pub name: String,
+    #[serde(default)]
+    pub source: Option<Source>,
+    #[serde(default)]
+    pub line: usize,
+    #[serde(default)]
+    pub column: usize,
+    /// "subtle" for code outside the person's own.
+    #[serde(default)]
+    pub presentation_hint: Option<String>,
+}
+
+impl Frame {
+    pub fn path(&self) -> Option<PathBuf> {
+        self.source.as_ref().and_then(|source| source.path.clone())
+    }
+
+    /// The frame's name without its assembly: "Program.Main(string[] args)", as Rider lists it.
+    pub fn short_name(&self) -> String {
+        self.name.rsplit_once("! ").map_or(self.name.as_str(), |(_, name)| name).to_string()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StackTrace {
+    #[serde(default)]
+    pub stack_frames: Vec<Frame>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Scope {
+    pub name: String,
+    pub variables_reference: i64,
+    #[serde(default)]
+    pub expensive: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Scopes {
+    #[serde(default)]
+    pub scopes: Vec<Scope>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Variable {
+    pub name: String,
+    #[serde(default)]
+    pub value: String,
+    #[serde(default)]
+    pub r#type: Option<String>,
+    /// What a watch could ask for it again.
+    #[serde(default)]
+    pub evaluate_name: Option<String>,
+    /// Non-zero when it has members of its own.
+    #[serde(default)]
+    pub variables_reference: i64,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Variables {
+    #[serde(default)]
+    pub variables: Vec<Variable>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Evaluated {
+    pub result: String,
+    pub r#type: Option<String>,
+    pub variables_reference: i64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Breakpoint {
+    pub id: Option<i64>,
+    pub verified: bool,
+    pub message: Option<String>,
+    pub line: Option<usize>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Breakpoints {
+    pub breakpoints: Vec<Breakpoint>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Continued {
+    pub all_threads_continued: Option<bool>,
+}

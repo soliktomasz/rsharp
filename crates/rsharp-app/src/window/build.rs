@@ -278,6 +278,7 @@ impl MainWindow {
             self.save_state(cx);
         }
         self.after_run_build(ended, cx);
+        self.after_debug_build(ended, cx);
         self.after_tests_build(ended, cx);
     }
 

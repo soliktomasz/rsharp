@@ -19,6 +19,8 @@ colors:
   modified: "#548AF7"
   error: "#F75464"
   warning: "#E5A336"
+  debug-breakpoint: "#DB5C5C"
+  execution-point: "#2F3E54"
   editor-text: "#BCBEC4"
   editor-line-number: "#4B5059"
   editor-line-number-current: "#A1A3AB"
@@ -245,6 +247,15 @@ Soft rounded rectangles at four radii: 10px for islands, 6px for tabs, toolbar w
 
 ### Primary Button
 - 28px, 14px side padding, 4px radius, accent fill with white text. Used on the welcome screen.
+
+### Debug Window
+- The toolbar is 32px: 28px square buttons with 16px icons (Resume, Pause, Step Over, Step Into, Step Out, Stop),
+  dimmed to 35% while they cannot act, and the session's state at the right in text-secondary.
+- Frames and Variables share the body: Frames is a 300px column of 24px rows (the chosen frame in selection) and
+  Variables takes the rest, its rows indented 18px a level with a 12px chevron; Watches sit under it around a 28px
+  search-field-styled row. The console is a bordered-off share of the bottom under a 24px "Console" label.
+- The gutter draws a 10px breakpoint dot in breakpoint red, left of the line numbers; the stopped statement's band
+  is execution-point over the full width, behind the text.
 
 ### Empty Editor Hints
 - Two aligned columns 10px apart: instructions right-aligned in text-secondary, the keys left-aligned in the accent (an instruction that is not a key stays text-secondary).

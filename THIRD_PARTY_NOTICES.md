@@ -63,11 +63,13 @@ The colours in `crates/rsharp-app/src/theme.rs` are values read from Rider's Isl
 ## Built from the Passenger submodule
 
 `vendor/passenger` is Passenger (MIT, Copyright (c) 2026 Ted L, https://github.com/Zaneris/passenger), pinned as a git
-submodule. RSharp's build (`crates/rsharp-lsp/build.rs`) publishes two of its projects and runs them, unchanged:
-Passenger.Host (MSBuild's design-time builds in a process of their own) and Passenger.Roslyn.Extension (Roslyn's
-server's project loader and refactorings with options). The Host carries Microsoft.Build.Locator (MIT, .NET
-Foundation); the extension is compiled against Roslyn's server with Krafs.Publicizer (MIT, Krafs), which carries
-nothing into the output.
+submodule. RSharp's build publishes three of its projects and runs them, unchanged:
+`crates/rsharp-lsp/build.rs` publishes Passenger.Host (MSBuild's design-time builds in a process of their own) and
+Passenger.Roslyn.Extension (Roslyn's server's project loader and refactorings with options), and
+`crates/rsharp-dap/build.rs` publishes Passenger.DebugAdapter (Passenger's own ICorDebug engine behind the Debug
+Adapter Protocol, in a process of its own, with ILSpy's decompiler for code without source). The Host carries
+Microsoft.Build.Locator (MIT, .NET Foundation); the extension is compiled against Roslyn's server with
+Krafs.Publicizer (MIT, Krafs), which carries nothing into the output.
 
 ## Ported from Passenger
 

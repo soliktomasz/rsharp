@@ -125,7 +125,7 @@ impl MainWindow {
 
     /// Why a configuration cannot launch among the projects as last evaluated; none when it can, or when the list no
     /// longer holds it and MSBuild has the last word.
-    fn why_not_run(&self, configuration: &RunConfiguration) -> Option<String> {
+    pub(super) fn why_not_run(&self, configuration: &RunConfiguration) -> Option<String> {
         let at = self.run_configs.iter().position(|known| known.name == configuration.name)?;
         self.run_why_not.get(at).cloned().flatten()
     }

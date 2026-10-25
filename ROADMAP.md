@@ -292,13 +292,32 @@ and unsupported non-text changes are refused in the merge view rather than guess
 (a `// shortcut:` in `buffer.rs`), the Log asks for 2,000 commits, and a failed save stops a Git command rather
 than running it on stale bytes.
 
-### Phase 8: Debugger (L)
-- A DAP client in Rust over `debugger/` (Passenger.DebugAdapter, carried as is).
-- Breakpoints (line, exception, conditional, hit counts, logpoints, data), stepping (async, Smart Step Into,
-  return values), call stack, variables, watches, Evaluate, and inline values.
-- Attach to Process, Run in Terminal, decompiled symbols, and Hot Reload while debugging (the extension's
-  `HotReload` and `applyChanges`).
-- The Debug window.
+### Phase 8: Debugger (L) — first slice in place
+Built: the DAP client and the adapter. `crates/rsharp-dap` publishes Passenger's `Passenger.DebugAdapter` from
+the submodule into `sidecars/debugger` and drives it as Passenger does, over the protocol's framed messages on
+standard input and output: initialize, launch or attach, `initialized`, each file's breakpoints, the exception
+filters, `configurationDone`, then threads, frames, scopes, values, evaluate, continue and the steps, pause, and
+disconnect or terminate. Every request waits off the UI thread, the adapter runs under the Lifeline so it and its
+program end with the IDE, and a request the client does not offer — a program started in the terminal — is
+refused rather than left unanswered. A live test stops a real program at a real breakpoint and reads its frame,
+locals and an expression, steps it, and sees its output.
+In the app: a folder's line breakpoints are its own `breakpoints.json` (`rsharp-core`'s `debug`), kept relative to
+the folder, with each line's condition and log message, and sent to a session again as they change. Debug (F5)
+resolves the chosen configuration's plan as Run does, builds it, and starts it under the adapter with the folder's
+breakpoints; F9 sets or clears a breakpoint at the caret and in the gutter's dot column, F10/F11/Shift+F11 step,
+F5 resumes, and Stop (Shift+F5) disconnects, ends a launched program and says where it stood. A stop opens its file
+with the statement marked and shows the thread's frames, the chosen frame's locals (members a level at a time on
+click), watches answered as they are typed, and the program's output in the Debug window's console. Rider's Debug
+window is `debug_view.rs` (its keys, Frames, Variables, Watches and Console) at Bottom Left, and `window/debug.rs`
+is its controller. The window test takes a breakpoint through F9, F5, the Debug window's own Step Over and Resume
+buttons and its frame list, and checks the marked line and the program's output; both debugger suites skip,
+saying why, when dotnet or the adapter is not there. macOS is where they ran; Windows and Linux are CI's.
+- Conditional breakpoints and logpoints, hit counts, data breakpoints and exception breakpoints in the window. (The
+  client sends a line's condition and log message, and the adapter's filters are in; none has a window yet.)
+- Smart Step Into, return values, async stepping and inline values. (Not yet.)
+- Attach to Process, Run in Terminal, decompiled symbols, and Hot Reload while debugging. (Not yet: the client
+  refuses the adapter's `runInTerminal` request, and `attach` is in the protocol layer without a window.)
+- The Debug window in full: Threads, Evaluate Expression, Set Value/Next Statement, Mute Breakpoints. (Not yet.)
 
 Passenger: `Debugging/`, `MainWindow.Attach.cs`, the Debugger notes in its CLAUDE.md; issues #145–#157, #214, #219.
 Done when: Passenger's debugger window tests, translated, pass on macOS, Windows x64 and Linux, against the same
