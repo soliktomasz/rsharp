@@ -322,15 +322,15 @@ the caret's line where the debugger allows it, the frames and the marked line fo
 Variables takes a new value through Set Value, the tree read again and the program going on with it. The Debug
 window lists a paused program's threads above Frames when there is more than one, and choosing one shows its frames
 and values, the steps going to it. Smart Step Into (Shift+Alt+F11) offers the calls the stopped statement makes, in
-the order they run, and steps into the one chosen. The window test takes a breakpoint through F9, F5, the Debug window's own Step Over and Resume
+the order they run, and steps into the one chosen. A configuration with Use external console debugs its program in
+a Terminal tab: the adapter's runInTerminal request is answered with the tab's process, and Stop ends it. The window test takes a breakpoint through F9, F5, the Debug window's own Step Over and Resume
 buttons and its frame list, and checks the marked line and the program's output; both debugger suites skip,
 saying why, when dotnet or the adapter is not there. macOS is where they ran; Windows and Linux are CI's.
 - Data breakpoints and function breakpoints. (Not yet; data breakpoints are Windows x64's to offer.)
 - Return values, async stepping and inline values. (Not yet.)
 - The Debug window's Evaluate Expression members (its result is a line in the dialog; the Variables tree has the
   rest). (Not yet.)
-- Run in Terminal, decompiled symbols, and Hot Reload while debugging. (Not yet: the client refuses the adapter's
-  `runInTerminal` request.)
+- Decompiled symbols and Hot Reload while debugging. (Not yet.)
 - Attach to Process on Windows. (Not yet: its named pipes are not read.)
 - The Debug window in full: the chosen expression's members. (Threads, Evaluate Expression, Set Next Statement and
   Set Value are in.)

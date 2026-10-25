@@ -144,9 +144,10 @@ terminal and takes focus for a moment.
   whose answer waits for the program's runtime. Threads, a thread's frames, a frame's scopes and values, an
   expression (Evaluate and a watch), continue/next/stepIn/stepOut/pause, and disconnect/terminate are typed
   requests, as are Set Next Statement's `gotoTargets` and `goto`, Set Value's `setExpression` and Smart Step Into's
-  `stepInTargets` (a step into one call of a statement); what the adapter says unasked (stops, output, exit,
-  termination) comes as `Event`s on its own threads, and a request the client does not offer — a program in the
-  terminal — is refused rather than left waiting.
+  `stepInTargets` (a step into one call of a statement). What the adapter says unasked (stops, output, exit,
+  termination) comes as `Event`s on its own threads; its own request, a program started in the client's terminal,
+  is answered when the app gives it a terminal runner (announced as `supportsRunInTerminalRequest`) and refused
+  otherwise, so the adapter goes on rather than waiting.
 - `crates/rsharp-mcp`: no UI. RSharp as an MCP server (`rsharp --mcp [FOLDER]`, JSON-RPC a line at a time on
   standard input and output), Roslyn on the folder behind its tools: `workspace`, `diagnostics` (a file's, or the
   solution's with solution-wide analysis), `find_symbol`, `outline`, `usages`, `rename` (a type's file renamed with it)
@@ -288,8 +289,9 @@ exception turned off before an unhandled exception, attaching to a program the t
 hit, then Stop detaches and the program runs on), and Evaluate Expression answering in the paused frame before
 Set Next Statement moves the thread back to the caret's line, and a local set with Set Value making the program
 print its new total, a program's Main and worker threads listed before the other is chosen and its frames read, and
-Smart Step Into choosing Sum of a statement's two calls and stopping in its body; both skip, saying why, when dotnet
-or the adapter is not there.
+Smart Step Into choosing Sum of a statement's two calls and stopping in its body, and a configuration with Use
+external console starting its program in a Terminal tab whose text carries what it wrote; both skip, saying why,
+when dotnet or the adapter is not there.
 
 Git tests build real repositories and, when a remote is needed, a bare one beside them — never the person's and
 never a network service: `crates/rsharp-core/tests/git.rs` the repository alone (porcelain records, odd paths,

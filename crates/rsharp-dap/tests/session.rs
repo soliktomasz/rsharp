@@ -64,6 +64,7 @@ fn a_breakpoint_stops_the_program_and_its_values_are_read() {
         )],
         // Every exception nothing handles stops the program, as Rider's Any exception does.
         vec![ExceptionFilter { scenarios: vec!["unhandled".into()], ..ExceptionFilter::default() }],
+        None,
         move |event| drop(sender.send(event)),
     )
     .expect("the session starts");

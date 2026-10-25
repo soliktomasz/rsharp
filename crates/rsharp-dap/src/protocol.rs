@@ -147,6 +147,24 @@ pub struct Continued {
     pub all_threads_continued: Option<bool>,
 }
 
+/// The adapter's request to the client, to start its program in a terminal of the client's own.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunInTerminal {
+    /// "integrated" or "external".
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub cwd: Option<std::path::PathBuf>,
+    /// The program and its arguments, as the terminal starts them.
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: Option<std::collections::BTreeMap<String, String>>,
+}
+
 /// A call a frame's statement can step into, in the order the calls run: Smart Step Into's choice.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

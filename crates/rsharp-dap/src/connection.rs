@@ -27,6 +27,9 @@ pub(crate) enum Incoming {
 
 type Pending = Mutex<HashMap<i64, mpsc::Sender<Result<Value, String>>>>;
 
+/// A request the client answers itself, as the adapter's runInTerminal: its body, or why it refused.
+pub(crate) type Requests = Arc<dyn Fn(&str, &Value) -> Result<Value, String> + Send + Sync>;
+
 pub(crate) struct Connection {
     input: Mutex<ChildStdin>,
     pending: Pending,
@@ -35,8 +38,13 @@ pub(crate) struct Connection {
 }
 
 impl Connection {
-    /// Starts the adapter and reads it on threads of its own, telling `notify` what it says.
-    pub fn start(mut command: Command, notify: Arc<dyn Fn(Incoming) + Send + Sync>) -> io::Result<Arc<Connection>> {
+    /// Starts the adapter and reads it on threads of its own, telling `notify` what it says and `requests` what it
+    /// asks the client itself.
+    pub fn start(
+        mut command: Command,
+        notify: Arc<dyn Fn(Incoming) + Send + Sync>,
+        requests: Requests,
+    ) -> io::Result<Arc<Connection>> {
         command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = process::spawn(command)?;
         let input = child.process.stdin.take().expect("stdin was piped");
@@ -52,7 +60,7 @@ impl Connection {
         let noisy = notify.clone();
         std::thread::Builder::new()
             .name("dap-reader".into())
-            .spawn(move || reader.read(BufReader::new(output), &*notify))?;
+            .spawn(move || reader.read(BufReader::new(output), &*notify, &*requests))?;
         std::thread::Builder::new().name("dap-stderr".into()).spawn(move || {
             for line in BufReader::new(errors).lines().map_while(Result::ok) {
                 noisy(Incoming::Stderr(line));
@@ -104,7 +112,12 @@ impl Connection {
         input.flush()
     }
 
-    fn read(self: Arc<Self>, mut output: impl BufRead, notify: &(dyn Fn(Incoming) + Send + Sync)) {
+    fn read(
+        self: Arc<Self>,
+        mut output: impl BufRead,
+        notify: &(dyn Fn(Incoming) + Send + Sync),
+        requests: &(dyn Fn(&str, &Value) -> Result<Value, String> + Send + Sync),
+    ) {
         while let Some(message) = next_message(&mut output) {
             match message.get("type").and_then(Value::as_str) {
                 Some("response") => {
@@ -128,17 +141,28 @@ impl Connection {
                     notify(Incoming::Event { name, body });
                 }
                 Some("request") => {
-                    // The adapter asks for what RSharp does not offer yet (a program in a terminal): a refusal lets it
-                    // go on rather than wait for an answer that never comes.
+                    // The adapter's own request, as a program in the client's terminal: what the client does not
+                    // offer is refused, so the adapter goes on rather than waiting for an answer that never comes.
                     let id = message.get("seq").and_then(Value::as_i64).unwrap_or_default();
                     let what = message.get("command").and_then(Value::as_str).unwrap_or("a request");
-                    let _ = self.write(&json!({
+                    let arguments = message.get("arguments").cloned().unwrap_or(Value::Null);
+                    let mut answer = json!({
                         "seq": self.next.fetch_add(1, Ordering::Relaxed),
                         "type": "response",
                         "request_seq": id,
-                        "success": false,
-                        "message": format!("{what} is not supported by this debugger client"),
-                    }));
+                        "command": what,
+                    });
+                    match requests(what, &arguments) {
+                        Ok(body) => {
+                            answer["success"] = json!(true);
+                            answer["body"] = body;
+                        }
+                        Err(message) => {
+                            answer["success"] = json!(false);
+                            answer["message"] = json!(message);
+                        }
+                    }
+                    let _ = self.write(&answer);
                 }
                 _ => {}
             }

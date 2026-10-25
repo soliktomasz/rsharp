@@ -631,3 +631,62 @@ fn smart_step_into_steps_into_the_call_chosen() {
     );
     cx.simulate_keystrokes("shift-f5");
 }
+
+#[test]
+fn a_debug_configuration_that_runs_in_a_terminal_starts_its_program_there() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-terminal", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(
+        &run.folder,
+        "App/Program.cs",
+        "using System;\nusing System.Threading;\n\nclass Program\n{\n    static void Main()\n    {\n        Console.WriteLine(\"hello from the terminal\");\n        Thread.Sleep(300);\n    }\n}\n",
+    );
+    if !offline(&run) {
+        return;
+    }
+    // The folder's own configuration, running the program in a terminal.
+    let store = rsharp_core::state::StateStore::open(run.state.clone());
+    store.write_for(
+        &run.folder,
+        &rsharp_core::run::configuration::RunConfigurations {
+            configurations: vec![rsharp_core::run::RunConfiguration {
+                name: "App".into(),
+                project: run.folder.join("App/App.csproj"),
+                use_terminal: true,
+                ..rsharp_core::run::RunConfiguration::default()
+            }],
+            selected: Some("App".into()),
+        },
+    );
+    store.flush();
+
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    assert_eq!(
+        main.read_with(cx, |main, _| main.chosen_run_configuration().map(|configuration| configuration.use_terminal)),
+        Some(true),
+        "the folder's own configuration runs the program in a terminal"
+    );
+    cx.simulate_keystrokes("f5");
+    let started = pump(cx, |cx| main.read_with(cx, |main, _| main.debug_terminal().is_some()));
+    assert!(
+        started,
+        "the program's Terminal tab did not start: {:?}",
+        main.read_with(cx, |main, _| main.said().map(str::to_string))
+    );
+    let text = |main: &Entity<MainWindow>, cx: &mut VisualTestContext| {
+        main.read_with(cx, |main, cx| {
+            let Some(id) = main.debug_terminal() else { return String::new() };
+            let panel = main.terminal().read(cx);
+            panel.session(id).map(|session| session.screen.lock().unwrap().visible_text()).unwrap_or_default()
+        })
+    };
+    let wrote = pump(cx, |cx| text(&main, cx).contains("hello from the terminal"));
+    assert!(wrote, "the program's output reached its Terminal tab: {:?}", text(&main, cx));
+    let ended = pump(cx, |cx| main.read_with(cx, |main, _| !main.is_debugging()));
+    assert!(ended, "the session ended when the program did");
+}

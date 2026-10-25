@@ -27,6 +27,11 @@ pub fn adapter() -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+pub use protocol::RunInTerminal;
+
+/// How the client starts a program the adapter asks for in a terminal of its own.
+pub type TerminalRun = Arc<dyn Fn(RunInTerminal) -> Result<RunInTerminalAnswer, String> + Send + Sync>;
+
 /// What the adapter says while a session runs.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
@@ -121,6 +126,12 @@ pub struct Launch {
     pub stop_at_entry: bool,
 }
 
+/// What the client's terminal answers the adapter with: the program's process, once it runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RunInTerminalAnswer {
+    pub process_id: u32,
+}
+
 /// How a session starts: a program of its own, or a running one attached to.
 #[derive(Clone, Debug)]
 pub enum Start {
@@ -156,6 +167,7 @@ impl Session {
         symbols: &Path,
         breakpoints: Vec<(PathBuf, Vec<SourceBreakpoint>)>,
         exceptions: Vec<ExceptionFilter>,
+        terminal: Option<TerminalRun>,
         events: impl Fn(Event) + Send + Sync + 'static,
     ) -> Result<Session, String> {
         let dotnet = rsharp_core::programs::dotnet()
@@ -212,8 +224,25 @@ impl Session {
             Incoming::Stderr(line) => reporting(Event::Output { text: format!("{line}\n"), error: true }),
             Incoming::Ended => reporting(Event::Ended),
         });
-        let connection =
-            Connection::start(command, notify).map_err(|error| format!("The debugger did not start: {error}"))?;
+        // The adapter's own request, a program in the terminal: it is answered by the client's terminal when one is
+        // given, and refused otherwise so the adapter goes on rather than waiting.
+        let requests: connection::Requests = {
+            let terminal = terminal.clone();
+            Arc::new(move |command: &str, arguments: &Value| {
+                if command != "runInTerminal" {
+                    return Err(format!("{command} is not supported by this debugger client"));
+                }
+                let Some(terminal) = &terminal else {
+                    return Err("A program in the terminal is not supported by this session".into());
+                };
+                let request: RunInTerminal = serde_json::from_value(arguments.clone())
+                    .map_err(|error| format!("The debugger's runInTerminal did not read: {error}"))?;
+                let answer = terminal(request)?;
+                Ok(json!({ "processId": answer.process_id }))
+            })
+        };
+        let connection = Connection::start(command, notify, requests)
+            .map_err(|error| format!("The debugger did not start: {error}"))?;
         let mut session = Session {
             connection,
             process_id,
@@ -224,7 +253,7 @@ impl Session {
                 Start::Attach { process_id } => format!("process {process_id}"),
             },
         };
-        match session.begin(start, breakpoints, exceptions, &initialized) {
+        match session.begin(start, breakpoints, exceptions, terminal.is_some(), &initialized) {
             Ok(capabilities) => {
                 session.capabilities = capabilities;
                 Ok(session)
@@ -243,6 +272,7 @@ impl Session {
         start: Start,
         breakpoints: Vec<(PathBuf, Vec<SourceBreakpoint>)>,
         exceptions: Vec<ExceptionFilter>,
+        runs_in_terminal: bool,
         initialized: &Arc<(Mutex<bool>, Condvar)>,
     ) -> Result<Capabilities, String> {
         let body = self.connection.request(
@@ -255,7 +285,7 @@ impl Session {
                 "columnsStartAt1": true,
                 "pathFormat": "path",
                 "supportsVariableType": true,
-                "supportsRunInTerminalRequest": false,
+                "supportsRunInTerminalRequest": runs_in_terminal,
             }),
             INITIALIZE,
         )?;
@@ -269,7 +299,7 @@ impl Session {
                     "args": launch.arguments,
                     "cwd": launch.working_directory,
                     "env": launch.environment,
-                    "console": "internalConsole",
+                    "console": if runs_in_terminal { "integratedTerminal" } else { "internalConsole" },
                     "stopAtEntry": launch.stop_at_entry,
                     "justMyCode": true,
                 }),

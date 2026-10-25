@@ -36,6 +36,8 @@ pub(super) struct DebugState {
     attached: Option<rsharp_core::debug::DotnetProcess>,
     /// The program attached to last in this folder, which Reattach asks for.
     recent_attached: Option<rsharp_core::debug::DotnetProcess>,
+    /// The Terminal tab the program runs in, when the configuration starts it there.
+    terminal: Option<usize>,
     /// What the adapter said while the session was still starting.
     pending: Vec<Said>,
     _task: Option<Task<()>>,
@@ -58,6 +60,7 @@ impl DebugState {
             step_targets: Vec::new(),
             attached: None,
             recent_attached: None,
+            terminal: None,
             pending: Vec::new(),
             _task: None,
         }
@@ -70,6 +73,11 @@ enum Event {
     Started(Arc<Session>),
     Failed(String),
     Said(Said),
+    /// The adapter asks for its program in a terminal of the window's own; the answer is its process id.
+    RunInTerminal {
+        request: rsharp_dap::RunInTerminal,
+        reply: std::sync::mpsc::Sender<Result<rsharp_dap::RunInTerminalAnswer, String>>,
+    },
 }
 
 impl MainWindow {
@@ -219,7 +227,88 @@ impl MainWindow {
             }
             Event::Failed(why) => self.refuse_debug(&why, cx),
             Event::Said(said) => self.session_said(said, window, cx),
+            Event::RunInTerminal { request, reply } => self.run_in_terminal(request, reply, cx),
         }
+    }
+
+    /// The adapter's runInTerminal: the program it asks for starts in a Terminal tab of its own, and the id of that
+    /// program answers it. The session waits for the answer off the UI thread; Stop ends the program with the session.
+    fn run_in_terminal(
+        &mut self,
+        request: rsharp_dap::RunInTerminal,
+        reply: std::sync::mpsc::Sender<Result<rsharp_dap::RunInTerminalAnswer, String>>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((program, arguments)) = request.args.split_first() else {
+            let _ = reply.send(Err("The debugger asked for a terminal with no program to start".into()));
+            return;
+        };
+        let folder = request
+            .cwd
+            .clone()
+            .or_else(|| self.workspace.as_ref().map(|workspace| workspace.folder.clone()))
+            .unwrap_or_else(rsharp_core::programs::home);
+        let mut command = rsharp_terminal::CommandBuilder::new(program);
+        command.args(arguments);
+        command.cwd(&folder);
+        if let Some(environment) = &request.env {
+            for (key, value) in environment {
+                command.env(key.as_str(), value.as_str());
+            }
+        }
+        let title = if request.title.is_empty() { self.debug_name() } else { request.title.clone() };
+        let name = if title.is_empty() { "Debug".to_string() } else { title };
+        let id = self.terminal.update(cx, |panel, cx| panel.start(name, command, folder, true, cx));
+        self.dock.show(Tool::Terminal);
+        self.debug.terminal = Some(id);
+        self.said = Some("The program runs in the terminal".into());
+        let panel = self.terminal.clone();
+        cx.spawn(async move |_, cx| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            loop {
+                let state = panel
+                    .read_with(cx, |panel, _| {
+                        if let Some(problem) = panel.problem(id) {
+                            return Some(Err(problem.to_string()));
+                        }
+                        panel.session(id).map(|session| Ok(session.pid))
+                    })
+                    .unwrap_or(None);
+                match state {
+                    Some(Ok(pid)) => {
+                        let _ = reply.send(Ok(rsharp_dap::RunInTerminalAnswer { process_id: pid }));
+                        return;
+                    }
+                    Some(Err(problem)) => {
+                        let _ = reply.send(Err(problem));
+                        return;
+                    }
+                    None if std::time::Instant::now() > deadline => {
+                        let _ = reply.send(Err("The terminal did not start within 30 seconds".into()));
+                        return;
+                    }
+                    None => cx.background_executor().timer(std::time::Duration::from_millis(20)).await,
+                }
+            }
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// Stops the program a debug session started in a terminal, leaving its tab and what it wrote.
+    fn stop_debug_terminal(&mut self, cx: &mut Context<Self>) {
+        if let Some(id) = self.debug.terminal.take() {
+            self.terminal.update(cx, |panel, _| {
+                if let Some(session) = panel.session(id) {
+                    session.stop();
+                }
+            });
+        }
+    }
+
+    /// Whether the program runs in a Terminal tab, and which, for a test.
+    pub fn debug_terminal(&self) -> Option<usize> {
+        self.debug.terminal
     }
 
     fn debug_name(&self) -> String {
@@ -404,13 +493,33 @@ impl MainWindow {
         let exceptions = self.enabled_exceptions();
         let symbols = store(cx).root().join("cache").join("symbols");
         let (sender, receiver) = mpsc::unbounded();
+        // A configuration that runs its program in a terminal: the adapter asks for it, and this window starts it.
+        let terminal = plan.use_terminal.then(|| {
+            let events = sender.clone();
+            std::sync::Arc::new(move |request: rsharp_dap::RunInTerminal| {
+                let (reply, answer) = std::sync::mpsc::channel();
+                if events.unbounded_send(Event::RunInTerminal { request, reply }).is_err() {
+                    return Err("The debug session has ended".to_string());
+                }
+                answer
+                    .recv_timeout(std::time::Duration::from_secs(30))
+                    .unwrap_or_else(|_| Err("The terminal did not start within 30 seconds".into()))
+            }) as rsharp_dap::TerminalRun
+        });
         let generation = self.debug.generation;
         std::thread::spawn(move || {
             let reports = sender.clone();
-            let result =
-                Session::start(&adapter, Start::Launch(launch), &symbols, breakpoints, exceptions, move |said| {
+            let result = Session::start(
+                &adapter,
+                Start::Launch(launch),
+                &symbols,
+                breakpoints,
+                exceptions,
+                terminal,
+                move |said| {
                     let _ = reports.unbounded_send(Event::Said(said));
-                });
+                },
+            );
             let event = match result {
                 Ok(session) => Event::Started(Arc::new(session)),
                 Err(why) => Event::Failed(why),
@@ -523,6 +632,7 @@ impl MainWindow {
                 &symbols,
                 breakpoints,
                 exceptions,
+                None,
                 move |said| {
                     let _ = reports.unbounded_send(Event::Said(said));
                 },
@@ -923,6 +1033,7 @@ impl MainWindow {
 
     /// The session ended or was stopped: the lists go, and the status bar says how.
     fn finish_debug(&mut self, message: &str, cx: &mut Context<Self>) {
+        self.stop_debug_terminal(cx);
         self.step_dialog = None;
         self.debug.step_targets.clear();
         self.debug.threads.clear();
@@ -945,6 +1056,7 @@ impl MainWindow {
 
     /// Leaving the folder: the session ends and everything it started with it.
     pub(super) fn leave_debug(&mut self, cx: &mut Context<Self>) {
+        self.stop_debug_terminal(cx);
         self.step_dialog = None;
         self.debug.step_targets.clear();
         self.debug.threads.clear();
