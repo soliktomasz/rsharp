@@ -242,6 +242,20 @@ fn roslyn_answers_what_the_editor_asks_in_the_form_the_editor_reads() {
         "Extract Interface offered {source}"
     );
 
+    // Hot Reload: the extension's Edit and Continue session starts for the solution (none of this program's edits yet),
+    // and ends when the debugging session does; a server without the service says why, and the case is skipped.
+    let (method, params) =
+        extension::workspace_request(extension::START_HOT_RELOAD, &json!({ "capabilities": [], "originals": [] }));
+    let started = extension::answer(&ask(&server, method, params)).expect("hot reload answered");
+    if let Some(problem) = started["problem"].as_str() {
+        eprintln!("skipped: the extension's hot reload did not start: {problem}");
+    } else {
+        assert!(started["session"].as_i64().is_some(), "the session's number: {started}");
+        let (method, params) =
+            extension::workspace_request(extension::END_HOT_RELOAD, &json!({ "session": started["session"] }));
+        let _ = extension::answer(&ask(&server, method, params));
+    }
+
     drop(server);
     let _ = std::fs::remove_dir_all(&folder);
 }

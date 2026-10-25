@@ -342,10 +342,11 @@ saying why, when dotnet or the adapter is not there. macOS is where they ran; Wi
   HotReloadMessages.cs`, listed in `Passenger.Lsp/RoslynExtension.cs`), so no new C# sidecar is needed. What remains is
   the Rust side. In so far: every launch turns the runtime's Edit and Continue on (`hotReload`), and
   `Session::hot_reload_state` reads the runtime's capabilities and each module's editability, proven by a launched
-  program in the parity tests. Next: `Session::apply_changes` (the deltas base64-encoded on the wire), an extension
-  call in `rsharp-lsp` (start/emit/commit/discard over the handlers above), and the window's save-while-debugging
-  path that runs the sequence and reports each module in the Debug console; its test edits a line, saves, resumes and
-  sees the program print the new value.)
+  program in the parity tests; `rsharp-lsp::extension` has the workspace route and the session's handler names, and
+  the live Roslyn test starts and ends the extension's Edit and Continue session. Next: `Session::apply_changes` (the
+  deltas base64-encoded on the wire), the emit/commit/discard calls filled in around it, and the window's
+  save-while-debugging path that runs the sequence and reports each module in the Debug console; its test edits a
+  line, saves, resumes and sees the program print the new value.)
 - Attach to Process on Windows. (Not yet: the Windows listing reads the process's `dotnet-diagnostic-<pid>` named pipe,
   which is not read; macOS's `clr-debug-pipe` and Linux's `/proc` are.)
 - Data breakpoints (Windows x64's to offer). (Not yet: the adapter answers `dataBreakpointInfo` and
