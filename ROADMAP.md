@@ -336,10 +336,14 @@ saying why, when dotnet or the adapter is not there. macOS is where they ran; Wi
   them under a `decompiled/…` path that no file on disk has; the client would have to read the embedded source out of
   the PDB, or a decompiler of its own would. The client's side — `isResolved` on a frame and `resolveStackFrame` —
   was written and taken back out until then.)
-- Hot Reload while debugging. (Not yet. The adapter's side is there — launch's `hotReload` flag, `hotReloadState` and
-  `applyChanges` with the changed files — so what is missing is the IDE's: a save while a session runs sends the
-  changed text and shows the adapter's answer, as Rider's Apply changes on save does. It needs the debug console to
-  report each module's result, and a test that edits a line, saves, resumes and sees the program print the new value.)
+- Hot Reload while debugging. (Started. The engine is already carried: the adapter takes `hotReload` at launch and
+  answers `hotReloadState` and `applyChanges` with module deltas, and Passenger's Roslyn extension — published into
+  `sidecars/roslyn` by `rsharp-lsp/build.rs` — already serves the Edit and Continue session (`Passenger.Roslyn.Extension/
+  HotReloadMessages.cs`, listed in `Passenger.Lsp/RoslynExtension.cs`), so no new C# sidecar is needed. What remains is
+  the Rust side: an extension call in `rsharp-lsp` (start/emit/commit/discard over the extension's handlers),
+  `Session::hot_reload_state` and `Session::apply_changes` in `rsharp-dap`, and the window's save-while-debugging path
+  that runs the sequence and reports each module in the Debug console; its test edits a line, saves, resumes and sees
+  the program print the new value.)
 - Attach to Process on Windows. (Not yet: the Windows listing reads the process's `dotnet-diagnostic-<pid>` named pipe,
   which is not read; macOS's `clr-debug-pipe` and Linux's `/proc` are.)
 - Data breakpoints (Windows x64's to offer). (Not yet: the adapter answers `dataBreakpointInfo` and
