@@ -774,17 +774,35 @@ impl Repository {
         if !self.run(&destination)?.is_empty() {
             return Err("The destination already has an index entry".into());
         }
-        let header = entries.split(|b| *b == b'\t').next().unwrap();
-        let fields: Vec<_> = header.split(|b| *b == b' ').collect();
-        if fields.len() != 3 || fields[2] != b"0" || entries.iter().filter(|b| **b == 0).count() != 1 {
-            return Err("Resolve the file's conflict before moving its index entry".into());
+        let mut moves = Vec::new();
+        for entry in entries.split(|b| *b == 0).filter(|e| !e.is_empty()) {
+            let tab = entry.iter().position(|b| *b == b'\t').ok_or("Malformed Git index entry")?;
+            let fields: Vec<_> = entry[..tab].split(|b| *b == b' ').collect();
+            if fields.len() != 3 {
+                return Err("Malformed Git index entry".into());
+            }
+            if fields[2] != b"0" {
+                return Err("Resolve the file's conflict before moving its index entry".into());
+            }
+            let path = PathBuf::from(os(&entry[tab + 1..]));
+            let moved = if path == from {
+                to.clone()
+            } else {
+                let relative =
+                    path.strip_prefix(&from).map_err(|_| "Git returned an index entry outside the moved path")?;
+                to.join(relative)
+            };
+            moves.push((fields[0], fields[1], path, moved));
         }
-        let mut insert = words(&["update-index", "--add", "--cacheinfo", utf8(fields[0])?, utf8(fields[1])?]);
-        insert.push(to.into_os_string());
-        self.run(&insert)?;
-        let mut remove = words(&["update-index", "--force-remove", "--"]);
-        remove.push(from.into_os_string());
-        self.run(&remove).map(|_| true)
+        for (mode, hash, from, to) in moves {
+            let mut insert = words(&["update-index", "--add", "--cacheinfo", utf8(mode)?, utf8(hash)?]);
+            insert.push(to.into_os_string());
+            self.run(&insert)?;
+            let mut remove = words(&["update-index", "--force-remove", "--"]);
+            remove.push(from.into_os_string());
+            self.run(&remove)?;
+        }
+        Ok(true)
     }
 
     pub fn rollback(&self, changes: &[FileChange]) -> Result<(), String> {

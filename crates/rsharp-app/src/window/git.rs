@@ -1,7 +1,7 @@
 //! The workspace's Git operations, crossing to workers before running Git or comparing revisions.
 use super::*;
 use crate::git_view::{DiffView, GitRequest, GitView, MergeRequest, MergeView};
-use rsharp_core::git::{Operation, Repository, Side, Stages, Status};
+use rsharp_core::git::{Repository, Side, Stages, Status};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -461,6 +461,7 @@ impl MainWindow {
                 | GitRequest::Rollback(_)
         );
         let before = self.git.status.as_ref().map(|s| s.changes.clone()).unwrap_or_default();
+        let is_commit = matches!(&request, GitRequest::Commit { .. });
         let history = crate::history_window::local_history(cx);
         let changed_paths: Vec<_> = before.iter().map(|c| c.path.clone()).collect();
         let read = cx.background_executor().spawn(async move {
@@ -472,19 +473,22 @@ impl MainWindow {
                     let _ = history.record(&change.path, &bytes, Some("Before Git operation"));
                 }
             }
+            let mut committed = false;
             let result = if cancel.load(Ordering::SeqCst) {
                 Err("Git operation cancelled".into())
             } else {
                 match request {
-                    GitRequest::Commit { paths, message, amend, push } => {
-                        repo.commit(&paths, &message, amend).and_then(|_| {
+                    GitRequest::Commit { paths, message, amend, push } => match repo.commit(&paths, &message, amend) {
+                        Ok(()) => {
+                            committed = true;
                             if push {
                                 repo.push().map_err(|e| format!("Committed, but push failed: {e}"))
                             } else {
                                 Ok(())
                             }
-                        })
-                    }
+                        }
+                        Err(error) => Err(error),
+                    },
                     GitRequest::Push => repo.push(),
                     GitRequest::Update => repo.pull(),
                     GitRequest::Fetch => repo.fetch(),
@@ -518,10 +522,10 @@ impl MainWindow {
                 }
             };
             let status = repo.status();
-            (result, status)
+            (result, committed, status)
         });
         self.git.task = Some(cx.spawn(async move |this, cx| {
-            let (result, status) = read.await;
+            let (result, committed, status) = read.await;
             let _ = this.update(cx, |m, cx| {
                 if m.git.epoch != epoch {
                     return;
@@ -530,6 +534,12 @@ impl MainWindow {
                 let paths = changed_paths;
                 if let Ok(status) = status {
                     m.git_set_status(Some(status), cx);
+                }
+                if is_commit && committed {
+                    m.git.commit.update(cx, |v, cx| {
+                        v.set_message("", cx);
+                        v.set_amend(false, cx);
+                    });
                 }
                 if let Err(error) = result {
                     m.git_problem(Some(error), cx);
@@ -790,13 +800,9 @@ impl MainWindow {
             let (_, charset) =
                 rsharp_core::encodings::decode(before.as_deref().unwrap_or_default(), configured_charset);
             let base = text(stages.base.as_deref().unwrap_or_default(), Some(charset))?;
-            let (yours, theirs) = if repo.operation() == Operation::Rebase {
-                (&stages.theirs, &stages.ours)
-            } else {
-                (&stages.ours, &stages.theirs)
-            };
-            let yours = text(yours.as_deref().unwrap_or_default(), Some(charset))?;
-            let theirs = text(theirs.as_deref().unwrap_or_default(), Some(charset))?;
+            let operation = repo.operation();
+            let yours = text(stages.side(operation, Side::Yours).unwrap_or_default(), Some(charset))?;
+            let theirs = text(stages.side(operation, Side::Theirs).unwrap_or_default(), Some(charset))?;
             Ok::<_, String>((repo, path, stages, before, charset, base, yours, theirs))
         });
         cx.spawn_in(window, async move |this, cx| match read.await {

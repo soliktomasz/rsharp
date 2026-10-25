@@ -183,6 +183,25 @@ fn staged_rename_preserves_the_blob_and_selected_commit_tracks_both_names() {
 }
 
 #[test]
+fn moving_a_folder_moves_every_tracked_file_in_the_index() {
+    let f = Fixture::new("move-folder");
+    std::fs::create_dir_all(f.0.join("old/nested")).unwrap();
+    let one = f.write("old/one.txt", "one\n");
+    let two = f.write("old/nested/two.txt", "two\n");
+    let repo = f.repo();
+    repo.commit(&[one, two], "base", false).unwrap();
+    let from = f.0.join("old");
+    let to = f.0.join("new");
+    std::fs::rename(&from, &to).unwrap();
+    repo.move_index(&from, &to).unwrap();
+    assert_eq!(
+        f.git(&["diff", "--cached", "--name-status"]),
+        "R100\told/nested/two.txt\tnew/nested/two.txt\nR100\told/one.txt\tnew/one.txt",
+        "a moved folder kept only one of its files' index entries"
+    );
+}
+
+#[test]
 fn merge_completion_excludes_unchosen_staged_changes_and_rollback_restores_only_chosen_files() {
     let f = Fixture::new("merge");
     let a = f.write("a.txt", "base\n");

@@ -15,7 +15,7 @@ use gpui::{
     prelude::*, px, uniform_list,
 };
 use rsharp_core::git::{ChangeKind, CommitInfo, FileChange, GitRef, Operation, RefKind, Status};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
 #[derive(Clone, Debug)]
@@ -264,8 +264,15 @@ impl GitView {
         buffer.update(cx, |b, cx| b.replace_all(text.to_string(), cx));
         cx.notify();
     }
+    pub fn set_amend(&mut self, amend: bool, cx: &mut Context<Self>) {
+        self.amend = amend;
+        cx.notify();
+    }
     pub fn checked_paths(&self) -> Vec<PathBuf> {
         self.checked.iter().cloned().collect()
+    }
+    pub fn amend(&self) -> bool {
+        self.amend
     }
     pub fn set_checked(&mut self, path: PathBuf, checked: bool, cx: &mut Context<Self>) {
         if checked {
@@ -582,11 +589,12 @@ impl GitView {
         let selected_ref = self.selected_ref.clone();
         let selected_hashes: Option<HashSet<String>> =
             selected_ref.as_ref().and_then(|name| self.refs.iter().find(|r| &r.full_name == name)).map(|reference| {
+                let by_hash: HashMap<&str, &CommitInfo> = self.commits.iter().map(|c| (c.hash.as_str(), c)).collect();
                 let mut pending = vec![reference.hash.clone()];
                 let mut found = HashSet::new();
                 while let Some(hash) = pending.pop() {
                     if found.insert(hash.clone()) {
-                        if let Some(commit) = self.commits.iter().find(|c| c.hash == hash) {
+                        if let Some(commit) = by_hash.get(hash.as_str()) {
                             pending.extend(commit.parents.iter().cloned());
                         }
                     }

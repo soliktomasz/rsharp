@@ -90,6 +90,9 @@ pub fn watch_git(folder: &Path, changed: impl Fn(Vec<PathBuf>) + Send + 'static)
             watcher.watch(&path, notify::RecursiveMode::Recursive)?;
         }
     }
+    // notify may report a path with symlinked ancestors resolved, so the watched folder is matched both ways.
+    let watched = folder.to_path_buf();
+    let resolved = crate::paths::canonical(folder);
     std::thread::Builder::new()
         .name("git watcher".into())
         .spawn(move || {
@@ -103,7 +106,10 @@ pub fn watch_git(folder: &Path, changed: impl Fn(Vec<PathBuf>) + Send + 'static)
                     }
                 }
                 paths.retain(|p| {
-                    !p.components().any(|c| c.as_os_str() == "objects") && p.extension().is_none_or(|e| e != "lock")
+                    let inside =
+                        p.strip_prefix(&watched).or_else(|_| p.strip_prefix(&resolved)).unwrap_or(Path::new(""));
+                    !inside.components().any(|c| c.as_os_str() == "objects")
+                        && p.extension().is_none_or(|e| e != "lock")
                 });
                 paths.sort();
                 paths.dedup();

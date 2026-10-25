@@ -31,6 +31,15 @@ fn git(folder: &Path, args: &[&str]) -> String {
     stdout
 }
 
+/// A repository whose local configuration keeps commits independent of the person's Git setup.
+fn init(folder: &Path) {
+    git(folder, &["init", "-b", "main"]);
+    git(folder, &["config", "user.name", "Test"]);
+    git(folder, &["config", "user.email", "test@example.invalid"]);
+    git(folder, &["config", "commit.gpgsign", "false"]);
+    git(folder, &["config", "core.hooksPath", "disabled-hooks"]);
+}
+
 fn wait(cx: &mut VisualTestContext, mut done: impl FnMut(&mut VisualTestContext) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(30);
     while !done(cx) {
@@ -44,7 +53,7 @@ fn wait(cx: &mut VisualTestContext, mut done: impl FnMut(&mut VisualTestContext)
 #[gpui::test]
 fn a_repository_opened_below_its_root_shows_its_branch_and_changes(cx: &mut TestAppContext) {
     let run = Run::new("git-subfolder", &[("src/a.cs", "class A {}\n")]);
-    git(&run.folder, &["init", "-b", "main"]);
+    init(&run.folder);
     git(&run.folder, &["add", "."]);
     git(&run.folder, &["commit", "-m", "initial"]);
     std::fs::write(run.folder.join("src/a.cs"), "class A { int n; }\n").unwrap();
@@ -63,7 +72,7 @@ fn a_repository_opened_below_its_root_shows_its_branch_and_changes(cx: &mut Test
 #[gpui::test]
 fn changing_workspace_discards_the_previous_repository(cx: &mut TestAppContext) {
     let run = Run::new("git-switch", &[("a.cs", "class A {}\n")]);
-    git(&run.folder, &["init", "-b", "main"]);
+    init(&run.folder);
     let other = run.folder.parent().unwrap().join("other");
     std::fs::create_dir(&other).unwrap();
     let (main, cx) = run.window(cx);
@@ -77,7 +86,7 @@ fn changing_workspace_discards_the_previous_repository(cx: &mut TestAppContext) 
 #[gpui::test]
 fn an_external_checkout_refreshes_a_workspace_opened_in_a_subfolder(cx: &mut TestAppContext) {
     let run = Run::new("git-external", &[("src/a.cs", "class A {}\n")]);
-    git(&run.folder, &["init", "-b", "main"]);
+    init(&run.folder);
     git(&run.folder, &["add", "."]);
     git(&run.folder, &["commit", "-m", "initial"]);
     let (main, cx) = run.window(cx);
@@ -91,7 +100,7 @@ fn an_external_checkout_refreshes_a_workspace_opened_in_a_subfolder(cx: &mut Tes
 #[gpui::test]
 fn committing_checked_files_keeps_unrelated_staged_changes(cx: &mut TestAppContext) {
     let run = Run::new("git-commit", &[("a.cs", "class A {}\n"), ("b.cs", "class B {}\n")]);
-    git(&run.folder, &["init", "-b", "main"]);
+    init(&run.folder);
     git(&run.folder, &["add", "."]);
     git(&run.folder, &["commit", "-m", "initial"]);
     std::fs::write(run.folder.join("a.cs"), "class A { int a; }\n").unwrap();
@@ -119,10 +128,43 @@ fn committing_checked_files_keeps_unrelated_staged_changes(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+fn a_successful_commit_clears_the_draft_and_amend(cx: &mut TestAppContext) {
+    use rsharp_app::git_view::GitRequest;
+    let run = Run::new("git-commit-clears", &[("a.cs", "class A {}\n")]);
+    init(&run.folder);
+    git(&run.folder, &["add", "."]);
+    git(&run.folder, &["commit", "-m", "initial"]);
+    std::fs::write(run.folder.join("a.cs"), "class A { int a; }\n").unwrap();
+    let (main, cx) = run.window(cx);
+    main.update_in(cx, |m, w, cx| m.open_workspace(&run.folder, w, cx));
+    wait(cx, |cx| main.read_with(cx, |m, _| m.git_status().is_some() && !m.git_busy()));
+    main.update_in(cx, |m, w, cx| {
+        m.git_commit_view().update(cx, |v, cx| {
+            v.set_message("draft\n", cx);
+            v.set_amend(true, cx);
+        });
+        m.git_request(
+            GitRequest::Commit {
+                paths: vec![run.folder.join("a.cs")],
+                message: "draft\n".into(),
+                amend: false,
+                push: false,
+            },
+            w,
+            cx,
+        );
+    });
+    wait(cx, |cx| main.read_with(cx, |m, _| !m.git_busy()));
+    let commit = main.read_with(cx, |m, _| m.git_commit_view().clone());
+    assert_eq!(commit.read_with(cx, |v, cx| v.message(cx)), "", "the committed draft stayed in the message");
+    assert!(!commit.read_with(cx, |v, _| v.amend()), "Amend stayed on after a commit");
+}
+
+#[gpui::test]
 fn a_commit_saves_a_buffer_that_lives_beside_the_opened_subfolder(cx: &mut TestAppContext) {
     use rsharp_app::git_view::GitRequest;
     let run = Run::new("git-save-outside", &[("src/a.cs", "class A {}\n"), ("notes/b.txt", "one\n")]);
-    git(&run.folder, &["init", "-b", "main"]);
+    init(&run.folder);
     git(&run.folder, &["add", "."]);
     git(&run.folder, &["commit", "-m", "initial"]);
     let (main, cx) = run.window(cx);
@@ -154,7 +196,7 @@ fn a_commit_saves_a_buffer_that_lives_beside_the_opened_subfolder(cx: &mut TestA
 fn leaving_the_workspace_ends_the_git_work_queued_for_it(cx: &mut TestAppContext) {
     use rsharp_app::git_view::GitRequest;
     let run = Run::new("git-leave", &[("a.cs", "class A {}\n")]);
-    git(&run.folder, &["init", "-b", "main"]);
+    init(&run.folder);
     git(&run.folder, &["add", "."]);
     git(&run.folder, &["commit", "-m", "initial"]);
     std::fs::write(run.folder.join("a.cs"), "class A { int a; }\n").unwrap();
@@ -200,7 +242,7 @@ fn a_branch_checked_out_from_the_branch_list_is_named_by_its_full_ref(cx: &mut T
     let remote = run.folder.parent().unwrap().join("remote.git");
     std::fs::create_dir(&remote).unwrap();
     git(&remote, &["init", "--bare"]);
-    git(&run.folder, &["init", "-b", "main"]);
+    init(&run.folder);
     git(&run.folder, &["add", "."]);
     git(&run.folder, &["commit", "-m", "initial"]);
     git(&run.folder, &["remote", "add", "origin", remote.to_str().unwrap()]);
@@ -247,7 +289,7 @@ fn a_conflicted_rebase_is_resolved_in_the_merge_window_and_pushed(cx: &mut TestA
     let remote = run.folder.parent().unwrap().join("remote.git");
     std::fs::create_dir(&remote).unwrap();
     git(&remote, &["init", "--bare"]);
-    git(&run.folder, &["init", "-b", "main"]);
+    init(&run.folder);
     git(&run.folder, &["add", "."]);
     git(&run.folder, &["commit", "-m", "initial"]);
     git(&run.folder, &["remote", "add", "origin", remote.to_str().unwrap()]);
@@ -259,8 +301,6 @@ fn a_conflicted_rebase_is_resolved_in_the_merge_window_and_pushed(cx: &mut TestA
     std::fs::write(run.folder.join("a.cs"), "class A { int n = 2; }\n").unwrap();
     git(&run.folder, &["commit", "-am", "main changed"]);
     git(&run.folder, &["checkout", "feature"]);
-    git(&run.folder, &["config", "user.name", "Test"]);
-    git(&run.folder, &["config", "user.email", "test@example.invalid"]);
     let (main, cx) = run.window(cx);
     main.update_in(cx, |m, w, cx| m.open_workspace(&run.folder, w, cx));
     wait(cx, |cx| main.read_with(cx, |m, _| m.git_status().is_some() && !m.git_busy()));
@@ -324,7 +364,7 @@ fn a_conflict_resolved_in_the_merge_window_keeps_the_files_encoding(cx: &mut Tes
     let theirs: &[u8] = b"class A { string s = \"th\xE9\"; }\n";
     let run = Run::new("git-merge-encoding", &[(".editorconfig", "root = true\n\n[*]\ncharset = latin1\n")]);
     std::fs::write(run.folder.join("a.cs"), base).unwrap();
-    git(&run.folder, &["init", "-b", "main"]);
+    init(&run.folder);
     git(&run.folder, &["add", "."]);
     git(&run.folder, &["commit", "-m", "initial"]);
     git(&run.folder, &["checkout", "-b", "feature"]);

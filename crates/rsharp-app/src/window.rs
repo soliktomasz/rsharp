@@ -328,6 +328,7 @@ impl MainWindow {
                 m.cancel_build();
                 m.stop_run(cx);
                 m.cancel_tests();
+                m.leave_git(cx);
                 m.terminal.update(cx, |t, cx| t.close_all(cx));
                 if let Some(handle) = m.creation_dialog {
                     let _ = handle.update(cx, |d, w, cx| d.cancel(w, cx));
