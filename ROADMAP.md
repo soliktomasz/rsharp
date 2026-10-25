@@ -301,8 +301,12 @@ disconnect or terminate. Every request waits off the UI thread, the adapter runs
 program end with the IDE, and a request the client does not offer — a program started in the terminal — is
 refused rather than left unanswered. A live test stops a real program at a real breakpoint and reads its frame,
 locals and an expression, steps it, and sees its output.
-In the app: a folder's line breakpoints are its own `breakpoints.json` (`rsharp-core`'s `debug`), kept relative to
-the folder, with each line's condition and log message, and sent to a session again as they change. Debug (F5)
+In the app: a folder's breakpoints are its own `breakpoints.json` (`rsharp-core`'s `debug`), kept relative to the
+folder: each line's enabled flag, condition, hit count and log message, Rider's "Any exception" beside typed CLR
+exception breakpoints with their own conditions and five "Suspend if" cases, and Mute Breakpoints. Rider's
+Breakpoints dialog (Cmd+Shift+F8) lists them, edits every field, adds and removes exception breakpoints and
+mutes them all, applying each change at once: a running session is told again, and the adapter's answer (bound, or
+why not) is the gutter dot's colour. Debug (F5)
 resolves the chosen configuration's plan as Run does, builds it, and starts it under the adapter with the folder's
 breakpoints; F9 sets or clears a breakpoint at the caret and in the gutter's dot column, F10/F11/Shift+F11 step,
 F5 resumes, and Stop (Shift+F5) disconnects, ends a launched program and says where it stood. A stop opens its file
@@ -312,12 +316,11 @@ window is `debug_view.rs` (its keys, Frames, Variables, Watches and Console) at 
 is its controller. The window test takes a breakpoint through F9, F5, the Debug window's own Step Over and Resume
 buttons and its frame list, and checks the marked line and the program's output; both debugger suites skip,
 saying why, when dotnet or the adapter is not there. macOS is where they ran; Windows and Linux are CI's.
-- Conditional breakpoints and logpoints, hit counts, data breakpoints and exception breakpoints in the window. (The
-  client sends a line's condition and log message, and the adapter's filters are in; none has a window yet.)
+- Data breakpoints and function breakpoints. (Not yet; data breakpoints are Windows x64's to offer.)
 - Smart Step Into, return values, async stepping and inline values. (Not yet.)
 - Attach to Process, Run in Terminal, decompiled symbols, and Hot Reload while debugging. (Not yet: the client
   refuses the adapter's `runInTerminal` request, and `attach` is in the protocol layer without a window.)
-- The Debug window in full: Threads, Evaluate Expression, Set Value/Next Statement, Mute Breakpoints. (Not yet.)
+- The Debug window in full: Threads, Evaluate Expression, Set Value/Next Statement. (Not yet.)
 
 Passenger: `Debugging/`, `MainWindow.Attach.cs`, the Debugger notes in its CLAUDE.md; issues #145–#157, #214, #219.
 Done when: Passenger's debugger window tests, translated, pass on macOS, Windows x64 and Linux, against the same

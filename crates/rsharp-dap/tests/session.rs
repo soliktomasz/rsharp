@@ -1,7 +1,7 @@
 //! The client against the real adapter and a real program: a breakpoint stops it, its frame and values are read, a step
 //! moves it on, evaluate answers, and the program writes its output.
 
-use rsharp_dap::{Event, Launch, Session, SourceBreakpoint, Start, adapter};
+use rsharp_dap::{Event, ExceptionFilter, Launch, Session, SourceBreakpoint, Start, adapter};
 use std::collections::BTreeMap;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
@@ -58,13 +58,22 @@ fn a_breakpoint_stops_the_program_and_its_values_are_read() {
             stop_at_entry: false,
         }),
         &symbols,
-        vec![(source.clone(), vec![SourceBreakpoint { line: 7, ..SourceBreakpoint::default() }])],
+        vec![(
+            source.clone(),
+            vec![SourceBreakpoint { line: 7, hit_condition: Some("1".into()), ..SourceBreakpoint::default() }],
+        )],
+        // Every exception nothing handles stops the program, as Rider's Any exception does.
+        vec![ExceptionFilter { scenarios: vec!["unhandled".into()], ..ExceptionFilter::default() }],
         move |event| drop(sender.send(event)),
     )
     .expect("the session starts");
 
-    let stop = wait_for_stop(&events);
+    let (stop, seen) = wait_for_stop(&events);
     assert_eq!(stop.reason, "breakpoint", "the program stopped at its breakpoint");
+    assert!(
+        seen.iter().any(|event| matches!(event, Event::Breakpoint { verified: true, line: Some(7), .. })),
+        "the adapter said the breakpoint was bound before it stopped there: {seen:?}"
+    );
     assert_eq!(stop.path.as_deref(), Some(source.as_path()), "the stop names the file");
     assert_eq!(stop.line, Some(7), "the breakpoint's line, counted from 0");
 
@@ -80,7 +89,7 @@ fn a_breakpoint_stops_the_program_and_its_values_are_read() {
     assert_eq!(session.evaluate("a * 2", frames[0].id).expect("evaluate answers").result, "82");
 
     session.step_over(stop.thread).expect("the step is taken");
-    let after = wait_for_stop(&events);
+    let (after, _) = wait_for_stop(&events);
     assert_eq!(after.reason, "step", "the program stopped after the step");
     assert_eq!(after.line, Some(8), "the step moved to the next statement");
     let here = session.stack_trace(after.thread).expect("the stack is read after the step");
@@ -94,15 +103,16 @@ fn a_breakpoint_stops_the_program_and_its_values_are_read() {
     let _ = std::fs::remove_dir_all(&folder);
 }
 
-fn wait_for_stop(events: &Receiver<Event>) -> rsharp_dap::Stop {
+fn wait_for_stop(events: &Receiver<Event>) -> (rsharp_dap::Stop, Vec<Event>) {
     let deadline = Instant::now() + Duration::from_secs(120);
+    let mut seen = Vec::new();
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         assert!(!left.is_zero(), "the program never stopped");
         match events.recv_timeout(left) {
-            Ok(Event::Stopped(stop)) => return stop,
+            Ok(Event::Stopped(stop)) => return (stop, seen),
             Ok(Event::Ended) => panic!("the debugger ended before the program stopped"),
-            Ok(_) => {}
+            Ok(event) => seen.push(event),
             Err(error) => panic!("the program never stopped: {error}"),
         }
     }

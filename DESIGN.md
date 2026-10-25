@@ -254,8 +254,12 @@ Soft rounded rectangles at four radii: 10px for islands, 6px for tabs, toolbar w
 - Frames and Variables share the body: Frames is a 300px column of 24px rows (the chosen frame in selection) and
   Variables takes the rest, its rows indented 18px a level with a 12px chevron; Watches sit under it around a 28px
   search-field-styled row. The console is a bordered-off share of the bottom under a 24px "Console" label.
-- The gutter draws a 10px breakpoint dot in breakpoint red, left of the line numbers; the stopped statement's band
-  is execution-point over the full width, behind the text.
+- The gutter draws a 10px breakpoint dot in breakpoint red, left of the line numbers; one the debugger will not hit
+  is 8px in warning amber, and one turned off or muted is 8px in text-secondary. The stopped statement's band is
+  execution-point over the full width, behind the text.
+- Rider's Breakpoints dialog is 760×540 over the window: a 44px title row with Mute Breakpoints, a 300px list
+  (26px rows, the chosen one in selection, a 16px tick before each name) and the chosen item's form on the right,
+  with Add Exception Breakpoint, Remove and Done in a 56px footer.
 
 ### Empty Editor Hints
 - Two aligned columns 10px apart: instructions right-aligned in text-secondary, the keys left-aligned in the accent (an instruction that is not a key stays text-secondary).

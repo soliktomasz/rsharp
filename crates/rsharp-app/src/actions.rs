@@ -24,8 +24,9 @@ use crate::find_bar::{Find, FindNext, FindPrevious, Replace};
 use crate::keymap::{OpenSettings, Quit};
 use crate::window::{
     ApplyHotReloadChanges, BuildSelected, BuildSolution, CleanSelected, CleanSolution, DebugProgram,
-    EditRunConfigurations, PauseDebug, RebuildSelected, RebuildSolution, RerunProgram, ResumeDebug, RunProgram,
-    StepInto, StepOut, StepOver, Stop, StopDebug, ToggleBreakpoint, ToggleBuild, ToggleDebug, ToggleRun,
+    EditRunConfigurations, MuteBreakpoints, PauseDebug, RebuildSelected, RebuildSolution, RerunProgram, ResumeDebug,
+    RunProgram, ShowBreakpoints, StepInto, StepOut, StepOver, Stop, StopDebug, ToggleBreakpoint, ToggleBuild,
+    ToggleDebug, ToggleRun,
 };
 use crate::window::{Back, FindInFiles, Forward, GoToFile, GoToSymbol, GoToType, LastEditLocation, RecentFiles};
 use crate::window::{
@@ -87,6 +88,8 @@ pub static ALL: &[IdeAction] = &[
     ide!("Step Out", "Run", ["step out"], StepOut),
     ide!("Stop Debugging", "Run", ["stop debugger", "stop program"], StopDebug),
     ide!("Toggle Line Breakpoint", "Run", ["breakpoint", "f9"], ToggleBreakpoint),
+    ide!("View Breakpoints…", "Run", ["breakpoints", "breakpoint list"], ShowBreakpoints),
+    ide!("Mute Breakpoints", "Run", ["mute", "disable breakpoints"], MuteBreakpoints),
     ide!("Rerun", "Run", ["run again", "restart"], RerunProgram),
     ide!("Edit Configurations…", "Run", ["run configurations", "edit configurations"], EditRunConfigurations),
     ide!("Apply Hot Reload Changes", "Run", ["hot reload", "apply changes", "dotnet watch"], ApplyHotReloadChanges),

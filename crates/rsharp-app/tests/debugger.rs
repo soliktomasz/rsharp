@@ -161,3 +161,170 @@ fn a_breakpoint_is_kept_with_the_folder_and_read_back() {
     };
     assert_eq!(kept.lines(&source), vec![6], "the breakpoint is kept with the folder as breakpoints.json");
 }
+
+/// Opens Rider's Breakpoints dialog with its key.
+fn open_breakpoints(cx: &mut VisualTestContext) {
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-shift-f8" } else { "ctrl-shift-f8" });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("breakpoints dialog").is_some(), "Cmd+Shift+F8 did not open the Breakpoints dialog");
+}
+
+/// Drives the window until the session the Debug started has ended, saying whether it paused on the way.
+fn run_to_end(main: &Entity<MainWindow>, cx: &mut VisualTestContext) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(180);
+    let mut started = false;
+    let mut paused = false;
+    loop {
+        let phase = main.read_with(cx, |main, _| main.debug_phase());
+        started |= phase != Phase::Idle;
+        paused |= phase == Phase::Paused;
+        if started && phase == Phase::Idle {
+            return paused;
+        }
+        if Instant::now() >= deadline {
+            let said = main.read_with(cx, |main, _| main.said().map(str::to_string));
+            panic!("the program never finished; it is at {phase:?}: {said:?}");
+        }
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn the_breakpoints_dialog_keeps_a_condition_and_mutes_every_breakpoint() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-dialog", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(&run.folder, "App/Program.cs", PROGRAM);
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((6, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    cx.run_until_parked();
+
+    open_breakpoints(cx);
+    assert!(
+        cx.debug_bounds("breakpoint row: Program.cs:7").is_some(),
+        "the dialog lists the line breakpoint as file:line, counted from 1"
+    );
+    click(cx, "breakpoint field: Condition");
+    cx.simulate_input("a > 40");
+    cx.run_until_parked();
+    let shown = main.read_with(cx, |main, cx| {
+        main.breakpoints_dialog().map(|dialog| (dialog.read(cx).chosen(), dialog.read(cx).condition_text(cx)))
+    });
+    click(cx, "button: Done");
+    assert_eq!(shown, Some(("Program.cs:7".to_string(), "a > 40".to_string())), "the dialog field took the typing");
+    assert_eq!(
+        main.read_with(cx, |main, _| main.breakpoints().of(&source)[0].condition.clone()),
+        "a > 40",
+        "the condition typed in the dialog is kept with the breakpoint"
+    );
+
+    open_breakpoints(cx);
+    click(cx, "check: Mute Breakpoints");
+    assert!(main.read_with(cx, |main, _| main.breakpoints_muted()), "Mute Breakpoints is kept");
+    click(cx, "check: Mute Breakpoints");
+    assert!(!main.read_with(cx, |main, _| main.breakpoints_muted()), "and turned off again");
+    click(cx, "button: Done");
+}
+
+#[test]
+fn a_condition_the_debugger_is_false_stops_nothing_and_a_logpoint_logs() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-condition", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(&run.folder, "App/Program.cs", PROGRAM);
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((7, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    open_breakpoints(cx);
+    click(cx, "breakpoint field: Condition");
+    cx.simulate_input("a > 100");
+    cx.run_until_parked();
+    click(cx, "button: Done");
+    assert_eq!(
+        main.read_with(cx, |main, _| main.breakpoints().of(&source)[0].condition.clone()),
+        "a > 100",
+        "the condition reached the folder's breakpoint"
+    );
+
+    cx.simulate_keystrokes("f5");
+    let paused = run_to_end(&main, cx);
+    assert!(!paused, "a breakpoint whose condition is false stopped the program");
+    let output = main.read_with(cx, |main, cx| main.debug_console().read(cx).text());
+    let built = main.read_with(cx, |main, cx| main.build_output(cx));
+    assert!(output.contains("answer 42"), "the program ran to its end: {output:?}; its build said: {built:?}");
+
+    // A logpoint on the statement that writes the answer logs it and goes on.
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((8, 0)), window, cx));
+    cx.simulate_keystrokes("f9");
+    open_breakpoints(cx);
+    click(cx, "breakpoint row: Program.cs:9");
+    click(cx, "breakpoint field: Log message");
+    cx.simulate_input("b is {b}");
+    cx.run_until_parked();
+    click(cx, "button: Done");
+    let logged = main.read_with(cx, |main, _| {
+        main.breakpoints().of(&source).into_iter().find(|breakpoint| breakpoint.line == 8).map(|b| b.log_message)
+    });
+    assert_eq!(logged.as_deref(), Some("b is {b}"), "the log message reached the second breakpoint");
+    cx.simulate_keystrokes("f5");
+    run_to_end(&main, cx);
+    let output = main.read_with(cx, |main, cx| main.debug_console().read(cx).text());
+    assert!(output.contains("b is 42"), "the logpoint's message reached the Debug console: {output:?}");
+}
+
+#[test]
+fn any_exception_off_lets_an_unhandled_exception_run_to_its_end() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-exception", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(
+        &run.folder,
+        "App/Program.cs",
+        "using System;\n\nclass Program\n{\n    static void Main()\n    {\n        Console.WriteLine(\"before\");\n        throw new InvalidOperationException(\"boom\");\n    }\n}\n",
+    );
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((6, 0)), window, cx));
+    cx.run_until_parked();
+
+    // Any exception is every folder's, and on until it is turned off here.
+    open_breakpoints(cx);
+    click(cx, "breakpoint row: Any exception");
+    click(cx, "check: Enabled");
+    click(cx, "button: Done");
+    assert!(!main.read_with(cx, |main, _| main.breakpoints().any_exception().enabled), "Any exception was turned off");
+
+    cx.simulate_keystrokes("f5");
+    let paused = run_to_end(&main, cx);
+    assert!(!paused, "an unhandled exception stopped the program with Any exception off");
+    let output = main.read_with(cx, |main, cx| main.debug_console().read(cx).text());
+    assert!(output.contains("before"), "the program ran: {output:?}");
+}

@@ -40,6 +40,13 @@ pub enum Event {
         text: String,
         error: bool,
     },
+    /// A breakpoint as the adapter last made it: bound and will be hit, or not, with why not.
+    Breakpoint {
+        path: Option<PathBuf>,
+        line: Option<usize>,
+        verified: bool,
+        message: Option<String>,
+    },
     /// The adapter's process ended; nothing more is asked of it.
     Ended,
 }
@@ -77,7 +84,31 @@ pub struct SourceBreakpoint {
     /// From 0.
     pub line: usize,
     pub condition: Option<String>,
+    /// Rider's hit count: `5`, `> 2`, `% 3` and the like.
+    pub hit_condition: Option<String>,
     pub log_message: Option<String>,
+}
+
+/// A CLR exception breakpoint as the debugger is told of it: the types it is about (none for every exception), the
+/// cases that stop the program, and what a hit asks besides.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExceptionFilter {
+    /// Full names as CLR spells them; empty for every exception.
+    pub types: Vec<String>,
+    /// Rider's "Suspend if": thrownInUserCode, thrownInExternalCode, handledInUserCode, handledInExternalCode, unhandled.
+    pub scenarios: Vec<String>,
+    pub condition: Option<String>,
+    pub hit_condition: Option<String>,
+    pub log_message: Option<String>,
+}
+
+impl ExceptionFilter {
+    /// The path the protocol takes: CLR, then the types; CLR alone is every exception.
+    fn path(&self) -> Vec<String> {
+        let mut path = vec!["CLR".to_string()];
+        path.extend(self.types.iter().filter(|kind| !kind.trim().is_empty()).cloned());
+        path
+    }
 }
 
 /// What a program is started with: the assembly or executable, its arguments, folder and environment.
@@ -109,6 +140,8 @@ pub struct Session {
     connection: Arc<Connection>,
     /// The process the adapter started, once it said which it is.
     process_id: Arc<AtomicI64>,
+    /// What the adapter made of each file's breakpoints as the session opened.
+    verified: Mutex<Vec<(PathBuf, Vec<Breakpoint>)>>,
     pub capabilities: Capabilities,
     /// What the program is, as the Debug window names it.
     pub program: String,
@@ -122,6 +155,7 @@ impl Session {
         start: Start,
         symbols: &Path,
         breakpoints: Vec<(PathBuf, Vec<SourceBreakpoint>)>,
+        exceptions: Vec<ExceptionFilter>,
         events: impl Fn(Event) + Send + Sync + 'static,
     ) -> Result<Session, String> {
         let dotnet = rsharp_core::programs::dotnet()
@@ -156,6 +190,15 @@ impl Session {
                         text: body["output"].as_str().unwrap_or_default().to_string(),
                         error: body["category"].as_str() == Some("stderr"),
                     }),
+                    "breakpoint" => {
+                        let breakpoint = &body["breakpoint"];
+                        Some(Event::Breakpoint {
+                            path: breakpoint["source"]["path"].as_str().map(PathBuf::from),
+                            line: number(breakpoint, "line").map(|line| line.saturating_sub(1) as usize),
+                            verified: breakpoint["verified"].as_bool().unwrap_or(false),
+                            message: breakpoint["message"].as_str().map(str::to_string),
+                        })
+                    }
                     "process" => {
                         ids.store(number(&body, "systemProcessId").unwrap_or_default(), Ordering::Release);
                         None
@@ -174,13 +217,14 @@ impl Session {
         let mut session = Session {
             connection,
             process_id,
+            verified: Mutex::new(Vec::new()),
             capabilities: Capabilities::default(),
             program: match &start {
                 Start::Launch(launch) => launch.program.file_stem().unwrap_or_default().to_string_lossy().into_owned(),
                 Start::Attach { process_id } => format!("process {process_id}"),
             },
         };
-        match session.begin(start, breakpoints, &initialized) {
+        match session.begin(start, breakpoints, exceptions, &initialized) {
             Ok(capabilities) => {
                 session.capabilities = capabilities;
                 Ok(session)
@@ -198,6 +242,7 @@ impl Session {
         &self,
         start: Start,
         breakpoints: Vec<(PathBuf, Vec<SourceBreakpoint>)>,
+        exceptions: Vec<ExceptionFilter>,
         initialized: &Arc<(Mutex<bool>, Condvar)>,
     ) -> Result<Capabilities, String> {
         let body = self.connection.request(
@@ -244,11 +289,13 @@ impl Session {
             }
         }
         drop(done);
+        let mut verified = Vec::new();
         for (path, lines) in breakpoints {
-            self.set_breakpoints(&path, &lines)?;
+            let answer = self.set_breakpoints(&path, &lines)?;
+            verified.push((path, answer));
         }
-        // No filters: the adapter's own answer, that an exception nothing handles stops the program.
-        self.connection.request("setExceptionBreakpoints", json!({}), REQUEST)?;
+        *self.verified.lock().unwrap() = verified;
+        self.set_exceptions(&exceptions)?;
         self.connection.request("configurationDone", json!({}), CONFIGURED)?;
         Ok(capabilities)
     }
@@ -269,6 +316,9 @@ impl Session {
                 if let Some(condition) = &breakpoint.condition {
                     sent["condition"] = json!(condition);
                 }
+                if let Some(hit_condition) = &breakpoint.hit_condition {
+                    sent["hitCondition"] = json!(hit_condition);
+                }
                 if let Some(log_message) = &breakpoint.log_message {
                     sent["logMessage"] = json!(log_message);
                 }
@@ -283,6 +333,39 @@ impl Session {
         let answered: protocol::Breakpoints = serde_json::from_value(body)
             .map_err(|error| format!("The debugger's breakpoints did not read: {error}"))?;
         Ok(answered.breakpoints)
+    }
+
+    /// Sends the exception breakpoints that are on. A client that sends none, as DAP has it, stops on every exception
+    /// nothing handles; one that sends options stops only where one of them says.
+    pub fn set_exceptions(&self, exceptions: &[ExceptionFilter]) -> Result<(), String> {
+        let options: Vec<Value> = exceptions
+            .iter()
+            .map(|exception| {
+                let mut option = json!({
+                    "path": [{ "names": exception.path() }],
+                    "breakMode": if exception.scenarios.is_empty() { "never" } else { "always" },
+                    "scenarios": exception.scenarios,
+                });
+                if let Some(condition) = &exception.condition {
+                    option["condition"] = json!(condition);
+                }
+                if let Some(hit_condition) = &exception.hit_condition {
+                    option["hitCondition"] = json!(hit_condition);
+                }
+                if let Some(log_message) = &exception.log_message {
+                    option["logMessage"] = json!(log_message);
+                }
+                option
+            })
+            .collect();
+        self.connection
+            .request("setExceptionBreakpoints", json!({ "filters": [], "exceptionOptions": options }), REQUEST)
+            .map(drop)
+    }
+
+    /// What the adapter made of each file's breakpoints as the session opened: whether each will be hit, and why not.
+    pub fn verified(&self) -> Vec<(PathBuf, Vec<Breakpoint>)> {
+        self.verified.lock().unwrap().clone()
     }
 
     pub fn threads(&self) -> Result<Vec<Thread>, String> {

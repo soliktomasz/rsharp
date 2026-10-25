@@ -3,6 +3,7 @@
 pub mod actions;
 pub mod assets;
 pub mod bench;
+pub mod breakpoints_dialog;
 pub mod buffer;
 pub mod console;
 pub mod debug_view;

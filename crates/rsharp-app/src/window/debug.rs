@@ -8,6 +8,7 @@ use futures::channel::mpsc;
 use futures::{FutureExt, StreamExt};
 use rsharp_core::run::LaunchPlan;
 use rsharp_dap::{Event as Said, Session, SourceBreakpoint, Start};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The window's side of a debug session: its breakpoints, the session once the adapter is ready, and where it stands.
 pub(super) struct DebugState {
@@ -25,6 +26,8 @@ pub(super) struct DebugState {
     frames: Vec<rsharp_dap::protocol::Frame>,
     /// The file the program is stopped in, whose buffer shows the execution line.
     shown_at: Option<PathBuf>,
+    /// What the debugger made of each breakpoint: whether it will be hit, and why not.
+    verification: BTreeMap<(PathBuf, usize), (bool, Option<String>)>,
     /// What the adapter said while the session was still starting.
     pending: Vec<Said>,
     _task: Option<Task<()>>,
@@ -42,6 +45,7 @@ impl DebugState {
             thread: None,
             frames: Vec::new(),
             shown_at: None,
+            verification: BTreeMap::new(),
             pending: Vec::new(),
             _task: None,
         }
@@ -126,7 +130,11 @@ impl MainWindow {
         self.debug.frames.clear();
         self.debug.thread = None;
         self.debug.pending.clear();
-        self.debug_view.update(cx, |view, cx| view.starting(&configuration.name, cx));
+        self.debug.verification.clear();
+        self.debug_view.update(cx, |view, cx| {
+            view.set_muted(self.debug.breakpoints.muted(), cx);
+            view.starting(&configuration.name, cx);
+        });
         self.debug_console.update(cx, |view, cx| view.start(folder, cx));
         self.said = Some(format!("Building and debugging {}…", configuration.name).into());
         if !self.dock.is_open(Tool::Debug) {
@@ -174,7 +182,13 @@ impl MainWindow {
             Event::Resolved(Ok(plan)) => self.begin_debug(*plan, cx),
             Event::Resolved(Err(why)) => self.refuse_debug(&why, cx),
             Event::Started(session) => {
+                let verified = session.verified();
                 self.debug.session = Some(session);
+                for (path, answers) in verified {
+                    let lines: Vec<usize> =
+                        answers.iter().filter_map(|answer| answer.line.map(|line| line.saturating_sub(1))).collect();
+                    self.note_verification(&path, &lines, answers, cx);
+                }
                 self.debug.phase = Phase::Running;
                 self.debug_view.update(cx, |view, cx| view.running(cx));
                 self.said = Some(format!("Debugging {}…", self.debug_name()).into());
@@ -267,21 +281,24 @@ impl MainWindow {
                     .into_iter()
                     .map(|line| SourceBreakpoint {
                         line: line.line,
-                        condition: (!line.condition.trim().is_empty()).then(|| line.condition.clone()),
-                        log_message: (!line.log_message.trim().is_empty()).then(|| line.log_message.clone()),
+                        condition: filled(&line.condition),
+                        hit_condition: filled(&line.hit_count),
+                        log_message: filled(&line.log_message),
                     })
                     .collect();
                 (path, lines)
             })
             .collect();
+        let exceptions = self.enabled_exceptions();
         let symbols = store(cx).root().join("cache").join("symbols");
         let (sender, mut receiver) = mpsc::unbounded();
         let generation = self.debug.generation;
         std::thread::spawn(move || {
             let reports = sender.clone();
-            let result = Session::start(&adapter, Start::Launch(launch), &symbols, breakpoints, move |said| {
-                let _ = reports.unbounded_send(Event::Said(said));
-            });
+            let result =
+                Session::start(&adapter, Start::Launch(launch), &symbols, breakpoints, exceptions, move |said| {
+                    let _ = reports.unbounded_send(Event::Said(said));
+                });
             let event = match result {
                 Ok(session) => Event::Started(Arc::new(session)),
                 Err(why) => Event::Failed(why),
@@ -343,6 +360,13 @@ impl MainWindow {
             }
             Said::Output { text, error } => {
                 self.debug_console.update(cx, |view, cx| view.append(&[(text, error)], cx));
+            }
+            Said::Breakpoint { path, line, verified, message } => {
+                if let (Some(path), Some(line)) = (path, line) {
+                    let key = rsharp_core::paths::canonical(&path);
+                    self.debug.verification.insert((key, line), (verified, message));
+                    self.show_breakpoints(&path, cx);
+                }
             }
             Said::Exited(code) => {
                 let name = self.debug_name();
@@ -620,6 +644,7 @@ impl MainWindow {
         self.debug.pending.clear();
         self.debug.breakpoints = rsharp_core::debug::Breakpoints::default();
         self.debug.shown_at = None;
+        self.debug.verification.clear();
         self.debug_view.update(cx, |view, cx| view.finished("Not debugging", cx));
         self.debug_console.update(cx, |view, cx| view.clear(cx));
     }
@@ -669,18 +694,158 @@ impl MainWindow {
         } else {
             format!("Breakpoint cleared at {name}:{}", line + 1).into()
         });
-        if let Some(session) = self.debug.session.clone() {
-            let lines = self.debug.breakpoints.lines(path);
-            let sent: Vec<SourceBreakpoint> =
-                lines.iter().map(|line| SourceBreakpoint { line: *line, ..SourceBreakpoint::default() }).collect();
-            let path = path.to_path_buf();
-            std::thread::spawn(move || {
-                if let Err(why) = session.set_breakpoints(&path, &sent) {
-                    log::warn!("Could not send {path:?}'s breakpoints: {why}");
+        self.push_breakpoints(path.to_path_buf(), cx);
+        cx.notify();
+    }
+
+    /// Sends a file's breakpoints to the session that runs, and keeps what the debugger made of each: a line set while
+    /// the program runs binds or says why not, as Rider's breakpoint marks do.
+    fn push_breakpoints(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let Some(session) = self.debug.session.clone() else { return };
+        let breakpoints: Vec<rsharp_core::debug::LineBreakpoint> = if self.debug.breakpoints.muted() {
+            Vec::new()
+        } else {
+            self.debug.breakpoints.of(&path).into_iter().filter(|breakpoint| breakpoint.enabled).collect()
+        };
+        let sent: Vec<SourceBreakpoint> = breakpoints
+            .iter()
+            .map(|breakpoint| SourceBreakpoint {
+                line: breakpoint.line,
+                condition: filled(&breakpoint.condition),
+                hit_condition: filled(&breakpoint.hit_count),
+                log_message: filled(&breakpoint.log_message),
+            })
+            .collect();
+        let lines: Vec<usize> = breakpoints.iter().map(|breakpoint| breakpoint.line).collect();
+        let key = rsharp_core::paths::canonical(&path);
+        let generation = self.debug.generation;
+        let handle = self.handle;
+        cx.spawn(async move |_, cx| {
+            let answer = cx.background_executor().spawn(async move { session.set_breakpoints(&path, &sent) }).await;
+            let _ = handle.update(cx, |m, _, cx| {
+                if m.debug.generation != generation {
+                    return;
+                }
+                match answer {
+                    Ok(answers) => m.note_verification(&key, &lines, answers, cx),
+                    Err(why) => m.fail_debug(&why, cx),
                 }
             });
+        })
+        .detach();
+    }
+
+    /// The exception breakpoints as the session is told of them, muted with every other breakpoint.
+    fn push_exceptions(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.debug.session.clone() else { return };
+        let filters = self.enabled_exceptions();
+        let generation = self.debug.generation;
+        let handle = self.handle;
+        cx.spawn(async move |_, cx| {
+            let answer = cx.background_executor().spawn(async move { session.set_exceptions(&filters) }).await;
+            let _ = handle.update(cx, |m, _, cx| {
+                if m.debug.generation != generation {
+                    return;
+                }
+                if let Err(why) = answer {
+                    m.fail_debug(&why, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Every file's breakpoints and the exceptions, as the dialog's changes or Mute Breakpoints ask.
+    fn push_all_breakpoints(&mut self, cx: &mut Context<Self>) {
+        if self.debug.session.is_none() {
+            return;
         }
+        let mut paths: BTreeSet<PathBuf> = self.debug.breakpoints.files().into_iter().collect();
+        paths.extend(self.debug.verification.keys().map(|(path, _)| path.clone()));
+        for path in paths {
+            self.push_breakpoints(path, cx);
+        }
+        self.push_exceptions(cx);
+    }
+
+    /// The exception breakpoints that are on, as Rider's "Suspend if" asks of each.
+    fn enabled_exceptions(&self) -> Vec<rsharp_dap::ExceptionFilter> {
+        if self.debug.breakpoints.muted() {
+            return Vec::new();
+        }
+        let any = self.debug.breakpoints.any_exception();
+        std::iter::once(any)
+            .chain(self.debug.breakpoints.exceptions().iter())
+            .filter(|exception| exception.enabled)
+            .map(|exception| rsharp_dap::ExceptionFilter {
+                types: exception.types.clone(),
+                scenarios: exception.scenarios.clone(),
+                condition: filled(&exception.condition),
+                hit_condition: filled(&exception.hit_count),
+                log_message: filled(&exception.log_message),
+            })
+            .collect()
+    }
+
+    /// What the adapter answered for a file's breakpoints, by line: whether each will be hit, and why not.
+    fn note_verification(
+        &mut self,
+        path: &Path,
+        lines: &[usize],
+        answers: Vec<rsharp_dap::protocol::Breakpoint>,
+        cx: &mut Context<Self>,
+    ) {
+        let key = rsharp_core::paths::canonical(path);
+        for (line, answer) in lines.iter().zip(answers) {
+            self.debug.verification.insert((key.clone(), *line), (answer.verified, answer.message));
+        }
+        self.show_breakpoints(path, cx);
+    }
+
+    /// Whether the debugger will hit a line's breakpoint, once a session has said; none before one has.
+    pub fn breakpoint_verified(&self, path: &Path, line: usize) -> Option<bool> {
+        self.debug.verification.get(&(rsharp_core::paths::canonical(path), line)).map(|(verified, _)| *verified)
+    }
+
+    /// Why the debugger will not hit it, as its own words say.
+    pub fn breakpoint_message(&self, path: &Path, line: usize) -> Option<String> {
+        self.debug
+            .verification
+            .get(&(rsharp_core::paths::canonical(path), line))
+            .and_then(|(_, message)| message.clone())
+    }
+
+    /// Whether every breakpoint is muted.
+    pub fn breakpoints_muted(&self) -> bool {
+        self.debug.breakpoints.muted()
+    }
+
+    /// Mute Breakpoints: every breakpoint stays where it is, and the debugger is told of none.
+    pub(super) fn set_breakpoints_muted(&mut self, muted: bool, cx: &mut Context<Self>) {
+        self.debug.breakpoints.set_muted(muted);
+        self.save_breakpoints(cx);
+        self.refresh_breakpoint_marks(cx);
+        self.push_all_breakpoints(cx);
+        self.said = Some(if muted { "Breakpoints muted".into() } else { "Breakpoints on".into() });
         cx.notify();
+    }
+
+    /// The dialog's changes: kept with the folder, drawn in every open file, and sent to the session that runs.
+    pub(super) fn apply_breakpoints(&mut self, breakpoints: rsharp_core::debug::Breakpoints, cx: &mut Context<Self>) {
+        self.debug.breakpoints = breakpoints;
+        self.save_breakpoints(cx);
+        self.refresh_breakpoint_marks(cx);
+        self.debug_view.update(cx, |view, cx| view.set_muted(self.debug.breakpoints.muted(), cx));
+        self.push_all_breakpoints(cx);
+        cx.notify();
+    }
+
+    /// Every open editor's breakpoint dots, as a change makes them.
+    fn refresh_breakpoint_marks(&mut self, cx: &mut Context<Self>) {
+        let paths: Vec<PathBuf> = self.area.editors().map(|editor| editor.read(cx).path.clone()).collect();
+        for path in paths {
+            self.show_breakpoints(&path, cx);
+        }
     }
 
     fn save_breakpoints(&self, cx: &App) {
@@ -688,11 +853,30 @@ impl MainWindow {
         store(cx).write_for(&folder, &self.debug.breakpoints.for_store(&folder));
     }
 
-    /// A file's buffer shows its breakpoints, as its tab is opened.
+    /// A file's buffer shows its breakpoints, as its tab is opened: red where the debugger will hit it, a warning where
+    /// it will not, dim where it is off or every breakpoint is muted.
     pub(super) fn show_breakpoints(&self, path: &Path, cx: &mut App) {
         let Some(buffer) = crate::buffer::find(&path.to_path_buf(), cx) else { return };
-        let lines = self.debug.breakpoints.lines(path);
-        buffer.update(cx, |buffer, cx| buffer.set_breakpoints(lines, cx));
+        let key = rsharp_core::paths::canonical(path);
+        let muted = self.debug.breakpoints.muted();
+        let debugging = self.is_debugging();
+        let marks = self
+            .debug
+            .breakpoints
+            .of(path)
+            .into_iter()
+            .map(|breakpoint| crate::buffer::BreakpointMark {
+                line: breakpoint.line,
+                verified: !debugging
+                    || self
+                        .debug
+                        .verification
+                        .get(&(key.clone(), breakpoint.line))
+                        .is_none_or(|(verified, _)| *verified),
+                enabled: breakpoint.enabled && !muted,
+            })
+            .collect();
+        buffer.update(cx, |buffer, cx| buffer.set_breakpoints(marks, cx));
     }
 
     /// Marks the line the program is stopped at, clearing the line it was at.
@@ -724,7 +908,41 @@ impl MainWindow {
             DebugAction::SelectFrame(index) => self.select_debug_frame(index, window, cx),
             DebugAction::OpenVariable { path, reference } => self.open_debug_variable(path, reference, cx),
             DebugAction::Evaluate(expression) => self.evaluate_watch(expression, cx),
+            DebugAction::ToggleMute => self.set_breakpoints_muted(!self.debug.breakpoints.muted(), cx),
         }
+    }
+
+    /// View Breakpoints (Cmd+Shift+F8): Rider's dialog over the window, every change applied as it is made.
+    pub(super) fn open_breakpoints(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.breakpoints_dialog.is_some() {
+            return;
+        }
+        let verification: Vec<(PathBuf, usize, bool, Option<String>)> = self
+            .debug
+            .verification
+            .iter()
+            .map(|((path, line), (verified, message))| (path.clone(), *line, *verified, message.clone()))
+            .collect();
+        let dialog = cx.new(|cx| {
+            crate::breakpoints_dialog::BreakpointsDialog::new(self.debug.breakpoints.clone(), verification, cx)
+        });
+        cx.subscribe_in(&dialog, window, |m, _, ended: &crate::breakpoints_dialog::Ended, window, cx| match ended {
+            crate::breakpoints_dialog::Ended::Changed(breakpoints) => m.apply_breakpoints(breakpoints.clone(), cx),
+            crate::breakpoints_dialog::Ended::Dismissed => {
+                m.breakpoints_dialog = None;
+                m.focus_editor(window, cx);
+            }
+        })
+        .detach();
+        window.focus(&dialog.focus_handle(cx));
+        self.breakpoints_dialog = Some(dialog);
+        self.debug_view.update(cx, |view, cx| view.set_muted(self.debug.breakpoints.muted(), cx));
+        cx.notify();
+    }
+
+    /// The dialog open, for a test to drive.
+    pub fn breakpoints_dialog(&self) -> Option<Entity<crate::breakpoints_dialog::BreakpointsDialog>> {
+        self.breakpoints_dialog.clone()
     }
 
     /// The actions debugging offers, each only while it can act, as every action is.
@@ -732,6 +950,11 @@ impl MainWindow {
         d.when(self.workspace.is_some(), |d| {
             d.on_action(cx.listener(|m, _: &ToggleDebug, window, cx| m.toggle_tool(Tool::Debug, window, cx)))
                 .on_action(cx.listener(|m, _: &ToggleBreakpoint, _, cx| m.toggle_breakpoint(cx)))
+                .on_action(cx.listener(|m, _: &ShowBreakpoints, window, cx| m.open_breakpoints(window, cx)))
+                .on_action(cx.listener(|m, _: &MuteBreakpoints, _, cx| {
+                    let muted = m.debug.breakpoints.muted();
+                    m.set_breakpoints_muted(!muted, cx)
+                }))
                 .when(!self.is_debugging(), |d| {
                     d.on_action(cx.listener(|m, _: &DebugProgram, _, cx| m.debug_program(cx)))
                 })
@@ -754,6 +977,11 @@ pub(super) enum Step {
     Over,
     Into,
     Out,
+}
+
+/// A breakpoint's field as the protocol takes it: none when the field is blank.
+fn filled(text: &str) -> Option<String> {
+    (!text.trim().is_empty()).then(|| text.to_string())
 }
 
 fn variable_row(variable: rsharp_dap::protocol::Variable) -> VariableRow {

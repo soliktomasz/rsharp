@@ -1428,8 +1428,8 @@ struct Prepainted {
     /// The bracket by the caret and its pair, in a tree that is current.
     braces: Vec<Range<usize>>,
     show_whitespace: bool,
-    /// The lines with a breakpoint, from 0, and the line the debugger is stopped at.
-    breakpoints: Vec<usize>,
+    /// The file's breakpoints and the line the debugger is stopped at.
+    breakpoints: Vec<crate::buffer::BreakpointMark>,
     execution_line: Option<usize>,
 }
 
@@ -1765,12 +1765,24 @@ impl Element for EditorElement {
                             .push((Bounds::new(point(bounds.origin.x, top), size(px(10.), line_height)), hunk.clone()));
                     }
                 }
-                if span.first && state.breakpoints.contains(&span.line) {
+                if span.first
+                    && let Some(mark) = state.breakpoints.iter().find(|mark| mark.line == span.line)
+                {
+                    // Rider's dot: full red where the debugger will hit it, a warning where it will not, dim where
+                    // it is off.
+                    let (diameter, colour) = match (mark.enabled, mark.verified) {
+                        (true, true) => (px(10.), theme::editor::breakpoint()),
+                        (true, false) => (px(8.), theme::warning()),
+                        (false, _) => (px(8.), theme::text_secondary()),
+                    };
                     let dot = Bounds::new(
-                        point(bounds.origin.x + px(7.), top + (line_height - px(10.)) / 2.),
-                        size(px(10.), px(10.)),
+                        point(
+                            bounds.origin.x + px(7.) + (px(10.) - diameter) / 2.,
+                            top + (line_height - diameter) / 2.,
+                        ),
+                        size(diameter, diameter),
                     );
-                    window.paint_quad(fill(dot, theme::editor::breakpoint()).corner_radii(px(5.)));
+                    window.paint_quad(fill(dot, colour).corner_radii(diameter / 2.));
                 }
                 if let Some(Some(number)) = state.line_numbers.get(i) {
                     let _ = number.paint(

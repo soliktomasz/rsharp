@@ -29,6 +29,8 @@ pub enum DebugAction {
     },
     /// A watch asked as it is typed.
     Evaluate(String),
+    /// Mute Breakpoints, or let them stop the program again.
+    ToggleMute,
 }
 
 impl EventEmitter<DebugAction> for DebugView {}
@@ -79,6 +81,8 @@ pub struct DebugView {
     watch: Entity<TextField>,
     watches: Vec<(String, String)>,
     console: Entity<ConsoleView>,
+    /// Whether every breakpoint is muted, as the folder has it.
+    muted: bool,
     focus: FocusHandle,
     _watch_subscription: Subscription,
 }
@@ -110,6 +114,7 @@ impl DebugView {
             watch,
             watches: Vec::new(),
             console,
+            muted: false,
             focus: cx.focus_handle(),
             _watch_subscription: subscription,
         }
@@ -121,6 +126,12 @@ impl DebugView {
 
     pub fn phase(&self) -> Phase {
         self.phase
+    }
+
+    /// Mute Breakpoints is on or off, as the folder says.
+    pub fn set_muted(&mut self, muted: bool, cx: &mut Context<Self>) {
+        self.muted = muted;
+        cx.notify();
     }
 
     /// What the window says of the session, as the island's subtitle and the toolbar show it.
@@ -216,6 +227,18 @@ impl DebugView {
         action: DebugAction,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        self.tool_lit(id, image, enabled, false, action, cx)
+    }
+
+    fn tool_lit(
+        &self,
+        id: &'static str,
+        image: &'static str,
+        enabled: bool,
+        lit: bool,
+        action: DebugAction,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         div()
             .id(id)
             .debug_selector(move || format!("debug: {id}"))
@@ -225,6 +248,7 @@ impl DebugView {
             .flex()
             .items_center()
             .justify_center()
+            .when(lit, |d| d.bg(theme::button_pressed()))
             .when(enabled, |d| d.hover(|d| d.bg(theme::button_hover())).active(|d| d.bg(theme::button_pressed())))
             .when(!enabled, |d| d.opacity(0.35))
             .child(icon(image, 16.))
@@ -297,6 +321,14 @@ impl Render for DebugView {
                     .child(self.tool("Step Into", "debug-step-into", paused, DebugAction::StepInto, cx))
                     .child(self.tool("Step Out", "debug-step-out", paused, DebugAction::StepOut, cx))
                     .child(self.tool("Stop", "stop", live, DebugAction::Stop, cx))
+                    .child(self.tool_lit(
+                        "Mute Breakpoints",
+                        "debug-mute",
+                        true,
+                        self.muted,
+                        DebugAction::ToggleMute,
+                        cx,
+                    ))
                     .child(div().flex_1())
                     .child(div().pr(px(8.)).truncate().text_color(theme::text_secondary()).child(self.status.clone())),
             )

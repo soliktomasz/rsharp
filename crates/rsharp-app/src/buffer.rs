@@ -27,6 +27,16 @@ pub enum BufferEvent {
     ContextChanged,
 }
 
+/// A breakpoint as the gutter draws it: its line from 0, whether the debugger will hit it, and whether it is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BreakpointMark {
+    pub line: usize,
+    /// The adapter's word, once a session has one: bound, or not and why not.
+    pub verified: bool,
+    /// Off, or every breakpoint muted: the dot is still there, dimmed.
+    pub enabled: bool,
+}
+
 /// Where a file's indentation comes from, the first of these that says, as Rider's indent widget names it.
 #[derive(Clone, PartialEq, Debug)]
 pub enum IndentSource {
@@ -56,8 +66,8 @@ pub struct Buffer {
     pub tree_version: u64,
     pub git_base: Option<Arc<str>>,
     pub git_hunks: Arc<Vec<rsharp_text::DiffHunk>>,
-    /// The lines with a breakpoint, from 0, as the folder's breakpoints have them.
-    pub breakpoints: Vec<usize>,
+    /// The breakpoints of the file, as the folder has them and the debugger last bound them.
+    pub breakpoints: Vec<BreakpointMark>,
     /// The line the debugger is stopped at, if it is stopped in this file.
     pub execution_line: Option<usize>,
     git_comparing: Option<Task<()>>,
@@ -330,7 +340,7 @@ impl Buffer {
     }
 
     /// A file's breakpoints as the folder has them: the gutter shows a dot at each.
-    pub fn set_breakpoints(&mut self, lines: Vec<usize>, cx: &mut Context<Self>) {
+    pub fn set_breakpoints(&mut self, lines: Vec<BreakpointMark>, cx: &mut Context<Self>) {
         if self.breakpoints != lines {
             self.breakpoints = lines;
             cx.notify();
