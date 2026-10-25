@@ -127,3 +127,23 @@ fn caret_context_and_incremental_edits_use_unicode_byte_positions() {
     assert_eq!(found.tests[0].line, 6, "a Unicode edit moved the test to the wrong source line");
     assert_eq!(found, testing::read(&parse(document.text(), None), document.text()));
 }
+
+#[test]
+fn blank_caret_lines_do_not_select_the_next_lines_declaration() {
+    for blank in ["\n", " \t\n", "\r\n", " \t\r\n"] {
+        let text = Rope::from_str(&format!("class Cases\n{{\n{blank}[Fact] void Works() {{}}\n}}\n"));
+        let tree = parse(&text, None);
+        assert_eq!(
+            testing::at(&tree, &text, 3),
+            Some(("Cases".into(), None)),
+            "blank line {blank:?} selected the following test method"
+        );
+        assert_eq!(testing::at(&tree, &text, 4), Some(("Cases".into(), Some("Works".into()))));
+        let text = Rope::from_str(&format!("{blank}class Cases {{}}"));
+        assert_eq!(
+            testing::at(&parse(&text, None), &text, 1),
+            None,
+            "a blank line outside a type selected the following type"
+        );
+    }
+}

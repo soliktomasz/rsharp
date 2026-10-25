@@ -148,6 +148,10 @@ impl Host {
                 Err(error) => return Err(error.to_string()),
             }
             if canceled(cancel) {
+                child.kill();
+                for reader in readers {
+                    let _ = reader.join();
+                }
                 return Err("Test request stopped".into());
             }
             if let Some(status) = child.process.try_wait().map_err(|e| e.to_string())? {
@@ -159,6 +163,10 @@ impl Host {
                 return Err(with_output(format!("The test host ended ({status}) before it connected"), &written));
             }
             if began.elapsed() > Duration::from_secs(60) {
+                child.kill();
+                for reader in readers {
+                    let _ = reader.join();
+                }
                 return Err(with_output("The test host did not connect within 60 seconds".into(), &written));
             }
             std::thread::sleep(POLL);
@@ -286,6 +294,48 @@ mod tests {
         assert!(decode(Encoding::Platform, &mut b"Content-Length: 999999999\r\n\r\n".to_vec()).is_err());
         assert!(decode(Encoding::Platform, &mut b"Other: 2\r\n\r\n{}".to_vec()).is_err());
         assert!(decode(Encoding::VsTest, &mut vec![0xff; 6]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_before_connection_reaps_a_host_with_both_pipes_open() {
+        let Ok(probe) = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)) else {
+            eprintln!("skipped: local sockets are unavailable for the startup cancellation test");
+            return;
+        };
+        drop(probe);
+        let pid_file = std::env::temp_dir().join(format!(
+            "rsharp-connect-cancel-{}-{}.pid",
+            std::process::id(),
+            super::super::runners::next_request()
+        ));
+        let cancel = AtomicBool::new(false);
+        let began = Instant::now();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                while std::fs::read_to_string(&pid_file).ok().and_then(|pid| pid.parse::<u32>().ok()).is_none()
+                    && began.elapsed() < Duration::from_secs(5)
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                cancel.store(true, std::sync::atomic::Ordering::Release);
+            });
+            let result = Host::start(Encoding::Platform, &cancel, |_| {
+                let mut command = Command::new("sh");
+                command
+                    .args(["-c", "printf '%s' $$ > \"$1\"; echo waiting; echo waiting >&2; sleep 30", "sh"])
+                    .arg(&pid_file);
+                command
+            });
+            assert!(
+                matches!(result, Err(error) if error == "Test request stopped"),
+                "canceling an unconnected host did not end startup"
+            );
+        });
+        let pid: i32 = std::fs::read_to_string(&pid_file).expect("the test host never started").parse().unwrap();
+        let _ = std::fs::remove_file(pid_file);
+        assert!(began.elapsed() < Duration::from_secs(6), "startup cancellation hung with pipe readers open");
+        assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "the unconnected host survived cancellation");
     }
 
     #[test]

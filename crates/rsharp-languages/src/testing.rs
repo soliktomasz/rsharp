@@ -245,7 +245,7 @@ fn string_literal(literal: &str) -> Option<String> {
 pub fn at(tree: &Tree, text: &Rope, line: usize) -> Option<(String, Option<String>)> {
     let line = line.checked_sub(1).filter(|l| *l < text.len_lines())?;
     let content = text.line(line);
-    let indent: usize = content.chars().take_while(|c| c.is_whitespace()).map(char::len_utf8).sum();
+    let indent: usize = content.chars().take_while(|c| matches!(c, ' ' | '\t')).map(char::len_utf8).sum();
     let byte = (text.line_to_byte(line) + indent).min(text.len_bytes());
     let mut node = Some(tree.root_node().descendant_for_byte_range(byte, byte)?);
     let mut method = None;

@@ -6,13 +6,15 @@ use crate::field::{Changed, TextField};
 use crate::find_action::{SelectNext, SelectPrevious};
 use crate::{test_finder::CodeTests, theme};
 use gpui::{
-    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, SharedString, Subscription, Window,
-    anchored, deferred, div, point, prelude::*, px, uniform_list,
+    App, Bounds, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, SharedString, Subscription,
+    Window, anchored, deferred, div, point, prelude::*, px, uniform_list,
 };
 pub use model::{GroupLevel, PRESETS, TestModel, TestRow, UnitTestsState, categories, duration_grade, state_label};
 use rsharp_core::testing::{TestItem, TestOutcome, TestState};
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::rc::Rc;
 
 pub enum TestAction {
     RunAll,
@@ -34,6 +36,7 @@ pub struct TestView {
     search: Entity<TextField>,
     collapsed: BTreeSet<String>,
     rows: Vec<TestRow>,
+    counts: (usize, usize),
     selected: Option<String>,
     running: bool,
     available: bool,
@@ -62,6 +65,7 @@ impl TestView {
             search,
             collapsed: BTreeSet::new(),
             rows: vec![],
+            counts: (0, 0),
             selected: None,
             running: false,
             available: true,
@@ -118,6 +122,7 @@ impl TestView {
         self.results_refresh = None;
         self.model = TestModel::default();
         self.rows.clear();
+        self.counts = (0, 0);
         self.selected = None;
         self.collapsed.clear();
         self.running = false;
@@ -219,6 +224,7 @@ impl TestView {
         self.selected.as_ref().and_then(|key| self.rows.iter().find(|r| &r.key == key))
     }
     fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.counts = self.model.counts();
         let selected = self
             .selected_row()
             .map(|row| (row.label.clone(), row.tests.iter().map(TestItem::key).collect::<BTreeSet<_>>()));
@@ -290,7 +296,7 @@ impl TestView {
                 "run failed",
                 "Run Failed",
                 "rerun",
-                !self.running && !self.failed_tests().is_empty(),
+                !self.running && self.counts.1 > 0,
                 || TestAction::RunFailed,
                 cx,
             ))
@@ -316,6 +322,8 @@ impl TestView {
             )
     }
     fn filters(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let triggers = Rc::new(Cell::new([Bounds::<Pixels>::default(); 2]));
+        let trigger_layout = triggers.clone();
         let grouping = PRESETS
             .iter()
             .find(|(_, levels)| *levels == self.state.grouping.as_slice())
@@ -327,6 +335,11 @@ impl TestView {
             self.state.outcomes.iter().map(|s| state_label(*s)).collect::<Vec<_>>().join(", ")
         };
         div()
+            .on_children_prepainted(move |bounds, _, _| {
+                if let [_, grouping, outcomes] = bounds.as_slice() {
+                    trigger_layout.set([*grouping, *outcomes]);
+                }
+            })
             .flex()
             .flex_wrap()
             .gap(px(6.))
@@ -355,7 +368,7 @@ impl TestView {
                     .debug_selector(|| "tests group by".into())
                     .child(format!("Group By: {grouping}"))
                     .child(icon("chevron-down", 16.))
-                    .children(self.popup(Popup::Grouping, cx))
+                    .children(self.popup(Popup::Grouping, triggers.clone(), cx))
                     .on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
                         v.popup = if v.popup == Some(Popup::Grouping) { None } else { Some(Popup::Grouping) };
                         cx.notify();
@@ -366,14 +379,19 @@ impl TestView {
                     .debug_selector(|| "tests outcomes".into())
                     .child(filter)
                     .child(icon("chevron-down", 16.))
-                    .children(self.popup(Popup::Outcomes, cx))
+                    .children(self.popup(Popup::Outcomes, triggers, cx))
                     .on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
                         v.popup = if v.popup == Some(Popup::Outcomes) { None } else { Some(Popup::Outcomes) };
                         cx.notify();
                     })),
             )
     }
-    fn popup(&self, kind: Popup, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    fn popup(
+        &self,
+        kind: Popup,
+        triggers: Rc<Cell<[Bounds<Pixels>; 2]>>,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
         if self.popup != Some(kind) {
             return None;
         }
@@ -462,9 +480,13 @@ impl TestView {
                             .bg(theme::popup())
                             .border_1()
                             .border_color(theme::popup_border())
-                            .on_mouse_down_out(cx.listener(|v, _, _, cx| {
-                                v.popup = None;
-                                cx.notify();
+                            .on_mouse_down_out(cx.listener(move |v, event: &gpui::MouseDownEvent, _, cx| {
+                                let trigger = triggers.get()[if kind == Popup::Grouping { 0 } else { 1 }];
+                                // Outside dismissal runs before the trigger's click can toggle this popup closed.
+                                if v.popup == Some(kind) && !trigger.contains(&event.position) {
+                                    v.popup = None;
+                                    cx.notify();
+                                }
                             }))
                             .children(items),
                     ),
@@ -622,8 +644,7 @@ impl TestView {
 }
 impl Render for TestView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let count = self.tests().len();
-        let failed = self.failed_tests().len();
+        let (count, failed) = self.counts;
         let summary = if self.looking {
             "Looking for tests…".into()
         } else if self.status.is_empty() {

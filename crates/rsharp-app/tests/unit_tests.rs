@@ -210,7 +210,11 @@ fn the_window_builds_and_runs_real_xunit_v3_tests_then_reruns_only_failures() {
     assert_eq!(view.read_with(cx, |v, _| v.tests().len()), 5, "the theory's rows were lost or source was duplicated");
     let failed = view.read_with(cx, |v, _| v.failed_tests());
     assert_eq!(failed.len(), 1);
-    main.update(cx, |main, cx| main.run_tests(Some(failed), cx));
+    main.update_in(cx, |main, window, cx| main.open_file(&run.folder.join("Tests/Orders.cs"), None, window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("ctrl-u f");
+    cx.run_until_parked();
+    assert!(main.read_with(cx, |main, _| main.is_testing()), "Run Failed did not complete its chord in the editor");
     wait(cx, "rerunning failed tests", |cx| !main.read_with(cx, |main, _| main.is_testing()));
     let status = view.read_with(cx, |v, _| v.status().to_string());
     assert!(status.starts_with("0 passed, 1 failed, 0 skipped"), "Run Failed ran the wrong tests: {status}");
@@ -309,8 +313,9 @@ fn run_unit_tests_uses_the_active_files_project_and_the_solution_selection() {
     });
     cx.run_until_parked();
     assert_eq!(names(&main, cx).len(), 2);
-    cx.simulate_keystrokes("secondary-u r");
+    cx.simulate_keystrokes("ctrl-u r");
     cx.run_until_parked();
+    assert!(main.read_with(cx, |main, _| main.is_testing()), "Run Unit Tests did not complete its chord in the editor");
     wait(cx, "the context test build", |cx| !main.read_with(cx, |main, _| main.is_testing()));
     assert!(
         !main.read_with(cx, |main, cx| main.build_output(cx)).contains("Other/Orders.cs"),
@@ -323,7 +328,7 @@ fn run_unit_tests_uses_the_active_files_project_and_the_solution_selection() {
         main.toggle_tool(rsharp_app::dock::Tool::Solution, window, cx);
     });
     cx.run_until_parked();
-    cx.simulate_keystrokes("secondary-u r");
+    cx.simulate_keystrokes("ctrl-u r");
     cx.run_until_parked();
     wait(cx, "the selected project's test build", |cx| !main.read_with(cx, |main, _| main.is_testing()));
     let output = main.read_with(cx, |main, cx| main.build_output(cx));

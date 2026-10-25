@@ -49,6 +49,7 @@ fn source_rows_merge_runtime_cases_without_losing_current_source_location() {
         item("Adds", Some("Adds(1)"), Some("net9.0")),
     ]);
     assert_eq!(model.tests().len(), 3, "source placeholder duplicated the runner's data rows");
+    assert_eq!(model.counts(), (3, 0), "counts duplicated the source method behind runner rows");
     assert!(model.tests().iter().all(|t| t.line == 8), "a stale built location replaced the source location");
     let rows = model.rows(&UnitTestsState::default(), "", &BTreeSet::new());
     assert_eq!(rows.iter().filter(|r| r.label == "net10.0" || r.label == "net9.0").count(), 2);
@@ -71,6 +72,7 @@ fn outcome_filter_keeps_ancestors_and_stale_runtime_methods_disappear_after_edit
         attachments: vec![],
     }]);
     let state = UnitTestsState { outcomes: vec![TestState::Failed], ..Default::default() };
+    assert_eq!(model.counts(), (2, 1));
     let rows = model.rows(&state, "adds", &BTreeSet::new());
     assert!(rows.iter().any(|r| r.label == "Tests"), "the failed test lost its project ancestor");
     assert!(rows.iter().any(|r| r.label == "Adds"));
@@ -153,6 +155,56 @@ fn controls_regroup_filter_search_and_show_the_selected_failure(cx: &mut gpui::T
     view.update(cx, |v, cx| v.set_running(false, cx));
     view.update(cx, |v, cx| v.clear(cx));
     assert!(view.read_with(cx, |v, _| v.tests().is_empty()), "the next workspace inherited previous tests");
+}
+
+#[gpui::test]
+fn popup_triggers_toggle_closed_and_other_clicks_still_dismiss(cx: &mut gpui::TestAppContext) {
+    use gpui::Modifiers;
+    use rsharp_app::test_view::TestView;
+    let (view, cx) = cx.add_window_view(|_, cx| TestView::new(cx));
+    cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(800.)));
+    cx.run_until_parked();
+    let click = |cx: &mut gpui::VisualTestContext, selector: &'static str| {
+        let bounds = cx.debug_bounds(selector).unwrap_or_else(|| panic!("{selector} was not visible"));
+        // A snapped menu can cover its trigger's label; the trigger's left padding remains exposed.
+        let at = if matches!(selector, "tests group by" | "tests outcomes") {
+            gpui::point(bounds.left() + gpui::px(1.), bounds.center().y)
+        } else {
+            bounds.center()
+        };
+        cx.simulate_click(at, Modifiers::default());
+        cx.run_until_parked();
+    };
+    click(cx, "tests group by");
+    click(cx, "tests group by");
+    click(cx, "tests preset: Categories");
+    assert_eq!(
+        view.read_with(cx, |view, _| view.state().grouping),
+        UnitTestsState::default().grouping,
+        "Group By reopened on its trigger click, leaving its choices active"
+    );
+    click(cx, "tests outcomes");
+    click(cx, "tests outcomes");
+    click(cx, "tests outcome: Failed");
+    assert!(
+        view.read_with(cx, |view, _| view.state().outcomes.is_empty()),
+        "Outcomes reopened on its trigger click, leaving its choices active"
+    );
+    click(cx, "tests group by");
+    click(cx, "tests outcomes");
+    click(cx, "tests outcome: Failed");
+    assert_eq!(
+        view.read_with(cx, |view, _| view.state().outcomes),
+        [TestState::Failed],
+        "switching triggers dismissed the new popup"
+    );
+    click(cx, "tests search");
+    click(cx, "tests outcome: Failed");
+    assert_eq!(
+        view.read_with(cx, |view, _| view.state().outcomes),
+        [TestState::Failed],
+        "an outside click left the popup's choices active"
+    );
 }
 
 #[test]

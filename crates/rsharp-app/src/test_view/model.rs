@@ -318,6 +318,14 @@ impl TestModel {
             .filter(|t| self.results.get(&identity(t)).is_some_and(|r| r.state == TestState::Failed))
             .collect()
     }
+    pub fn counts(&self) -> (usize, usize) {
+        let tests = self.tests();
+        let failed = tests
+            .iter()
+            .filter(|test| self.results.get(&identity(test)).is_some_and(|result| result.state == TestState::Failed))
+            .count();
+        (tests.len(), failed)
+    }
     pub fn rows(&self, state: &UnitTestsState, query: &str, collapsed: &BTreeSet<String>) -> Vec<TestRow> {
         let all = self.tests();
 
