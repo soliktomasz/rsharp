@@ -71,6 +71,7 @@ pub struct RunDialog {
     framework: Option<String>,
     profile: Option<String>,
     build_before_launch: bool,
+    use_terminal: bool,
     launch_browser: bool,
     /// The chosen project's launch profiles, read when the row changes rather than on every drawing of the form.
     profiles: Vec<LaunchProfile>,
@@ -128,6 +129,7 @@ impl RunDialog {
             framework: None,
             profile: None,
             build_before_launch: true,
+            use_terminal: false,
             launch_browser: false,
             profiles: Vec::new(),
             menu: None,
@@ -298,6 +300,7 @@ impl RunDialog {
         self.framework = configuration.framework.clone();
         self.profile = configuration.launch_profile.clone();
         self.build_before_launch = configuration.build_before_launch;
+        self.use_terminal = configuration.use_terminal;
         self.launch_browser = configuration.launch_browser;
         // A generated row is shown but not edited: its fields take no change.
         self.showing = !editable;
@@ -333,6 +336,7 @@ impl RunDialog {
             environment,
             working_directory: trimmed(&self.working_directory),
             build_before_launch: self.build_before_launch,
+            use_terminal: self.use_terminal,
             launch_browser: self.launch_browser,
             browser_url: text(&self.browser_url).trim().to_string(),
         };
@@ -694,6 +698,15 @@ impl Render for RunDialog {
                                     },
                                 )),
                             ))
+                            .child(div().flex().child(checkbox("Use external console", self.use_terminal).on_click(
+                                cx.listener(|d, _: &ClickEvent, _, cx| {
+                                    if !d.showing {
+                                        d.use_terminal = !d.use_terminal;
+                                        d.write_back(cx);
+                                    }
+                                    cx.notify();
+                                }),
+                            )))
                             .child(
                                 div()
                                     .flex()

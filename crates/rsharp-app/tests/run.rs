@@ -146,6 +146,138 @@ fn a_console_program_runs_and_its_exit_code_is_said() {
 }
 
 #[test]
+fn a_run_configuration_in_the_terminal_reads_input_and_reruns_with_the_ide_keys() {
+    use rsharp_core::run::{RunConfiguration, configuration::RunConfigurations};
+    let run = Run::new("run-terminal", &[]);
+    app(
+        &run,
+        "System.Console.WriteLine(\"input ready\"); var line = System.Console.ReadLine(); System.Console.WriteLine(\"answer=\" + line);\n",
+    );
+    if !offline(&run) {
+        return;
+    }
+    let configuration = RunConfiguration {
+        name: "Interactive".into(),
+        project: run.folder.join("App/App.csproj"),
+        use_terminal: true,
+        ..Default::default()
+    };
+    let stored = RunConfigurations { configurations: vec![configuration], selected: Some("Interactive".into()) };
+    let state = rsharp_core::state::StateStore::open(run.state.clone());
+    state.write_for(&run.folder, &stored);
+    state.flush();
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    for pass in 0..2 {
+        cx.simulate_keystrokes(if pass == 0 {
+            "ctrl-f5"
+        } else if cfg!(target_os = "macos") {
+            "alt-shift-f5"
+        } else {
+            "ctrl-shift-f5"
+        });
+        wait(cx, "the terminal program's prompt", |cx| {
+            main.read_with(cx, |m, cx| {
+                m.terminal()
+                    .read(cx)
+                    .active_session()
+                    .is_some_and(|s| s.exit_code().is_none() && s.text().contains("input ready"))
+            })
+        });
+        cx.simulate_input("from the terminal");
+        cx.simulate_keystrokes("enter");
+        let outcome = finished(&main, cx);
+        assert_eq!(outcome.status, RunStatus::Exited(0), "{}", outcome.message);
+        assert!(main.read_with(cx, |m, cx| {
+            m.terminal().read(cx).active_session().unwrap().text().contains("answer=from the terminal")
+        }));
+    }
+    assert_eq!(
+        main.read_with(cx, |m, cx| m.terminal().read(cx).tabs_len()),
+        1,
+        "Rerun should replace the ended program tab"
+    );
+}
+
+#[test]
+fn stop_ends_a_program_running_in_the_terminal_and_its_tab_keeps_what_it_said() {
+    use rsharp_core::run::{RunConfiguration, configuration::RunConfigurations};
+    let run = Run::new("run-terminal-stop", &[]);
+    app(&run, "System.Console.WriteLine(\"waiting in the terminal\");\nSystem.Threading.Thread.Sleep(60000);\n");
+    if !offline(&run) {
+        return;
+    }
+    let configuration = RunConfiguration {
+        name: "Waiting".into(),
+        project: run.folder.join("App/App.csproj"),
+        use_terminal: true,
+        ..Default::default()
+    };
+    let stored = RunConfigurations { configurations: vec![configuration], selected: Some("Waiting".into()) };
+    let state = rsharp_core::state::StateStore::open(run.state.clone());
+    state.write_for(&run.folder, &stored);
+    state.flush();
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    cx.simulate_keystrokes("ctrl-f5");
+    wait(cx, "the terminal program's output", |cx| {
+        main.read_with(cx, |m, cx| {
+            m.terminal().read(cx).active_session().is_some_and(|s| s.text().contains("waiting in the terminal"))
+        })
+    });
+    assert!(
+        main.read_with(cx, |m, _| m.dock().is_open(rsharp_app::dock::Tool::Terminal)),
+        "a run in the terminal did not bring the Terminal window forward"
+    );
+    cx.simulate_keystrokes("shift-f5");
+    let outcome = finished(&main, cx);
+    assert_eq!(outcome.status, RunStatus::Stopped, "{}", outcome.message);
+    wait(cx, "the stopped program's process ending", |cx| {
+        main.read_with(cx, |m, cx| m.terminal().read(cx).active_session().is_some_and(|s| s.exit_code().is_some()))
+    });
+    assert!(
+        main.read_with(cx, |m, cx| {
+            m.terminal().read(cx).active_session().is_some_and(|s| s.text().contains("waiting in the terminal"))
+        }),
+        "the stopped program's tab should keep what it said"
+    );
+}
+
+#[test]
+fn closing_a_terminal_programs_tab_ends_its_run_as_stopped() {
+    use rsharp_core::run::{RunConfiguration, configuration::RunConfigurations};
+    let run = Run::new("run-terminal-close", &[]);
+    app(&run, "System.Console.WriteLine(\"still there\");\nSystem.Threading.Thread.Sleep(60000);\n");
+    if !offline(&run) {
+        return;
+    }
+    let configuration = RunConfiguration {
+        name: "Closing".into(),
+        project: run.folder.join("App/App.csproj"),
+        use_terminal: true,
+        ..Default::default()
+    };
+    let stored = RunConfigurations { configurations: vec![configuration], selected: Some("Closing".into()) };
+    let state = rsharp_core::state::StateStore::open(run.state.clone());
+    state.write_for(&run.folder, &stored);
+    state.flush();
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    cx.simulate_keystrokes("ctrl-f5");
+    wait(cx, "the terminal program's output", |cx| {
+        main.read_with(cx, |m, cx| {
+            m.terminal().read(cx).active_session().is_some_and(|s| s.text().contains("still there"))
+        })
+    });
+    // The tab the program runs in is the only one, and closing it takes the program with it.
+    main.update_in(cx, |m, _, cx| m.terminal().update(cx, |panel, cx| panel.close(0, cx)));
+    let outcome = finished(&main, cx);
+    assert_eq!(outcome.status, RunStatus::Stopped, "{}", outcome.message);
+    assert_eq!(outcome.message, "Closing stopped");
+    assert!(!main.read_with(cx, |m, _| m.is_running()), "a closed program's tab left the run saying Running");
+}
+
+#[test]
 fn a_launch_profiles_arguments_and_environment_reach_the_program() {
     // What the profile says is what runs: its arguments, its variables, and its application URL as ASP.NET Core's.
     let run = Run::new("run-profile", &[]);

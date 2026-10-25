@@ -54,3 +54,4 @@ pub fn init(state_root: std::path::PathBuf, cx: &mut gpui::App) {
         })
         .detach();
 }
+pub mod terminal;

@@ -1,11 +1,16 @@
-//! Every program RSharp starts goes through [`spawn`], so none outlives the IDE, however the IDE ended: quit,
-//! crash, SIGTERM or SIGKILL. On macOS and Linux each child leads a process group and a watchdog shell
-//! (Passenger's Lifeline) kills the group once the IDE's end of a pipe to it closes; on Windows each child is in
-//! a job of its own that ends everything in it when the IDE's handle to it closes.
+//! Every program RSharp starts goes through [`spawn`] or, when it needs a terminal, [`spawn_pty`], so none outlives
+//! the IDE, however the IDE ended: quit, crash, SIGTERM or SIGKILL. On macOS and Linux each child leads a process
+//! group and a watchdog (Passenger's Lifeline) kills the group once the IDE's end of a pipe to it closes; on Windows
+//! each child is in a job of its own that ends everything in it when the IDE's handle to it closes. A terminal's
+//! shell leads a *session*, and its jobs lead groups of their own, so `pty`'s watchdog — `sidecars/pty-guard` — kills
+//! every process of that session instead.
 
 use std::io;
 use std::process::{Command, ExitStatus};
 use std::sync::Mutex;
+
+mod pty;
+pub use pty::{PtyChild, spawn_pty};
 
 static LIVE: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
@@ -116,10 +121,35 @@ struct Lifeline(std::process::Child);
 #[cfg(unix)]
 impl Lifeline {
     fn watch(child: &std::process::Child) -> io::Result<Self> {
+        Self::watch_pid(child.id(), false)
+    }
+
+    fn watch_pid(pid: u32, terminal: bool) -> io::Result<Self> {
+        if terminal {
+            use std::io::{BufRead, BufReader};
+            let beside = std::env::current_exe()?.parent().unwrap().join("sidecars/pty-guard");
+            let guard = if beside.is_file() { beside } else { std::path::PathBuf::from(env!("RSHARP_PTY_GUARD")) };
+            let mut command = Command::new(guard);
+            command
+                .arg(pid.to_string())
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null());
+            std::os::unix::process::CommandExt::process_group(&mut command, 0);
+            let mut process = command.spawn()?;
+            let mut ready = String::new();
+            BufReader::new(process.stdout.take().unwrap()).read_line(&mut ready)?;
+            if ready.trim() != "ready" {
+                let _ = process.kill();
+                let _ = process.wait();
+                return Err(io::Error::other("PTY guardian did not start"));
+            }
+            return Ok(Self(process));
+        }
         let mut watchdog = Command::new("/bin/sh");
         // No `--`: dash, Debian's and Ubuntu's /bin/sh, reads it as a pid and kills nothing.
         watchdog
-            .args(["-c", "read _ ; kill -KILL -$0 2>/dev/null", &child.id().to_string()])
+            .args(["-c", "read _ ; kill -KILL -$0 2>/dev/null", &pid.to_string()])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
@@ -156,6 +186,10 @@ unsafe impl Sync for Lifeline {}
 impl Lifeline {
     fn watch(child: &std::process::Child) -> io::Result<Self> {
         use std::os::windows::io::AsRawHandle;
+        Self::watch_handle(child.as_raw_handle() as _)
+    }
+
+    fn watch_handle(handle: windows_sys::Win32::Foundation::HANDLE) -> io::Result<Self> {
         use windows_sys::Win32::System::JobObjects::*;
         unsafe {
             let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
@@ -171,7 +205,7 @@ impl Lifeline {
                 (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
                 std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
             );
-            if set == 0 || AssignProcessToJobObject(job, child.as_raw_handle() as _) == 0 {
+            if set == 0 || AssignProcessToJobObject(job, handle) == 0 {
                 return Err(io::Error::last_os_error());
             }
             Ok(lifeline)

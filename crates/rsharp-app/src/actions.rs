@@ -33,7 +33,7 @@ use crate::window::{
 };
 use crate::window::{
     CloseSolution, CloseTab, FindAction, FloatToolWindow, HideToolWindow, OpenFolder, RestoreDefaultLayout,
-    ToggleNuGet, ToggleProblems, ToggleSolution,
+    ToggleNuGet, ToggleProblems, ToggleSolution, ToggleTerminal,
 };
 use crate::window::{NewProject, NewSolution};
 use crate::window::{RecentLocations, ReplaceInFiles, SearchEverywhere};
@@ -70,6 +70,7 @@ pub static ALL: &[IdeAction] = &[
     ide!("Stop", "Run", ["stop build", "cancel build", "stop program"], Stop),
     ide!("Run Window", "View", ["run output", "console", "tool window"], ToggleRun),
     ide!("Unit Tests", "View", ["unit tests window", "test tree", "tool window"], ToggleUnitTests),
+    ide!("Terminal", "View", ["shell", "console", "tool window"], ToggleTerminal),
     ide!("Run All Tests", "Run", ["unit tests", "test solution"], RunAllTests),
     ide!("Run Unit Tests", "Run", ["selected tests", "test context"], RunTests),
     ide!("Rerun Failed Tests", "Run", ["failed unit tests"], RerunFailedTests),

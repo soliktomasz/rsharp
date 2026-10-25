@@ -26,6 +26,7 @@ pub struct RunConfiguration {
     /// Where the program runs, relative to the project's folder; none for its output folder.
     pub working_directory: Option<String>,
     pub build_before_launch: bool,
+    pub use_terminal: bool,
     pub launch_browser: bool,
     /// Where the browser opens: a profile's `launchUrl` against its first `applicationUrl`.
     pub browser_url: String,
@@ -43,6 +44,7 @@ impl Default for RunConfiguration {
             environment: BTreeMap::new(),
             working_directory: None,
             build_before_launch: true,
+            use_terminal: false,
             launch_browser: false,
             browser_url: String::new(),
         }
@@ -87,6 +89,7 @@ impl RunConfiguration {
             environment: profile.environment(),
             working_directory: profile.working_directory.clone().filter(|dir| !dir.is_empty()),
             build_before_launch: true,
+            use_terminal: false,
             launch_browser: profile.launch_browser,
             browser_url: profile.browser_url(),
         }

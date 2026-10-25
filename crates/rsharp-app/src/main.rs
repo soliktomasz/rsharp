@@ -19,6 +19,7 @@ fn main() {
         .iter()
         .flat_map(|step| match step {
             Step::Key(keys) => keys.split_whitespace().map(str::to_string).collect::<Vec<_>>(),
+            Step::Agent(_) => Vec::new(),
             Step::Type(text) => {
                 text.chars().map(|c| if c == ' ' { "space".to_string() } else { c.to_string() }).collect()
             }
@@ -103,7 +104,7 @@ fn main() {
         if options.bench || profile_startup {
             cx.spawn(async move |cx| rsharp_app::bench::run(window, started, profile_startup, cx).await).detach();
         }
-        if !keystrokes.is_empty() {
+        if !options.steps.is_empty() {
             let any = window.into();
             cx.spawn(async move |cx| {
                 // Keys about the code wait for Roslyn to load the projects, at most a minute.
@@ -114,10 +115,54 @@ fn main() {
                     cx.background_executor().timer(std::time::Duration::from_millis(250)).await;
                 }
                 // Each step waits for what the one before opened (a dialog, a popup) to draw.
-                for keystroke in keystrokes {
-                    cx.background_executor().timer(std::time::Duration::from_millis(250)).await;
-                    let target = cx.update(|cx| cx.active_window().unwrap_or(any)).unwrap_or(any);
-                    let _ = target.update(cx, |_, window, cx| window.dispatch_keystroke(keystroke, cx));
+                for step in options.steps {
+                    let inputs: Vec<String> = match step {
+                        Step::Key(keys) => keys.split_whitespace().map(str::to_string).collect(),
+                        Step::Type(text) => {
+                            text.chars().map(|c| if c == ' ' { "space".into() } else { c.to_string() }).collect()
+                        }
+                        Step::Agent(command) => {
+                            let id = window.update(cx, |main, window, cx| main.run_agent(command, window, cx)).unwrap();
+                            loop {
+                                cx.background_executor().timer(std::time::Duration::from_millis(16)).await;
+                                let outcome = window
+                                    .read_with(cx, |m, cx| {
+                                        let panel = m.terminal().read(cx);
+                                        if let Some(problem) = panel.problem(id) {
+                                            return Some(Err(problem.to_string()));
+                                        }
+                                        // The tab going away ends the step: nothing is left to wait for.
+                                        if !panel.has_tab(id) {
+                                            return Some(Err("the Agent tab was closed".into()));
+                                        }
+                                        // A tab whose program has not started yet is not a finished step.
+                                        panel.session(id).and_then(|s| s.exit_code()).map(Ok)
+                                    })
+                                    .unwrap_or(Some(Err("the window closed".into())));
+                                match outcome {
+                                    Some(Ok(0)) => break,
+                                    // The Agent tab keeps its output and its exit status, so a program that
+                                    // failed is said here rather than taking the window down with it.
+                                    Some(Ok(code)) => {
+                                        log::error!("rsharp: Agent exited with code {code}");
+                                        break;
+                                    }
+                                    Some(Err(why)) => {
+                                        log::error!("rsharp: Agent failed: {why}");
+                                        break;
+                                    }
+                                    None => {}
+                                }
+                            }
+                            Vec::new()
+                        }
+                    };
+                    for key in inputs {
+                        cx.background_executor().timer(std::time::Duration::from_millis(250)).await;
+                        let keystroke = Keystroke::parse(&key).expect("launch keys were validated");
+                        let target = cx.update(|cx| cx.active_window().unwrap_or(any)).unwrap_or(any);
+                        let _ = target.update(cx, |_, window, cx| window.dispatch_keystroke(keystroke, cx));
+                    }
                 }
             })
             .detach();

@@ -22,6 +22,7 @@ pub enum Step {
     Key(String),
     /// Text, a key at a time.
     Type(String),
+    Agent(Vec<String>),
 }
 
 impl LaunchOptions {
@@ -43,6 +44,24 @@ impl LaunchOptions {
                 "--bench" => options.bench = true,
                 "--mcp" => options.mcp = Some(PathBuf::new()),
                 "--type" => options.steps.push(Step::Type(args.next().ok_or("--type needs text")?)),
+                "--agent" => {
+                    let text = args.next().ok_or("--agent needs a program and arguments")?;
+                    let mut command = rsharp_core::run::command_line::split(&text);
+                    let Some(program) = command.first().filter(|p| !p.is_empty()) else {
+                        return Err("--agent needs a program".into());
+                    };
+                    let path = PathBuf::from(program);
+                    let resolved = if path.is_file() {
+                        Some(rsharp_core::paths::canonical(&path))
+                    } else {
+                        rsharp_core::programs::find(program, &[])
+                    };
+                    command[0] = resolved
+                        .ok_or_else(|| format!("--agent program {program:?} is not a file or on PATH"))?
+                        .to_string_lossy()
+                        .into_owned();
+                    options.steps.push(Step::Agent(command));
+                }
                 flag if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
                 path if options.path.is_none() => options.path = Some(path.into()),
                 extra => return Err(format!("one folder or solution at a time, not also {extra:?}")),
@@ -109,5 +128,18 @@ mod tests {
         assert_eq!((named.mcp, named.path), (Some(folder.clone()), None));
         assert!(parse(&["--mcp", folder.to_str().unwrap(), "--file", "A.cs"]).is_err());
         assert!(parse(&["--mcp", "/no/such/folder"]).is_err());
+    }
+
+    #[test]
+    fn agent_is_an_explicit_command_in_the_script_order_and_bad_programs_are_refused() {
+        assert!(parse(&["--agent"]).is_err());
+        assert!(parse(&["--agent", "   "]).is_err());
+        assert!(parse(&["--agent", "rsharp-a-program-that-does-not-exist"]).is_err());
+        if cfg!(unix) {
+            let options = parse(&["--key", "alt-f12", "--agent", "/bin/sh -c \"exit 7\"", "--type", "after"]).unwrap();
+            assert!(
+                matches!(&options.steps[..],[Step::Key(_),Step::Agent(command),Step::Type(_)] if command[0].ends_with("/bin/sh") && command[2]=="exit 7")
+            );
+        }
     }
 }

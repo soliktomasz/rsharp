@@ -102,6 +102,9 @@ pub fn menu_for(row: &TreeRow) -> Vec<MenuItem> {
     if matches!(row.kind, NodeKind::Solution | NodeKind::SolutionFolder | NodeKind::Project) {
         menu.splice(0..0, [Action("Build", None), Action("Rebuild", None), Action("Clean", None)]);
     }
+    if row.path.is_some() {
+        menu.push(Submenu("Open In", vec![Action("Terminal", None)]));
+    }
     menu
 }
 

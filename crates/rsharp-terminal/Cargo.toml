@@ -1,0 +1,11 @@
+[package]
+name = "rsharp-terminal"
+description = "Terminal emulation, PTY sessions and input, without UI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+alacritty_terminal.workspace = true
+portable-pty.workspace = true
+rsharp-core.workspace = true

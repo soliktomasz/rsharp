@@ -57,6 +57,7 @@ impl Properties {
 pub struct LaunchPlan {
     /// The configuration's name, as the windows and the status bar say it.
     pub name: String,
+    pub use_terminal: bool,
     /// The program started: the `dotnet` host for an assembly, or an executable.
     pub program: PathBuf,
     /// The program's arguments, the assembly first when it runs under `dotnet`.
@@ -122,6 +123,7 @@ impl LaunchPlan {
         };
         Ok(LaunchPlan {
             name: configuration.name.clone(),
+            use_terminal: configuration.use_terminal,
             program,
             arguments,
             working_directory,

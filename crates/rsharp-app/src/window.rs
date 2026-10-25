@@ -40,6 +40,7 @@ actions!(
         ToggleBuild,
         ToggleRun,
         ToggleUnitTests,
+        ToggleTerminal,
         RunAllTests,
         RunTests,
         RerunFailedTests,
@@ -106,6 +107,7 @@ mod new_project;
 mod nuget;
 mod run;
 mod solution_actions;
+mod terminal;
 mod tests;
 
 pub use build::{BuildOutcome, BuildStatus};
@@ -261,6 +263,7 @@ pub struct MainWindow {
     build_outcome: Option<build::BuildOutcome>,
     /// The build under way is a run's, which only a failure brings forward.
     implicit_build: bool,
+    terminal: Entity<crate::terminal::TerminalPanel>,
     run_console: Entity<crate::console::ConsoleView>,
     /// The run configurations of the folder's own, from `runConfigurations.json`, then the ones its projects make: made
     /// again as its projects and their profiles change, with the projects they came from and why each cannot launch, so
@@ -309,12 +312,27 @@ impl MainWindow {
                 m.cancel_build();
                 m.stop_run(cx);
                 m.cancel_tests();
+                m.terminal.update(cx, |t, cx| t.close_all(cx));
                 if let Some(handle) = m.creation_dialog {
                     let _ = handle.update(cx, |d, w, cx| d.cancel(w, cx));
                 }
             });
             true
         });
+        let terminal = cx.new(crate::terminal::TerminalPanel::new);
+        cx.subscribe_in(&terminal, window, |m, _, event: &crate::terminal::TerminalEvent, window, cx| {
+            match event {
+                crate::terminal::TerminalEvent::Empty => {
+                    m.dock.open.retain(|t| *t != Tool::Terminal);
+                    if let Some(e) = m.active_editor() {
+                        window.focus(&e.focus_handle(cx));
+                    }
+                }
+                crate::terminal::TerminalEvent::Link(link) => m.follow_terminal_link(link.clone(), window, cx),
+            }
+            cx.notify();
+        })
+        .detach();
         let root_focus = cx.focus_handle();
         window.focus(&root_focus);
         let nuget = cx.new(crate::nuget_view::NuGetView::new);
@@ -363,6 +381,7 @@ impl MainWindow {
         Self {
             tests: tests::Tests::new(test_view),
             build,
+            terminal,
             run_console,
             run_own: Vec::new(),
             run_configs: Vec::new(),
@@ -456,6 +475,7 @@ impl MainWindow {
         self.leave_tests(cx);
         self.leave_build(cx);
         self.leave_run(cx);
+        self.terminal.update(cx, |t, cx| t.close_all(cx));
         self.save_state(cx);
         self.leave_editors();
         let path = rsharp_core::paths::canonical(path);
@@ -1642,6 +1662,7 @@ impl MainWindow {
         self.leave_tests(cx);
         self.leave_build(cx);
         self.leave_run(cx);
+        self.terminal.update(cx, |t, cx| t.close_all(cx));
         self.save_state(cx);
         self.leave_editors();
         self.workspace = None;
@@ -1945,6 +1966,7 @@ impl Render for MainWindow {
                 }))
             })
             .on_action(cx.listener(|w, _: &FindAction, window, cx| w.find_action(window, cx)))
+            .on_action(cx.listener(|w, _: &ToggleTerminal, window, cx| w.toggle_terminal(window, cx)))
             // Each acts only while it has something to act on, so menus and Find Action grey it otherwise.
             .when(self.workspace.is_some(), |d| {
                 d.on_action(cx.listener(|w, _: &CloseSolution, window, cx| w.close_solution(window, cx)))
@@ -2066,7 +2088,22 @@ impl Render for MainWindow {
             .child(self.toolbar(window, cx))
             .child(match self.workspace {
                 Some(_) => self.body(window, cx).into_any_element(),
-                None => div().flex().flex_1().min_h_0().px(px(GAP)).child(self.welcome(cx)).into_any_element(),
+                None => div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .px(px(GAP))
+                    .gap(px(GAP))
+                    .child(self.welcome(cx))
+                    .when(self.dock.is_open(Tool::Terminal), |d| {
+                        d.child(div().h(px(self.dock.bottom_height)).child(self.tool_island(
+                            Tool::Terminal,
+                            window,
+                            cx,
+                        )))
+                    })
+                    .into_any_element(),
             })
             .child(self.status_bar(cx))
             .children(floating)
@@ -2379,6 +2416,10 @@ impl MainWindow {
             Tool::Build => self.build.clone().into_any_element(),
             Tool::Run => self.run_console.clone().into_any_element(),
             Tool::UnitTests => self.tests.view.clone().into_any_element(),
+            Tool::Terminal => {
+                self.ensure_terminal(cx);
+                self.terminal.clone().into_any_element()
+            }
         };
         island().child(header).child(content)
     }
@@ -2394,6 +2435,7 @@ impl MainWindow {
             Tool::Build => self.build_outcome.as_ref().map(|outcome| outcome.message.clone()),
             Tool::Run => self.run_outcome.as_ref().map(|outcome| outcome.message.clone()),
             Tool::UnitTests => None,
+            Tool::Terminal => None,
         }
     }
 
@@ -2491,11 +2533,15 @@ impl MainWindow {
             Tool::Build => self.build.focus_handle(cx),
             Tool::Run => self.run_console.focus_handle(cx),
             Tool::UnitTests => self.tests.view.focus_handle(cx),
+            Tool::Terminal => self.terminal.focus_handle(cx),
         }
     }
 
     /// Opens or closes a tool window; one opened takes the keys, one closed with them gives them to the editor.
     pub fn toggle_tool(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
+        if tool == Tool::Terminal {
+            self.ensure_terminal(cx);
+        }
         let had_focus = self.tool_area(tool, cx).contains_focused(window, cx);
         self.dock.toggle(tool);
         if self.dock.is_open(tool) {
