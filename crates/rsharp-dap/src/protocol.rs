@@ -147,6 +147,25 @@ pub struct Continued {
     pub all_threads_continued: Option<bool>,
 }
 
+/// A call a frame's statement can step into, in the order the calls run: Smart Step Into's choice.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StepInTarget {
+    pub id: i64,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub line: usize,
+    #[serde(default)]
+    pub column: usize,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct StepInTargets {
+    pub targets: Vec<StepInTarget>,
+}
+
 /// A place a paused thread could go on from in a source at a line: Set Next Statement's choice.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

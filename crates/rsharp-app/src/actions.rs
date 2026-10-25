@@ -26,7 +26,7 @@ use crate::window::{
     ApplyHotReloadChanges, AttachToProcess, BuildSelected, BuildSolution, CleanSelected, CleanSolution, DebugProgram,
     DetachDebug, EditRunConfigurations, EvaluateExpression, MuteBreakpoints, PauseDebug, ReattachToProcess,
     RebuildSelected, RebuildSolution, RerunProgram, ResumeDebug, RunProgram, SetNextStatement, ShowBreakpoints,
-    StepInto, StepOut, StepOver, Stop, StopDebug, ToggleBreakpoint, ToggleBuild, ToggleDebug, ToggleRun,
+    SmartStepInto, StepInto, StepOut, StepOver, Stop, StopDebug, ToggleBreakpoint, ToggleBuild, ToggleDebug, ToggleRun,
 };
 use crate::window::{Back, FindInFiles, Forward, GoToFile, GoToSymbol, GoToType, LastEditLocation, RecentFiles};
 use crate::window::{
@@ -88,6 +88,7 @@ pub static ALL: &[IdeAction] = &[
     ide!("Pause Program", "Run", ["break all", "pause"], PauseDebug),
     ide!("Step Over", "Run", ["next statement", "f10"], StepOver),
     ide!("Step Into", "Run", ["step into", "f11"], StepInto),
+    ide!("Smart Step Into", "Run", ["smart step into", "choose the call"], SmartStepInto),
     ide!("Step Out", "Run", ["step out"], StepOut),
     ide!("Evaluate Expression…", "Run", ["evaluate", "expression", "watch"], EvaluateExpression),
     ide!("Set Next Statement", "Run", ["set next statement", "move the execution point"], SetNextStatement),

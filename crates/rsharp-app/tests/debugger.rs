@@ -577,3 +577,57 @@ fn the_debug_window_lists_a_paused_programs_threads_and_choosing_one_shows_its_f
     );
     cx.simulate_keystrokes("shift-f5");
 }
+
+const SMART_STEP_PROGRAM: &str = "using System;\n\nclass Program\n{\n    static void Main()\n    {\n        var total = Sum(1, Double(5));\n        Console.WriteLine($\"total {total}\");\n    }\n\n    static int Double(int x)\n    {\n        return x * 2;\n    }\n\n    static int Sum(int a, int b)\n    {\n        return a + b;\n    }\n}\n";
+
+#[test]
+fn smart_step_into_steps_into_the_call_chosen() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-smart-step", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(&run.folder, "App/Program.cs", SMART_STEP_PROGRAM);
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((6, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    cx.simulate_keystrokes("f5");
+    let paused = pump(cx, |cx| main.read_with(cx, |main, _| main.debug_phase() == Phase::Paused));
+    assert!(paused, "the program did not stop at its breakpoint");
+
+    cx.simulate_keystrokes("shift-alt-f11");
+    let listed = pump(cx, |cx| cx.debug_bounds("smart step into dialog").is_some());
+    assert!(listed, "Shift+Alt+F11 did not offer the statement's calls");
+    let labels: Vec<String> =
+        main.read_with(cx, |main, _| main.step_targets().iter().map(|target| target.label.clone()).collect());
+    let sum = labels
+        .iter()
+        .position(|label| label.contains("Sum"))
+        .unwrap_or_else(|| panic!("Sum is not among the calls offered: {labels:?}"));
+    click(cx, if sum == 0 { "smart step into target 0" } else { "smart step into target 1" });
+
+    let stepped = pump(cx, |cx| {
+        main.read_with(cx, |main, _| {
+            main.debug_phase() == Phase::Paused
+                && main
+                    .debug_frames()
+                    .first()
+                    .is_some_and(|frame| frame.name.contains("Sum") && (16..=17).contains(&frame.line))
+        })
+    });
+    let frame = main.read_with(cx, |main, _| main.debug_frames().first().cloned());
+    assert!(stepped, "Smart Step Into did not stop in Sum's body: {:?}", frame.map(|frame| (frame.name, frame.line)));
+    assert_eq!(
+        main.read_with(cx, |main, _| main.debug_frames()[0].path()),
+        Some(source.clone()),
+        "the step went into the program's own file"
+    );
+    cx.simulate_keystrokes("shift-f5");
+}

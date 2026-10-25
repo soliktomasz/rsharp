@@ -456,6 +456,27 @@ impl Session {
         self.connection.request("stepIn", json!({ "threadId": thread }), REQUEST).map(drop)
     }
 
+    /// The calls a frame's statement can step into, in the order they run (Smart Step Into's question), from 0.
+    pub fn step_in_targets(&self, frame: i64) -> Result<Vec<protocol::StepInTarget>, String> {
+        let body = self.connection.request("stepInTargets", json!({ "frameId": frame }), REQUEST)?;
+        let answered: protocol::StepInTargets = serde_json::from_value(body)
+            .map_err(|error| format!("The debugger's step in targets did not read: {error}"))?;
+        Ok(answered
+            .targets
+            .into_iter()
+            .map(|target| protocol::StepInTarget {
+                line: target.line.saturating_sub(1),
+                column: target.column.saturating_sub(1),
+                ..target
+            })
+            .collect())
+    }
+
+    /// Smart Step Into: a step into one of the calls [`Session::step_in_targets`] gave.
+    pub fn step_into_target(&self, thread: i64, target: i64) -> Result<(), String> {
+        self.connection.request("stepIn", json!({ "threadId": thread, "targetId": target }), REQUEST).map(drop)
+    }
+
     pub fn step_out(&self, thread: i64) -> Result<(), String> {
         self.connection.request("stepOut", json!({ "threadId": thread }), REQUEST).map(drop)
     }

@@ -30,6 +30,8 @@ pub(super) struct DebugState {
     shown_at: Option<PathBuf>,
     /// What the debugger made of each breakpoint: whether it will be hit, and why not.
     verification: BTreeMap<(PathBuf, usize), (bool, Option<String>)>,
+    /// The calls Smart Step Into offered for the frame the program is stopped in.
+    step_targets: Vec<rsharp_dap::protocol::StepInTarget>,
     /// The program attached to, while one is; none for a launch.
     attached: Option<rsharp_core::debug::DotnetProcess>,
     /// The program attached to last in this folder, which Reattach asks for.
@@ -53,6 +55,7 @@ impl DebugState {
             threads: Vec::new(),
             shown_at: None,
             verification: BTreeMap::new(),
+            step_targets: Vec::new(),
             attached: None,
             recent_attached: None,
             pending: Vec::new(),
@@ -920,6 +923,8 @@ impl MainWindow {
 
     /// The session ended or was stopped: the lists go, and the status bar says how.
     fn finish_debug(&mut self, message: &str, cx: &mut Context<Self>) {
+        self.step_dialog = None;
+        self.debug.step_targets.clear();
         self.debug.threads.clear();
         self.evaluate_dialog = None;
         self.debug.session = None;
@@ -940,6 +945,8 @@ impl MainWindow {
 
     /// Leaving the folder: the session ends and everything it started with it.
     pub(super) fn leave_debug(&mut self, cx: &mut Context<Self>) {
+        self.step_dialog = None;
+        self.debug.step_targets.clear();
         self.debug.threads.clear();
         self.evaluate_dialog = None;
         self.debug.generation += 1;
@@ -962,6 +969,8 @@ impl MainWindow {
     }
 
     fn refuse_debug(&mut self, message: &str, cx: &mut Context<Self>) {
+        self.step_dialog = None;
+        self.debug.step_targets.clear();
         self.debug.threads.clear();
         self.evaluate_dialog = None;
         self.debug.generation += 1;
@@ -1327,6 +1336,75 @@ impl MainWindow {
         self.evaluate_dialog.clone()
     }
 
+    /// The calls Smart Step Into last offered, for a test.
+    pub fn step_targets(&self) -> &[rsharp_dap::protocol::StepInTarget] {
+        &self.debug.step_targets
+    }
+
+    /// Smart Step Into (Shift+Alt+F11): the calls the stopped statement makes, in the order they run, one chosen.
+    pub(super) fn open_smart_step_into(&mut self, cx: &mut Context<Self>) {
+        if self.debug.phase != Phase::Paused || self.step_dialog.is_some() {
+            return;
+        }
+        let Some(frame) = self.debug.frames.first().map(|frame| frame.id) else { return };
+        let Some(session) = self.debug.session.clone() else { return };
+        let generation = self.debug.generation;
+        let handle = self.handle;
+        cx.spawn(async move |_, cx| {
+            let read = cx.background_executor().spawn(async move { session.step_in_targets(frame) }).await;
+            let _ = handle.update(cx, |m, window, cx| {
+                if m.debug.generation != generation {
+                    return;
+                }
+                match read {
+                    Ok(targets) if targets.is_empty() => {
+                        m.said = Some("There is no call to step into at this frame".into());
+                        cx.notify();
+                    }
+                    Ok(targets) => m.show_step_dialog(targets, window, cx),
+                    Err(why) => m.fail_debug(&why, cx),
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn show_step_dialog(
+        &mut self,
+        targets: Vec<rsharp_dap::protocol::StepInTarget>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dialog = cx.new(|cx| crate::step_into_dialog::StepIntoDialog::new(&targets, cx));
+        cx.subscribe_in(&dialog, window, |m, _, ended: &crate::step_into_dialog::Ended, window, cx| match ended {
+            crate::step_into_dialog::Ended::Chosen(index) => {
+                m.step_dialog = None;
+                if let Some(target) = m.debug.step_targets.get(*index).map(|target| target.id) {
+                    m.step_into_call(target, cx);
+                }
+            }
+            crate::step_into_dialog::Ended::Dismissed => {
+                m.step_dialog = None;
+                m.focus_editor(window, cx);
+            }
+        })
+        .detach();
+        window.focus(&dialog.focus_handle(cx));
+        self.debug.step_targets = targets;
+        self.step_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    /// The chosen call stepped into, the debugger's answer waited for off the UI thread.
+    fn step_into_call(&mut self, target: i64, cx: &mut Context<Self>) {
+        let Some(thread) = self.debug.thread else { return };
+        self.debug.phase = Phase::Running;
+        self.debug.frames.clear();
+        self.clear_execution_line(cx);
+        self.debug_view.update(cx, |view, cx| view.running(cx));
+        self.ask_session(cx, move |session| session.step_into_target(thread, target), |_, (), _, _| {});
+    }
+
     /// The paused program's threads as last read, for a test.
     pub fn debug_threads(&self) -> &[rsharp_dap::protocol::Thread] {
         &self.debug.threads
@@ -1407,6 +1485,7 @@ impl MainWindow {
                     d.on_action(cx.listener(|m, _: &ResumeDebug, _, cx| m.resume_debug(cx)))
                         .on_action(cx.listener(|m, _: &EvaluateExpression, window, cx| m.open_evaluate(window, cx)))
                         .on_action(cx.listener(|m, _: &SetNextStatement, _, cx| m.set_next_statement(cx)))
+                        .on_action(cx.listener(|m, _: &SmartStepInto, _, cx| m.open_smart_step_into(cx)))
                         .on_action(cx.listener(|m, _: &StepOver, _, cx| m.step_debug(Step::Over, cx)))
                         .on_action(cx.listener(|m, _: &StepInto, _, cx| m.step_debug(Step::Into, cx)))
                         .on_action(cx.listener(|m, _: &StepOut, _, cx| m.step_debug(Step::Out, cx)))

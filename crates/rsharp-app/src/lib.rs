@@ -34,6 +34,7 @@ pub mod settings_dialog;
 pub mod solution_menu;
 pub mod solution_view;
 pub mod state;
+pub mod step_into_dialog;
 pub mod templates;
 pub mod test_finder;
 pub mod test_view;
