@@ -341,7 +341,9 @@ saying why, when dotnet or the adapter is not there. macOS is where they ran; Wi
 
 Passenger: `Debugging/`, `MainWindow.Attach.cs`, the Debugger notes in its CLAUDE.md; issues #145–#157, #214, #219.
 Done when: Passenger's debugger window tests, translated, pass on macOS, Windows x64 and Linux, against the same
-`tests/Debuggees`.
+`tests/Debuggees`. The translation has begun: `crates/rsharp-dap/tests/passenger.rs` runs `PauseTests`' three through
+the client against `LoopingConsoleApp` (a pause in its loop and a second after continuing, a step from a pause in its
+sleep back to the loop, and a TimeSpan's fields where its ToString cannot run).
 
 ### Phase 9: Avalonia and WPF (L)
 - A XAML host: `Passenger.Xaml` behind a thin JSON-lines (or LSP) process, giving completion, diagnostics,

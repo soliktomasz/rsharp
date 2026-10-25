@@ -281,8 +281,11 @@ editing session (`rsharp-text/tests/editing_session.rs`) checks 40,000 keys, und
 string: keep it passing rather than narrowing it. The Roslyn test runs the real server on a fresh project and
 skips, saying why, when the tool is not installed.
 
-Debug tests use real dotnet programs: `crates/rsharp-dap/tests/session.rs` stops one at a breakpoint through the
-client alone (frames, locals, evaluate, a step, its output) and `crates/rsharp-app/tests/debugger.rs` the same
+Debug tests use real dotnet programs: `crates/rsharp-dap/tests/passenger.rs` translates Passenger's own debugger
+tests against the same `tests/Debuggees` — `PauseTests`' three first, with `LoopingConsoleApp`: a pause stops its loop
+and a second pause after continuing does too, a step from a pause inside its sleep comes back to the loop, and a
+TimeSpan paused there shows its fields where its ToString cannot run; `crates/rsharp-dap/tests/session.rs` stops one
+at a breakpoint through the client alone (frames, locals, evaluate, a step, its output) and `crates/rsharp-app/tests/debugger.rs` the same
 through the window (F9, F5, the Debug window's buttons and lists, the marked line, resume to the end), along with
 the Breakpoints dialog's condition and mute, a false condition and a logpoint as the adapter runs them, Any
 exception turned off before an unhandled exception, attaching to a program the test started (its breakpoint is
