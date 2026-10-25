@@ -320,3 +320,91 @@ fn a_step_over_shows_what_the_call_returned() {
     );
     session.disconnect(true);
 }
+
+/// The source line a case is written on, counted from 1, as it reads.
+fn source_text(name: &str, line: usize) -> String {
+    let root = debuggees().expect("the debuggees are there");
+    std::fs::read_to_string(root.join(name).join("Program.cs"))
+        .expect("the debuggee's source reads")
+        .lines()
+        .nth(line - 1)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// The frame's locals, as Passenger's `host.Locals(stop)` reads them.
+fn locals_of(session: &Session, frame: &rsharp_dap::protocol::Frame) -> Vec<rsharp_dap::protocol::Variable> {
+    let scope =
+        session.scopes(frame.id).expect("the frame's scopes read").into_iter().next().expect("the frame has a scope");
+    session.variables(scope.variables_reference).expect("the locals read")
+}
+
+#[test]
+fn smart_step_into_lists_the_calls_in_the_order_they_run_and_steps_into_the_one_chosen() {
+    let Some(program) = stepping_program() else { return };
+    let source = stepping_source();
+    let (session, events) = started(
+        &program,
+        &[],
+        vec![(source, vec![SourceBreakpoint { line: 12, ..SourceBreakpoint::default() }])],
+        false,
+    );
+    let stopped = stop(&events, "breakpoint");
+    let frames = session.stack_trace(stopped.thread).expect("the stack reads");
+    let targets = session.step_in_targets(frames[0].id).expect("the calls are listed");
+    let labels: Vec<&str> = targets.iter().map(|target| target.label.as_str()).collect();
+    assert_eq!(labels, ["Inner()", "Outer(int)"], "the calls in the order they run: {targets:?}");
+
+    // Each is placed on its name, as Rider marks the calls on the line.
+    let text = source_text("SteppingConsoleApp", 13);
+    assert_eq!(targets[0].column, text.find("Inner").expect("Inner is written there"), "the inner call's place");
+    assert_eq!(targets[1].column, text.find("Outer").expect("Outer is written there"), "the outer call's place");
+
+    // Straight into Outer, past Inner, which has run by then: Outer is given what it returned.
+    session.step_into_target(stopped.thread, targets[1].id).expect("a step into Outer is asked");
+    let into = stop(&events, "step");
+    assert_eq!(line_at(&session, &into), 21, "Outer's own line");
+    let frames = session.stack_trace(into.thread).expect("the stack reads");
+    let top = frames.first().expect("the stop has a frame");
+    assert!(top.name.contains("Outer"), "the frame is Outer's: {top:?}");
+    let locals = locals_of(&session, top);
+    assert_eq!(
+        locals.iter().find(|variable| variable.name == "value").map(|variable| variable.value.as_str()),
+        Some("20"),
+        "Outer got what Inner returned: {locals:?}"
+    );
+    session.disconnect(true);
+}
+
+#[test]
+fn of_two_calls_of_the_same_method_the_second_chosen_is_the_one_stepped_into() {
+    let Some(program) = stepping_program() else { return };
+    let source = stepping_source();
+    let (session, events) = started(
+        &program,
+        &[],
+        vec![(source, vec![SourceBreakpoint { line: 13, ..SourceBreakpoint::default() }])],
+        false,
+    );
+    let stopped = stop(&events, "breakpoint");
+    let frames = session.stack_trace(stopped.thread).expect("the stack reads");
+    let targets = session.step_in_targets(frames[0].id).expect("the calls are listed");
+    let labels: Vec<&str> = targets.iter().map(|target| target.label.as_str()).collect();
+    assert_eq!(labels, ["Add(int, int)", "Add(int, int)"], "both calls are Add: {targets:?}");
+    assert!(targets[0].column > targets[1].column, "the inner call, which runs first, is listed first: {targets:?}");
+
+    session.step_into_target(stopped.thread, targets[1].id).expect("a step into the outer Add is asked");
+    let into = stop(&events, "step");
+    let frames = session.stack_trace(into.thread).expect("the stack reads");
+    let top = frames.first().expect("the stop has a frame");
+    let locals = locals_of(&session, top);
+    let value =
+        |name: &str| locals.iter().find(|variable| variable.name == name).map(|variable| variable.value.clone());
+    assert_eq!(
+        (value("a"), value("b")),
+        (Some("3".into()), Some("3".into())),
+        "the outer call's arguments: {locals:?}"
+    );
+    assert_eq!(line_at(&session, &into), 26, "Add's own line");
+    session.disconnect(true);
+}

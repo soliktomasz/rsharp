@@ -345,7 +345,8 @@ Done when: Passenger's debugger window tests, translated, pass on macOS, Windows
 the client against `LoopingConsoleApp` (a pause in its loop and a second after continuing, a step from a pause in its
 sleep back to the loop, and a TimeSpan's fields where its ToString cannot run), and `SteppingConsoleApp`'s stepping,
 await and returned-value cases (into `Inner()` and out, over to the next statement, over an await, and the values
-`Describe(Count())` returned).
+`Describe(Count())` returned), and its Smart Step Into cases (the calls of `Outer(Inner())` in the order they run, the
+one chosen stepped into, and the second of two `Add` calls).
 
 ### Phase 9: Avalonia and WPF (L)
 - A XAML host: `Passenger.Xaml` behind a thin JSON-lines (or LSP) process, giving completion, diagnostics,
