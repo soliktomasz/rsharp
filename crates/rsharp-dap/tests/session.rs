@@ -88,6 +88,11 @@ fn a_breakpoint_stops_the_program_and_its_values_are_read() {
     assert_eq!(a.value, "41", "a is 41 at the breakpoint");
     assert_eq!(session.evaluate("a * 2", frames[0].id).expect("evaluate answers").result, "82");
 
+    let changed = session.set_expression("a", "10", frames[0].id).expect("a is set");
+    assert_eq!(changed.value, "10", "the debugger says what it set");
+    assert_eq!(session.evaluate("a", frames[0].id).expect("evaluate answers").result, "10", "a is 10 now");
+    session.set_expression("a", "41", frames[0].id).expect("a is set back");
+
     session.step_over(stop.thread).expect("the step is taken");
     let (after, _) = wait_for_stop(&events);
     assert_eq!(after.reason, "step", "the program stopped after the step");

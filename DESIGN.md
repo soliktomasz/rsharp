@@ -252,8 +252,9 @@ Soft rounded rectangles at four radii: 10px for islands, 6px for tabs, toolbar w
 - The toolbar is 32px: 28px square buttons with 16px icons (Resume, Pause, Step Over, Step Into, Step Out, Stop),
   dimmed to 35% while they cannot act, and the session's state at the right in text-secondary.
 - Frames and Variables share the body: Frames is a 300px column of 24px rows (the chosen frame in selection) and
-  Variables takes the rest, its rows indented 18px a level with a 12px chevron; Watches sit under it around a 28px
-  search-field-styled row. The console is a bordered-off share of the bottom under a 24px "Console" label.
+  Variables takes the rest, its rows indented 18px a level with a 12px chevron (the chosen variable in selection,
+  with a 28px Set value row — a field and a Set button — under the tree while one is chosen); Watches sit under it
+  around a 28px search-field-styled row. The console is a bordered-off share of the bottom under a 24px "Console" label.
 - The gutter draws a 10px breakpoint dot in breakpoint red, left of the line numbers; one the debugger will not hit
   is 8px in warning amber, and one turned off or muted is 8px in text-secondary. The stopped statement's band is
   execution-point over the full width, behind the text.

@@ -135,6 +135,14 @@ pub struct Breakpoints {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
+pub struct SetValue {
+    pub value: String,
+    pub r#type: Option<String>,
+    pub variables_reference: i64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
 pub struct Continued {
     pub all_threads_continued: Option<bool>,
 }

@@ -495,3 +495,44 @@ fn evaluate_expression_answers_in_the_paused_frame_and_set_next_statement_moves_
     assert_eq!(marked, Some(6), "the editor marks the line Set Next Statement put the thread on");
     cx.simulate_keystrokes("shift-f5");
 }
+
+#[test]
+fn set_value_changes_a_local_and_the_program_goes_on_with_it() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-set-value", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(&run.folder, "App/Program.cs", PROGRAM);
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((7, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    cx.simulate_keystrokes("f5");
+    let paused = pump(cx, |cx| main.read_with(cx, |main, _| main.debug_phase() == Phase::Paused));
+    assert!(paused, "the program did not stop at its breakpoint");
+
+    click(cx, "debug variable a");
+    let offered = pump(cx, |cx| cx.debug_bounds("debug field: Set value").is_some());
+    assert!(offered, "choosing a local did not offer Set value");
+    click(cx, "debug field: Set value");
+    cx.simulate_keystrokes("secondary-a");
+    cx.simulate_input("10");
+    click(cx, "debug: Set Value");
+    let changed = pump(cx, |cx| {
+        main.read_with(cx, |main, cx| main.debug_view().read(cx).variable_value("a").as_deref() == Some("10"))
+    });
+    assert!(changed, "the Variables tree did not show a = 10 after Set value");
+
+    cx.simulate_keystrokes("f5");
+    let ended = pump(cx, |cx| main.read_with(cx, |main, _| !main.is_debugging()));
+    assert!(ended, "the program did not run to its end");
+    let output = main.read_with(cx, |main, cx| main.debug_console().read(cx).text());
+    assert!(output.contains("answer 11"), "the program went on with a = 10: {output:?}");
+}

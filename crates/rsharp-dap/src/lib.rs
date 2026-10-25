@@ -412,6 +412,16 @@ impl Session {
         serde_json::from_value(body).map_err(|error| format!("The debugger's answer did not read: {error}"))
     }
 
+    /// Set Value: an expression's value in a frame, as a local, a member or an element is changed there.
+    pub fn set_expression(&self, expression: &str, value: &str, frame: i64) -> Result<protocol::SetValue, String> {
+        let body = self.connection.request(
+            "setExpression",
+            json!({ "expression": expression, "value": value, "frameId": frame }),
+            REQUEST,
+        )?;
+        serde_json::from_value(body).map_err(|error| format!("The debugger's set value did not read: {error}"))
+    }
+
     /// The places a paused thread could go on from in a file at a line (Set Next Statement's question), from 0.
     pub fn goto_targets(&self, path: &Path, line: usize) -> Result<Vec<protocol::GotoTarget>, String> {
         let body =

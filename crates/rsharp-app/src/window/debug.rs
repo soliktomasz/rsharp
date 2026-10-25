@@ -1194,7 +1194,41 @@ impl MainWindow {
             DebugAction::OpenVariable { path, reference } => self.open_debug_variable(path, reference, cx),
             DebugAction::Evaluate(expression) => self.evaluate_watch(expression, cx),
             DebugAction::ToggleMute => self.set_breakpoints_muted(!self.debug.breakpoints.muted(), cx),
+            DebugAction::SetValue { expression, value } => self.set_value(expression, value, cx),
         }
+    }
+
+    /// Set Value: the debugger changes an expression in the frame the program is stopped in, and the frame's values are
+    /// read again.
+    fn set_value(&mut self, expression: String, value: String, cx: &mut Context<Self>) {
+        let Some(frame) = self.debug.frames.first().cloned() else { return };
+        let Some(session) = self.debug.session.clone() else { return };
+        let generation = self.debug.generation;
+        let handle = self.handle;
+        let (asked, set_to) = (expression.clone(), value.clone());
+        cx.spawn(async move |_, cx| {
+            let read = cx
+                .background_executor()
+                .spawn(async move {
+                    session.set_expression(&asked, &set_to, frame.id)?;
+                    read_variables(&session, frame.id)
+                })
+                .await;
+            let _ = handle.update(cx, |m, _, cx| {
+                if m.debug.generation != generation {
+                    return;
+                }
+                match read {
+                    Ok(variables) => {
+                        m.debug_view.update(cx, |view, cx| view.set_variables(variables, cx));
+                        m.said = Some(format!("Set {expression} to {value}").into());
+                        cx.notify();
+                    }
+                    Err(why) => m.fail_debug(&why, cx),
+                }
+            });
+        })
+        .detach();
     }
 
     /// Attach to Process: the machine's .NET programs listed off the UI thread, then Rider's dialog over the window.
@@ -1350,6 +1384,7 @@ fn variable_row(variable: rsharp_dap::protocol::Variable) -> VariableRow {
         name: variable.name,
         value: variable.value,
         r#type: variable.r#type,
+        evaluate_name: variable.evaluate_name,
         reference: variable.variables_reference,
     }
 }

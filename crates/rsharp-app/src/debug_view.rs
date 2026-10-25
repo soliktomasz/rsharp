@@ -12,6 +12,8 @@ use gpui::{
 };
 use std::path::PathBuf;
 
+gpui::actions!(debug_view, [ApplySetValue]);
+
 #[derive(Clone)]
 pub enum DebugAction {
     Resume,
@@ -31,6 +33,11 @@ pub enum DebugAction {
     Evaluate(String),
     /// Mute Breakpoints, or let them stop the program again.
     ToggleMute,
+    /// Set Value: an expression's new value, in the frame the program is stopped in.
+    SetValue {
+        expression: String,
+        value: String,
+    },
 }
 
 impl EventEmitter<DebugAction> for DebugView {}
@@ -60,6 +67,8 @@ pub struct VariableRow {
     pub name: String,
     pub value: String,
     pub r#type: Option<String>,
+    /// What a Set Value or a watch asks of it again; none for one the debugger cannot name.
+    pub evaluate_name: Option<String>,
     /// The debugger's handle on its members; 0 for one that has none.
     pub reference: i64,
 }
@@ -80,6 +89,11 @@ pub struct DebugView {
     variables: Vec<Node>,
     watch: Entity<TextField>,
     watches: Vec<(String, String)>,
+    /// The variable chosen in the tree, by its place in it, and the field that sets its value.
+    selected_variable: Option<Vec<usize>>,
+    set_value: Entity<TextField>,
+    /// The chosen variable's expression in the debugger; none while no variable that can be set is chosen.
+    set_expression: Option<String>,
     console: Entity<ConsoleView>,
     /// Whether every breakpoint is muted, as the folder has it.
     muted: bool,
@@ -113,6 +127,9 @@ impl DebugView {
             variables: Vec::new(),
             watch,
             watches: Vec::new(),
+            selected_variable: None,
+            set_value: cx.new(|cx| TextField::new("A new value", cx)),
+            set_expression: None,
             console,
             muted: false,
             focus: cx.focus_handle(),
@@ -184,7 +201,61 @@ impl DebugView {
 
     pub fn set_variables(&mut self, variables: Vec<VariableRow>, cx: &mut Context<Self>) {
         self.variables = variables.into_iter().map(|row| Node { row, open: false, children: None }).collect();
+        // The chosen variable stays chosen if its place still holds one, its value read again.
+        if let Some(path) = self.selected_variable.clone() {
+            match find(&mut self.variables, &path) {
+                Some(node) => {
+                    let value = node.row.value.clone();
+                    self.set_expression = node.row.evaluate_name.clone().filter(|name| !name.is_empty());
+                    self.set_value.update(cx, |field, cx| field.set_text(&value, cx));
+                }
+                None => {
+                    self.selected_variable = None;
+                    self.set_expression = None;
+                }
+            }
+        }
         cx.notify();
+    }
+
+    /// A value as the Variables tree shows it, for a test.
+    pub fn variable_value(&self, name: &str) -> Option<String> {
+        fn walk(nodes: &[Node], name: &str) -> Option<String> {
+            for node in nodes {
+                if node.row.name == name {
+                    return Some(node.row.value.clone());
+                }
+                if let Some(found) = node.children.as_deref().and_then(|children| walk(children, name)) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        walk(&self.variables, name)
+    }
+
+    /// A variable chosen in the tree: the field starts at its value, and Set Value asks the debugger for the rest.
+    fn select_variable(
+        &mut self,
+        path: Vec<usize>,
+        value: String,
+        evaluate_name: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.selected_variable = Some(path);
+        self.set_expression = evaluate_name.filter(|name| !name.is_empty());
+        self.set_value.update(cx, |field, cx| field.set_text(&value, cx));
+        cx.notify();
+    }
+
+    /// Set Value, from the field or its button: the chosen expression with the text typed.
+    fn apply_set_value(&mut self, cx: &mut Context<Self>) {
+        let Some(expression) = self.set_expression.clone() else { return };
+        let value = self.set_value.read(cx).text();
+        if value.trim().is_empty() {
+            return;
+        }
+        cx.emit(DebugAction::SetValue { expression, value });
     }
 
     /// The debugger's answer for a value's members: the rows of its children, shown at once.
@@ -304,6 +375,8 @@ impl Render for DebugView {
         };
         div()
             .debug_selector(|| "debug window".into())
+            .key_context("DebugWindow")
+            .on_action(cx.listener(|view, _: &ApplySetValue, _, cx| view.apply_set_value(cx)))
             .size_full()
             .flex()
             .flex_col()
@@ -450,21 +523,84 @@ impl Render for DebugView {
                                                     .text_color(theme::text_secondary())
                                                     .child(kind)
                                             }))
-                                            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                                                if !expandable {
-                                                    return;
+                                            .when(self.selected_variable.as_ref() == Some(&path), |d| {
+                                                d.bg(theme::selection())
+                                            })
+                                            .on_click(cx.listener({
+                                                let path = path.clone();
+                                                let row = row.clone();
+                                                move |view, _: &ClickEvent, _, cx| {
+                                                    view.select_variable(
+                                                        path.clone(),
+                                                        row.value.clone(),
+                                                        row.evaluate_name.clone(),
+                                                        cx,
+                                                    );
+                                                    if expandable {
+                                                        let opened = toggle(&mut view.variables, &path);
+                                                        if opened {
+                                                            cx.emit(DebugAction::OpenVariable {
+                                                                path: path.clone(),
+                                                                reference,
+                                                            });
+                                                        }
+                                                    }
+                                                    cx.notify();
                                                 }
-                                                let opened = toggle(&mut view.variables, &path);
-                                                if opened {
-                                                    cx.emit(DebugAction::OpenVariable {
-                                                        path: path.clone(),
-                                                        reference,
-                                                    });
-                                                }
-                                                cx.notify();
                                             }))
                                     })),
                             )
+                            .children(self.set_expression.clone().map(|_| {
+                                let focus = self.set_value.focus_handle(cx);
+                                div()
+                                    .h(px(28.))
+                                    .mx(px(6.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .child(div().text_color(theme::text_secondary()).child("Set value"))
+                                    .child(
+                                        div()
+                                            .id("set value box")
+                                            .debug_selector(|| "debug field: Set value".into())
+                                            .track_focus(&focus)
+                                            .flex_1()
+                                            .min_w_0()
+                                            .h(px(24.))
+                                            .px(px(6.))
+                                            .rounded(px(4.))
+                                            .border_1()
+                                            .border_color(theme::control_border())
+                                            .bg(theme::search_field())
+                                            .on_mouse_down(gpui::MouseButton::Left, {
+                                                let focus = focus.clone();
+                                                move |_, window, _| {
+                                                    window.focus(&focus);
+                                                    window.prevent_default();
+                                                }
+                                            })
+                                            .on_click(move |_, window, _| {
+                                                window.focus(&focus);
+                                                window.prevent_default();
+                                            })
+                                            .child(self.set_value.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("debug: Set Value")
+                                            .debug_selector(|| "debug: Set Value".into())
+                                            .h(px(24.))
+                                            .px(px(8.))
+                                            .rounded(px(4.))
+                                            .border_1()
+                                            .border_color(theme::control_border())
+                                            .hover(|d| d.bg(theme::button_hover()))
+                                            .child("Set")
+                                            .on_click(
+                                                cx.listener(|view, _: &ClickEvent, _, cx| view.apply_set_value(cx)),
+                                            ),
+                                    )
+                            }))
                             .child(label("Watches"))
                             .child(
                                 div()

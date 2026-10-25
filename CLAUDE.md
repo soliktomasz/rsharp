@@ -143,7 +143,7 @@ terminal and takes focus for a moment.
   or attach, the adapter's `initialized`, each file's breakpoints, the exception filters, then `configurationDone`,
   whose answer waits for the program's runtime. Threads, a thread's frames, a frame's scopes and values, an
   expression (Evaluate and a watch), continue/next/stepIn/stepOut/pause, and disconnect/terminate are typed
-  requests, as are Set Next Statement's `gotoTargets` and `goto`; what the adapter says unasked (stops, output, exit,
+  requests, as are Set Next Statement's `gotoTargets` and `goto` and Set Value's `setExpression`; what the adapter says unasked (stops, output, exit,
   termination) comes as `Event`s on its own threads, and a request the client does not offer — a program in the
   terminal — is refused rather than left waiting.
 - `crates/rsharp-mcp`: no UI. RSharp as an MCP server (`rsharp --mcp [FOLDER]`, JSON-RPC a line at a time on
@@ -285,8 +285,8 @@ through the window (F9, F5, the Debug window's buttons and lists, the marked lin
 the Breakpoints dialog's condition and mute, a false condition and a logpoint as the adapter runs them, Any
 exception turned off before an unhandled exception, attaching to a program the test started (its breakpoint is
 hit, then Stop detaches and the program runs on), and Evaluate Expression answering in the paused frame before
-Set Next Statement moves the thread back to the caret's line; both skip, saying why, when dotnet or the adapter is
-not there.
+Set Next Statement moves the thread back to the caret's line, and a local set with Set Value making the program
+print its new total; both skip, saying why, when dotnet or the adapter is not there.
 
 Git tests build real repositories and, when a remote is needed, a bare one beside them — never the person's and
 never a network service: `crates/rsharp-core/tests/git.rs` the repository alone (porcelain records, odd paths,

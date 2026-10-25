@@ -79,6 +79,7 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("alt-f8", EvaluateExpression, None),
         // Rider's Visual Studio keymap's; its macOS keymap leaves Set Next Statement to the menu.
         KeyBinding::new("ctrl-shift-f10", SetNextStatement, None),
+        KeyBinding::new("enter", crate::debug_view::ApplySetValue, Some("DebugWindow")),
         KeyBinding::new("escape", Dismiss, Some("EvaluateDialog")),
         KeyBinding::new("enter", Choose, Some("EvaluateDialog")),
         KeyBinding::new("ctrl-f5", RunProgram, None),
