@@ -258,6 +258,8 @@ Soft rounded rectangles at four radii: 10px for islands, 6px for tabs, toolbar w
   Variables takes the rest, its rows indented 18px a level with a 12px chevron (the chosen variable in selection,
   with a 28px Set value row — a field and a Set button — under the tree while one is chosen); Watches sit under it
   around a 28px search-field-styled row. The console is a bordered-off share of the bottom under a 24px "Console" label.
+- A stopped line's frame values are one inlay hint at the line's end — `a = 41 · b = 42` — in the inlay-hint colour
+  on the inlay-hint chip, four values at most.
 - The gutter draws a 10px breakpoint dot in breakpoint red, left of the line numbers; one the debugger will not hit
   is 8px in warning amber, and one turned off or muted is 8px in text-secondary. The stopped statement's band is
   execution-point over the full width, behind the text.

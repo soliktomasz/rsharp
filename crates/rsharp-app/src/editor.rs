@@ -1530,6 +1530,7 @@ impl Element for EditorElement {
             let buffer = buffer.read(cx);
             let breakpoints = buffer.breakpoints.clone();
             let execution_line = buffer.execution_line;
+            let inline_values = buffer.inline_values.clone();
             let syntax: Vec<Highlight> =
                 buffer.tree.as_ref().map(|tree| highlights(tree, text, byte_range.clone())).unwrap_or_default();
             // Roslyn's colours win where it named a word; the syntax's fill the rest.
@@ -1562,14 +1563,22 @@ impl Element for EditorElement {
             for row in &shown {
                 let content: String = text.byte_slice(row.start..row.end).to_string();
                 let runs = runs_for(&content, row.start, &colours, &code_font);
-                // The hints on the row, a wrapped row's last place being the next row's first.
-                let hints: Vec<(usize, &str)> = editor
+                // The hints on the row, a wrapped row's last place being the next row's first; the debugger's inline
+                // values are one more, at the stopped row's end.
+                let mut hints: Vec<(usize, &str)> = editor
                     .assist
                     .hints
                     .iter()
                     .filter(|(at, _)| (row.start..row.end).contains(at) || (*at == row.end && row.last))
                     .map(|(at, label)| (at - row.start, label.as_str()))
                     .collect();
+                if let Some((line, values)) = &inline_values
+                    && *line == row.line
+                    && row.last
+                    && !hints.iter().any(|(at, _)| *at == row.end - row.start)
+                {
+                    hints.push((row.end - row.start, values.as_str()));
+                }
                 lines.push(Shaped::new(&content, runs, &hints, font_size, &code_font, window));
                 let number = (row.first && show_numbers).then(|| {
                     let number = (row.line + 1).to_string();

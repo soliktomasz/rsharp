@@ -326,11 +326,11 @@ the order they run, and steps into the one chosen. A configuration with Use exte
 a Terminal tab: the adapter's runInTerminal request is answered with the tab's process, and Stop ends it. What a
 step over's calls returned is shown in its own Return values group above the locals. Evaluate Expression lists the
 value's members a level deep, and a step over an await stops after it (the adapter's own async stepper, proven by a
-window test). The window test takes a breakpoint through F9, F5, the Debug window's own Step Over and Resume
+window test). The stopped line carries its frame's simple values at its end as inline values, four at most. The window test takes a breakpoint through F9, F5, the Debug window's own Step Over and Resume
 buttons and its frame list, and checks the marked line and the program's output; both debugger suites skip,
 saying why, when dotnet or the adapter is not there. macOS is where they ran; Windows and Linux are CI's.
 - Data breakpoints and function breakpoints. (Not yet; data breakpoints are Windows x64's to offer.)
-- Inline values. (Not yet.)
+- Data breakpoints (Windows x64's to offer) and function breakpoints. (Not yet.)
 - The Debug window's Evaluate Expression members (its result is a line in the dialog; the Variables tree has the
   rest). (Not yet.)
 - Decompiled symbols and Hot Reload while debugging. (Not yet.)

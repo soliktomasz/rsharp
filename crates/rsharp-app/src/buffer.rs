@@ -70,6 +70,8 @@ pub struct Buffer {
     pub breakpoints: Vec<BreakpointMark>,
     /// The line the debugger is stopped at, if it is stopped in this file.
     pub execution_line: Option<usize>,
+    /// The frame's values, set in at the end of the stopped line as Rider's inline values are.
+    pub inline_values: Option<(usize, String)>,
     git_comparing: Option<Task<()>>,
     is_csharp: bool,
     parsing: Option<Task<()>>,
@@ -222,6 +224,7 @@ impl Buffer {
             git_hunks: Arc::new(Vec::new()),
             breakpoints: Vec::new(),
             execution_line: None,
+            inline_values: None,
             git_comparing: None,
             is_csharp,
             parsing: None,
@@ -343,6 +346,14 @@ impl Buffer {
     pub fn set_breakpoints(&mut self, lines: Vec<BreakpointMark>, cx: &mut Context<Self>) {
         if self.breakpoints != lines {
             self.breakpoints = lines;
+            cx.notify();
+        }
+    }
+
+    /// The frame's values as the stopped line shows them, or none.
+    pub fn set_inline_values(&mut self, values: Option<(usize, String)>, cx: &mut Context<Self>) {
+        if self.inline_values != values {
+            self.inline_values = values;
             cx.notify();
         }
     }

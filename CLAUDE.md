@@ -291,8 +291,9 @@ Set Next Statement moves the thread back to the caret's line, and a local set wi
 print its new total, a program's Main and worker threads listed before the other is chosen and its frames read, and
 Smart Step Into choosing Sum of a statement's two calls and stopping in its body, a configuration with Use external
 console starting its program in a Terminal tab whose text carries what it wrote, a step over showing what Double(21)
-returned, Evaluate Expression showing a paused List's members, and a step over an await stopping after it; both skip,
-saying why, when dotnet or the adapter is not there.
+returned, Evaluate Expression showing a paused List's members, a step over an await stopping after it, and a stop
+setting its frame's values in at the end of its line (cleared when the program runs on); both skip, saying why, when
+dotnet or the adapter is not there.
 
 Git tests build real repositories and, when a remote is needed, a bare one beside them — never the person's and
 never a network service: `crates/rsharp-core/tests/git.rs` the repository alone (porcelain records, odd paths,

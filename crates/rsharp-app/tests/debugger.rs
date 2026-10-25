@@ -837,3 +837,44 @@ fn stepping_over_an_await_stops_after_it() {
     );
     cx.simulate_keystrokes("shift-f5");
 }
+
+#[test]
+fn a_stop_sets_the_frame_values_in_at_the_end_of_its_line() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-inline-values", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(&run.folder, "App/Program.cs", PROGRAM);
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    // The WriteLine's line: a and b are both assigned by then.
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((8, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    cx.simulate_keystrokes("f5");
+    assert!(pump(cx, |cx| main.read_with(cx, |main, _| main.debug_phase() == Phase::Paused)));
+
+    let inline = main.read_with(cx, |_, cx| {
+        rsharp_app::buffer::find(&source, cx).and_then(|buffer| buffer.read(cx).inline_values.clone())
+    });
+    let text = inline.as_ref().map(|(_, text)| text.clone()).unwrap_or_default();
+    assert_eq!(
+        inline.as_ref().map(|(line, _)| *line),
+        Some(8),
+        "the values are set in on the stopped line: {inline:?}"
+    );
+    assert!(text.contains("a = 41") && text.contains("b = 42"), "the frame's values are set in: {text:?}");
+
+    cx.simulate_keystrokes("f5");
+    assert!(pump(cx, |cx| main.read_with(cx, |main, _| !main.is_debugging())));
+    let cleared = main.read_with(cx, |_, cx| {
+        rsharp_app::buffer::find(&source, cx).and_then(|buffer| buffer.read(cx).inline_values.clone())
+    });
+    assert!(cleared.is_none(), "running on cleared the values: {cleared:?}");
+}

@@ -853,6 +853,29 @@ impl MainWindow {
             })
             .collect();
         let at = at.or_else(|| frames.first().and_then(|frame| frame.path().map(|path| (path, frame.line))));
+        // The stopped frame's values, set in at the end of its line as Rider's inline values are: simple ones only,
+        // four at most, each cut short.
+        let inline = frames.first().and_then(|frame| {
+            frame.path()?;
+            let parts: Vec<String> = variables
+                .iter()
+                .filter(|row| {
+                    row.reference == 0
+                        && !row.name.is_empty()
+                        && !row.name.starts_with("$ReturnValue")
+                        && row.evaluate_name.as_deref() != Some("this")
+                })
+                .take(4)
+                .map(|row| {
+                    let mut value: String = row.value.chars().take(40).collect();
+                    if row.value.chars().count() > 40 {
+                        value.push('…');
+                    }
+                    format!("{} = {value}", row.name)
+                })
+                .collect();
+            (!parts.is_empty()).then(|| format!("  {}", parts.join("  ·  ")))
+        });
         self.debug.frames = frames;
         self.debug.threads = threads;
         self.debug.phase = Phase::Paused;
@@ -871,8 +894,9 @@ impl MainWindow {
             view.set_threads(threads, chosen, cx);
             view.set_variables(variables, cx);
         });
+        self.clear_execution_line(cx);
         if let Some((path, line)) = at {
-            self.show_execution_line(&path, line, cx);
+            self.show_stop_marks(&path, line, inline, cx);
             self.open_file(&path, Some((line, 0)), window, cx);
         }
         self.said = Some(status.into());
@@ -1335,11 +1359,14 @@ impl MainWindow {
         buffer.update(cx, |buffer, cx| buffer.set_breakpoints(marks, cx));
     }
 
-    /// Marks the line the program is stopped at, clearing the line it was at.
-    fn show_execution_line(&mut self, path: &Path, line: usize, cx: &mut App) {
-        self.clear_execution_line(cx);
+    /// Marks the line the program is stopped at, with the frame's values set in at its end, clearing the line it was
+    /// at before.
+    fn show_stop_marks(&mut self, path: &Path, line: usize, inline: Option<String>, cx: &mut App) {
         if let Some(buffer) = crate::buffer::find(&path.to_path_buf(), cx) {
-            buffer.update(cx, |buffer, cx| buffer.set_execution_line(Some(line), cx));
+            buffer.update(cx, |buffer, cx| {
+                buffer.set_execution_line(Some(line), cx);
+                buffer.set_inline_values(inline.map(|values| (line, values)), cx);
+            });
             self.debug.shown_at = Some(path.to_path_buf());
         }
     }
@@ -1348,7 +1375,10 @@ impl MainWindow {
         if let Some(path) = self.debug.shown_at.take()
             && let Some(buffer) = crate::buffer::find(&path, cx)
         {
-            buffer.update(cx, |buffer, cx| buffer.set_execution_line(None, cx));
+            buffer.update(cx, |buffer, cx| {
+                buffer.set_execution_line(None, cx);
+                buffer.set_inline_values(None, cx);
+            });
         }
     }
 
