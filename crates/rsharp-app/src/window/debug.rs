@@ -401,18 +401,37 @@ impl MainWindow {
         let generation = self.debug.generation;
         let handle = self.handle;
         cx.spawn(async move |_, cx| {
-            let read = cx.background_executor().spawn(async move { session.evaluate(&expression, frame) }).await;
+            let read = cx
+                .background_executor()
+                .spawn(async move {
+                    let value = session.evaluate(&expression, frame)?;
+                    let members = if value.variables_reference == 0 {
+                        Vec::new()
+                    } else {
+                        session
+                            .variables(value.variables_reference)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|variable| (variable.name, variable.value, variable.r#type))
+                            .collect()
+                    };
+                    Ok((value, members))
+                })
+                .await;
             let _ = handle.update(cx, |m, _, cx| {
                 if m.debug.generation != generation || m.evaluate_dialog.as_ref() != Some(&dialog) {
                     return;
                 }
                 match read {
-                    Ok(value) => {
+                    Ok((value, members)) => {
                         let answer = match value.r#type {
                             Some(kind) => format!("{} ({kind})", value.result),
                             None => value.result,
                         };
-                        dialog.update(cx, |dialog, cx| dialog.set_result(answer, false, cx));
+                        dialog.update(cx, |dialog, cx| {
+                            dialog.set_result(answer, false, cx);
+                            dialog.set_members(members, cx);
+                        });
                     }
                     Err(why) => dialog.update(cx, |dialog, cx| dialog.set_result(why, true, cx)),
                 }

@@ -23,6 +23,8 @@ pub struct EvaluateDialog {
     frame: String,
     /// The value or the debugger's reason, and whether it is a failure.
     result: Option<(String, bool)>,
+    /// The value's members, a level deep, as the debugger names and shows them.
+    members: Vec<(String, String, Option<String>)>,
     focus: FocusHandle,
     _expression: Subscription,
 }
@@ -45,6 +47,7 @@ impl EvaluateDialog {
             expression,
             frame: frame.unwrap_or_else(|| "no frame".into()),
             result: None,
+            members: Vec::new(),
             focus: cx.focus_handle(),
             _expression: subscription,
         }
@@ -58,7 +61,19 @@ impl EvaluateDialog {
     /// What the debugger answered, or why it could not: shown under the expression.
     pub fn set_result(&mut self, result: String, error: bool, cx: &mut Context<Self>) {
         self.result = Some((result, error));
+        self.members.clear();
         cx.notify();
+    }
+
+    /// The value's members, when it has any: a name, its value and its type.
+    pub fn set_members(&mut self, members: Vec<(String, String, Option<String>)>, cx: &mut Context<Self>) {
+        self.members = members;
+        cx.notify();
+    }
+
+    /// The members shown, for a test.
+    pub fn members(&self) -> &[(String, String, Option<String>)] {
+        &self.members
     }
 
     /// What the expression field holds, for a test.
@@ -166,10 +181,50 @@ impl Render for EvaluateDialog {
                                 None => "Enter evaluates the expression".into(),
                             }),
                     )
+                    .children((!self.members.is_empty()).then(|| {
+                        let rows: Vec<gpui::AnyElement> =
+                            self.members
+                                .iter()
+                                .enumerate()
+                                .map(|(index, (name, value, kind))| {
+                                    div()
+                                        .id(("evaluate member", index))
+                                        .debug_selector(move || format!("evaluate member {index}"))
+                                        .h(px(22.))
+                                        .px(px(6.))
+                                        .rounded(px(4.))
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(4.))
+                                        .hover(|d| d.bg(theme::row_hover()))
+                                        .child(div().flex_none().child(name.clone()))
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .truncate()
+                                                .text_color(theme::text_muted())
+                                                .child(format!("= {value}")),
+                                        )
+                                        .children(kind.clone().map(|kind| {
+                                            div().flex_none().text_color(theme::text_secondary()).child(kind)
+                                        }))
+                                        .into_any_element()
+                                })
+                                .collect();
+                        div()
+                            .id("evaluate members")
+                            .max_h(px(160.))
+                            .overflow_y_scroll()
+                            .flex()
+                            .flex_col()
+                            .child(div().text_color(theme::text_secondary()).child("Members"))
+                            .children(rows)
+                    }))
                     .child(
                         div()
                             .text_color(theme::text_secondary())
-                            .child("Members are in the Debug window's Variables; Enter evaluates again after an edit."),
+                            .child("Enter evaluates again after an edit; the Variables tree has the whole frame."),
                     ),
             )
             .child(

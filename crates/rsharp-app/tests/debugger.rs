@@ -739,3 +739,101 @@ fn a_step_over_shows_what_its_call_returned() {
     assert!(cx.debug_bounds("debug return value 0").is_some(), "the Debug window shows the Return values group");
     cx.simulate_keystrokes("shift-f5");
 }
+
+#[test]
+fn evaluate_expression_shows_the_values_members() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-evaluate-members", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(
+        &run.folder,
+        "App/Program.cs",
+        "using System;\nusing System.Collections.Generic;\n\nclass Program\n{\n    static void Main()\n    {\n        var numbers = new List<int> { 3, 7, 11 };\n        Console.WriteLine(numbers.Count);\n    }\n}\n",
+    );
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    // The WriteLine's line: numbers is assigned by then.
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((8, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    cx.simulate_keystrokes("f5");
+    assert!(pump(cx, |cx| main.read_with(cx, |main, _| main.debug_phase() == Phase::Paused)));
+
+    cx.simulate_keystrokes("alt-f8");
+    assert!(pump(cx, |cx| cx.debug_bounds("evaluate dialog").is_some()));
+    click(cx, "evaluate field: Expression");
+    cx.simulate_input("numbers");
+    cx.simulate_keystrokes("enter");
+    assert!(
+        pump(cx, |cx| {
+            main.read_with(cx, |main, cx| {
+                main.evaluate_dialog().is_some_and(|dialog| dialog.read(cx).result().is_some())
+            })
+        }),
+        "Evaluate Expression never answered"
+    );
+    let (result, members) = main.read_with(cx, |main, cx| {
+        main.evaluate_dialog()
+            .map(|dialog| (dialog.read(cx).result().map(str::to_string), dialog.read(cx).members().to_vec()))
+            .unwrap_or_default()
+    });
+    assert!(
+        result.as_deref().is_some_and(|result| result.contains("Count = 3")),
+        "the list's count is the result: {result:?}"
+    );
+    assert!(
+        members.iter().any(|(name, value, _)| name == "[2]" && value == "11"),
+        "the evaluated list's members were not shown; result {result:?}, members {members:?}"
+    );
+    assert!(cx.debug_bounds("evaluate member 0").is_some(), "the members are rows in the dialog");
+    cx.simulate_keystrokes("escape");
+    cx.simulate_keystrokes("shift-f5");
+}
+
+#[test]
+fn stepping_over_an_await_stops_after_it() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-async-step", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(
+        &run.folder,
+        "App/Program.cs",
+        "using System;\nusing System.Threading.Tasks;\n\nclass Program\n{\n    static async Task<int> Work()\n    {\n        var value = await Compute();\n        return value + 1;\n    }\n\n    static async Task<int> Compute()\n    {\n        await Task.Delay(10);\n        return 41;\n    }\n\n    static async Task Main()\n    {\n        var result = await Work();\n        Console.WriteLine($\"result {result}\");\n    }\n}\n",
+    );
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((7, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    cx.simulate_keystrokes("f5");
+    assert!(pump(cx, |cx| main.read_with(cx, |main, _| main.debug_phase() == Phase::Paused)));
+
+    cx.simulate_keystrokes("f10");
+    let stepped = pump(cx, |cx| {
+        main.read_with(cx, |main, _| {
+            main.debug_phase() == Phase::Paused && main.debug_frames().first().is_some_and(|frame| frame.line == 8)
+        })
+    });
+    let frame = main.read_with(cx, |main, _| main.debug_frames().first().map(|frame| (frame.name.clone(), frame.line)));
+    assert!(stepped, "Step Over did not stop after the await: {frame:?}");
+    assert_eq!(
+        main.read_with(cx, |main, _| main.debug_frames()[0].path()),
+        Some(source.clone()),
+        "the stop is in the method that awaited"
+    );
+    cx.simulate_keystrokes("shift-f5");
+}

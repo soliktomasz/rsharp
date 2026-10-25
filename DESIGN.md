@@ -264,7 +264,8 @@ Soft rounded rectangles at four radii: 10px for islands, 6px for tabs, toolbar w
 - Rider's Smart Step Into popup is 460 wide: a 40px title, then 26px rows of the statement's calls (the chosen one in
   selection) with their line:column in text-secondary.
 - Rider's Evaluate Expression dialog is 560 wide: a 44px title with the frame's name, the expression field in a
-  26px box, a Result box at least 48px high (warning when the debugger refused), and Close beside Evaluate.
+  26px box, a Result box at least 48px high (warning when the debugger refused), the value's members as 22px rows in
+  a 160px scroll (name, `= value` in text-muted, type in text-secondary), and Close beside Evaluate.
 - Rider's Attach to Process dialog is 820×520: a 44px title, a 40px row with the search field and Refresh, the
   Executable / Process ID / User / Command Line headings over 24px rows (Recently attached first), and Cancel beside
   the primary "Attach with .NET Debugger" in a 56px footer.
