@@ -7,6 +7,8 @@ change that brings it in.
 
 | Crate | Licence | Copyright |
 |---|---|---|
+| `alacritty_terminal` | Apache-2.0 | The Alacritty Project Contributors |
+| `portable-pty` | MIT | Wez Furlong |
 | `gpui` | Apache-2.0 | Zed Industries, Inc. |
 | `async_zip` | MIT | Harry (Majored) and contributors |
 | `serde_json_lenient` | MIT OR Apache-2.0 | Google LLC; Erick Tryzelaar, David Tolnay and contributors |
@@ -45,6 +47,9 @@ gpui brings about 550 crates of its own. Their notices are not yet written out: 
   Build's `rerun.svg`, `stop.svg` and `tw-build.svg` use `expui/run/rerun_dark.svg`,
   `expui/run/stop_dark.svg` and `expui/toolwindows/build_dark.svg`; `clear.svg` is its `actions/gc_dark.svg`.
   Run's `run.svg` and `tw-run.svg` use `expui/run/run_dark.svg` and `expui/toolwindows/run_dark.svg`.
+  Terminal's `tw-terminal.svg` is IntelliJ Community's Apache-2.0 `expui/toolwindow/terminal_dark.svg`, from the
+  bundled Terminal platform plugin's `plugins/terminal/lib/terminal.jar`; New Session's `add.svg` is
+  `expui/general/add_dark.svg` from `lib/intellij.platform.ide.jar`.
 
 The colours in `crates/rsharp-app/src/theme.rs` are values read from Rider's Islands Dark and Rider Dark themes.
 

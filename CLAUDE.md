@@ -16,7 +16,7 @@ that makes a key cost more than what it changed needs a reason.
 ```sh
 git submodule update --init   # vendor/passenger, Passenger's sidecars, which the build makes with dotnet
 just build                 # cargo build; warnings are errors (.cargo/config.toml)
-just run [PATH] [--file F] [--caret L:C] [--key KEYS] [--type TEXT]   # the IDE on a folder, solution or project
+just run [PATH] [--file F] [--caret L:C] [--key KEYS] [--type TEXT] [--agent CMD]   # the IDE on a folder, solution or project
 just test [filter]         # every test
 just screenshot OUT.png [args]   # the real window captured on macOS (tools/screenshot.sh; WAIT=seconds,
                            # SHOT_WINDOW=Settings for another window by title; a state folder of its own)
@@ -29,7 +29,8 @@ tools/bench.sh             # the release build on 1, 3 and 10 projects: start, l
 
 `--key` and `--type` are steps through the window's real input once it has opened, in order, each waiting for
 what the one before opened, and all of them for Roslyn to load the projects (at most a minute): `--key cmd-shift-a
---type clo` shows Find Action with "clo" typed. A malformed key is
+--type clo` shows Find Action with "clo" typed. `--agent CMD` runs an explicitly named program in a Terminal tab
+and waits for it to end well; it is the only way an agent runs. A malformed key or command is
 fatal, as every malformed flag is.
 
 `just` isn't required: each recipe is one cargo command. A Debug build optimises dependencies (gpui and
@@ -46,6 +47,10 @@ terminal and takes focus for a moment.
   child leads a process group and a watchdog shell kills that group once the IDE's pipe to it closes; on
   Windows the child is in a job of its own, killed when the IDE's handle closes. Either way it holds however
   the IDE ended, SIGKILL included (Roslyn's BuildHost ignores SIGTERM and outlived Roslyn before it).
+  `process::pty` is the other way in — `spawn_pty` for a terminal — under the same contract: `Lifeline::watch_pid`
+  runs `sidecars/pty-guard` (built by the crate's `build.rs` from `src/process/pty_guard.rs`), which ends every
+  process of the child's *session* and not only its original group, since an interactive shell's jobs lead groups
+  of their own; Windows reuses the job. `PtyChild` owns the master, the pid, `try_wait` and the tree cleanup.
   `paths::canonical` drops Windows' `\\?\` and URIs are `file:///C:/…`, as Roslyn reports them. `paths` (canonical
   paths, `file://` URIs), `programs` (finds `dotnet` as a login shell would), `dotnet` (literal CLI commands,
   English UTF-8 output, isolated MSBuild workers and no inherited SDK overrides), `build` (Build/Rebuild/Clean
@@ -101,6 +106,14 @@ terminal and takes focus for a moment.
   Rider's Group By, filters, merged source/runner tree and results; `window/tests.rs` saves and builds first,
   crosses worker events to the UI, and cancels hosts on Stop or workspace close. Grouping/filter choices live in
   the folder's `unitTests.json`.
+- `crates/rsharp-terminal`: no UI. `Screen` is `alacritty_terminal`'s emulator with RSharp's bounds: 10,000 lines of
+  scrollback, the visible cells, cursor, modes, title and selection, and answers to a program's queries (cursor
+  position, size, colours) through an `EventListener`; `Session` owns one PTY — `rsharp_core::process::spawn_pty` —
+  with a reader thread feeding the screen in bounded batches, a writer thread draining `Outbox`, whose
+  `INPUT_LIMIT` is 1 MB and whose `paste` refuses rather than blocks, and a thread that waits for the child,
+  drains the last output with a bounded wait and publishes its exit once. `input` is xterm's keys, mouse reports
+  and a paste that cannot escape a program's bracketed paste. `shell` is the person's login shell (or `sh` in a
+  test's own `HISTFILE`), PowerShell on Windows.
 - `crates/rsharp-lsp`: the LSP client (JSON-RPC over stdio, a reader thread, `ServerFailed` the one failure; a
   server's request the client answers itself, as `passenger/projectInfo`, on a thread of its own) and `start_roslyn`,
   which runs Roslyn with `--clientProcessId`, so it ends with the IDE even after a crash. Its `build.rs` publishes
@@ -133,6 +146,13 @@ terminal and takes focus for a moment.
   the program in the Run console, and the browser opened once it listens; with Settings' Hot Reload on, the
   project runs under `dotnet watch` instead (its own build, the plan's arguments after `--`, no launch profile),
   Apply Hot Reload Changes saves for it, and `run::watch` turns watch's own lines into the person's sentences.
+  A configuration with Use external console starts the same resolved plan in a Terminal tab instead, through
+  `window/terminal.rs`, which also owns the toggle, Open In Terminal and `run_agent`'s Agent tab; the tab is
+  named for the configuration, keeps its output and exit when it ends, and Rerun replaces it.
+  `terminal/panel.rs` is the Terminal tool window (tabs, New Session, the program-or-shell view) and
+  `terminal/view.rs` its gpui element: only the visible grid is shaped and painted, with selection, mouse
+  reporting, scrolling, the context menu and links (URLs through the console's handler, stack frames, and
+  plain paths with Cmd/Ctrl resolved against the session's folder). `terminal.rs` is the module root.
   `run_dialog.rs` is Rider's Run/Debug
   Configurations dialog over the window: Add, Copy and Remove of the folder's own, the chosen one's fields, OK,
   Cancel and Apply, a generated one changing only by copying it.
@@ -192,7 +212,8 @@ there only). `tools/screenshot.sh` and `tools/bench.sh` are macOS's.
 
 - **Never Microsoft's vsdbg or anything from C# Dev Kit**, and nothing under a paid or editor-restricted
   licence: no Rider plugin icons (`intellij.rider.*` jars), only the IntelliJ platform's Apache-2.0 ones.
-- **Every program goes through `rsharp_core::process::spawn`**, so none outlives the IDE.
+- **Every program goes through `rsharp_core::process::spawn`**, so none outlives the IDE; a terminal's shell
+  through `process::spawn_pty`, which carries the same Lifeline. Nothing calls `SlavePty::spawn_command` itself.
 - **Every dependency, font or icon** has an open-source licence and an entry in THIRD_PARTY_NOTICES.md, added
   in the same change.
 - **Colours are tokens** in `theme.rs`, each Rider's own value with where it came from; a view never writes a
@@ -218,6 +239,13 @@ Tests say what a person would see or get, and their failure message names the co
 editing session (`rsharp-text/tests/editing_session.rs`) checks 40,000 keys, undo and redo against a plain
 string: keep it passing rather than narrowing it. The Roslyn test runs the real server on a fresh project and
 skips, saying why, when the tool is not installed.
+
+Terminal tests are the one place a test runs real programs against the clock: `crates/rsharp-core/tests/pty.rs`
+a real PTY (size, final output, exit code, foreground and background jobs, the IDE killed outright),
+`crates/rsharp-terminal/tests/terminal.rs` the emulator and a real session (query replies, 10 MB of output,
+a blocked paste), and `crates/rsharp-app/tests/terminal.rs` the window, which types into `/bin/sh` and waits
+with a deadline rather than `run_until_parked` alone. A test's shells keep their history under its own state
+folder; a person's keep theirs.
 
 ## Code style
 

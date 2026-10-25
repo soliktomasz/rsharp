@@ -5,6 +5,49 @@
 use gpui::{Hsla, Rgba, rgb, rgba};
 use rsharp_languages::Kind;
 
+/// The IntelliJ platform's default terminal palette (the Terminal plugin's own 16), on Islands Dark's
+/// CONSOLE_BACKGROUND_KEY (191A1C) and its normal output's grey; a colour above 15 is xterm's protocol, so the
+/// 6x6x6 cube and the 24 greys are computed rather than named.
+pub fn terminal_color(color: rsharp_terminal::Color, bold: bool) -> Rgba {
+    use rsharp_terminal::{Color, NamedColor};
+    const ANSI: [u32; 16] = [
+        0x000000, 0xFF5647, 0x85C46C, 0xD9B72B, 0x6C95EB, 0xD688D4, 0x39CC9B, 0xBDBDBD, 0x666666, 0xFF8870, 0xADEB96,
+        0xF5D86A, 0xADD3FF, 0xFFBFFE, 0x7DF0C0, 0xF0F0F0,
+    ];
+    let index = match color {
+        Color::Spec(c) => return rgb((u32::from(c.r) << 16) | (u32::from(c.g) << 8) | u32::from(c.b)),
+        Color::Named(NamedColor::Background) => return island(),
+        Color::Named(NamedColor::Foreground | NamedColor::BrightForeground | NamedColor::DimForeground) => {
+            return rgb(0xBDBDBD);
+        }
+        Color::Named(NamedColor::Cursor) => return editor::caret(),
+        Color::Named(c) => {
+            let n = c as usize;
+            if n < 8 && bold {
+                n + 8
+            } else if n >= 259 {
+                (n - 259).min(7)
+            } else {
+                n
+            }
+        }
+        Color::Indexed(n) => {
+            let n = usize::from(n);
+            if n < 8 && bold { n + 8 } else { n }
+        }
+    };
+    if index < 16 {
+        return rgb(ANSI[index]);
+    }
+    if index >= 232 {
+        let v = (8 + 10 * (index.min(255) - 232)) as u32;
+        return rgb(v * 0x010101);
+    }
+    let n = index - 16;
+    let cube = |v: usize| if v == 0 { 0 } else { (55 + 40 * v) as u32 };
+    rgb((cube(n / 36) << 16) | (cube(n / 6 % 6) << 8) | cube(n % 6))
+}
+
 /// MainWindow.background: the frame round the islands, the toolbar, the stripes and the status bar.
 pub fn frame() -> Rgba {
     rgb(0x26282C)

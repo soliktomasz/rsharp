@@ -166,6 +166,12 @@ impl MainWindow {
                 }
             }
             (NodeKind::ProjectReference, "Remove...") => self.remove_reference(&found, window, cx),
+            (_, "Terminal") => {
+                if let Some(path) = &found.path {
+                    let folder = if path.is_dir() { path.clone() } else { path.parent().unwrap_or(path).to_path_buf() };
+                    self.open_terminal_at(folder, window, cx);
+                }
+            }
             (_, "Copy Path") => {
                 if let Some(path) = &found.path {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(path.display().to_string()));

@@ -1454,7 +1454,7 @@ impl Element for EditorElement {
 
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
             let shown = state.first_row..state.first_row + state.lines.len();
-            for &row in state.caret_rows.iter().filter(|r| shown.contains(r)) {
+            for &row in state.caret_rows.iter().filter(|r| shown.contains(*r)) {
                 window.paint_quad(fill(
                     Bounds::new(point(bounds.origin.x, top_of(row)), size(bounds.size.width, line_height)),
                     theme::editor::current_line(),

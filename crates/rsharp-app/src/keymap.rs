@@ -13,6 +13,8 @@ pub fn bind(cx: &mut App) {
     let explorer = Some("Explorer");
     let mac = cfg!(target_os = "macos");
     cx.bind_keys([
+        // Rider's own key for the Terminal tool window, the same on both platforms.
+        KeyBinding::new("alt-f12", ToggleTerminal, None),
         KeyBinding::new("left", Left, editor),
         KeyBinding::new("right", Right, editor),
         KeyBinding::new("up", Up, editor),

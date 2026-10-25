@@ -9,6 +9,9 @@ license = "MIT"
 rust-version = "1.95"
 
 [workspace.dependencies]
+alacritty_terminal = "0.26"
+portable-pty = "0.9"
+rsharp-terminal = { path = "crates/rsharp-terminal" }
 async_zip = { version = "0.0.17", default-features = false, features = ["deflate"] }
 serde_json_lenient = { version = "0.2.4", features = ["preserve_order"] }
 rsharp-core = { path = "crates/rsharp-core" }

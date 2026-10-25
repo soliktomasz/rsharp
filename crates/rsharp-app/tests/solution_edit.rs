@@ -95,7 +95,8 @@ fn the_solution_view_menus_offer_riders_items_with_their_keys(cx: &mut TestAppCo
             format!("Add > New Project... ({})", key("⇧⌘N", "Ctrl+Shift+N")),
             "Add > New Solution Folder...".into(),
             "Add > Existing Project...".into(),
-            "Copy Path".into()
+            "Copy Path".into(),
+            "Open In > Terminal".into()
         ]
     );
     assert_eq!(
@@ -126,6 +127,7 @@ fn the_solution_view_menus_offer_riders_items_with_their_keys(cx: &mut TestAppCo
             format!("Edit > Paste ({paste})"),
             format!("Edit > Remove... ({delete})"),
             "Copy Path".into(),
+            "Open In > Terminal".into(),
         ],
         "a project's menu would not be Rider's"
     );
@@ -142,6 +144,7 @@ fn the_solution_view_menus_offer_riders_items_with_their_keys(cx: &mut TestAppCo
             format!("Edit > Delete... ({delete})"),
             format!("Edit > Rename... ({rename})"),
             "Copy Path".into(),
+            "Open In > Terminal".into(),
         ],
         "a folder's menu would not be Rider's"
     );
@@ -154,10 +157,14 @@ fn the_solution_view_menus_offer_riders_items_with_their_keys(cx: &mut TestAppCo
             format!("Edit > Delete... ({delete})"),
             format!("Edit > Rename... ({rename})"),
             "Copy Path".into(),
+            "Open In > Terminal".into(),
         ],
         "a file's menu would not be Rider's"
     );
-    assert_eq!(menu(cx, "README.md"), [format!("Edit > Remove... ({delete})"), "Copy Path".into()]);
+    assert_eq!(
+        menu(cx, "README.md"),
+        [format!("Edit > Remove... ({delete})"), "Copy Path".into(), "Open In > Terminal".into()]
+    );
 }
 
 #[gpui::test]

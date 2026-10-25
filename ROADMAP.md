@@ -195,11 +195,10 @@ Tests now find test methods from tree-sitter before a build, follow unsaved shar
 and run through native Rust clients for Microsoft.Testing.Platform and VSTest. The docked tree merges runner
 rows and target frameworks, keeps Rider's Group By and outcome filters with the folder, and shows results,
 output, attachments and source links. Run All, context/selected tests and failed tests save and build first;
-Stop and leaving the workspace end the hosts. Run in the terminal waits for Phase 6.
+Stop and leaving the workspace end the hosts. Run in the terminal arrived in Phase 6.
 - Builds through `DotnetCommand` with the host's hold, read for errors, and the Build window.
 - Run configurations: from launchSettings, the folder's own, and Edit Configurations; `LaunchPlan`; Run in the
-  terminal; console links; the browser opened once the port answers. (all but Run in the terminal, which waits
-  for Phase 6.)
+  terminal; console links; the browser opened once the port answers. (In; Run in the terminal came with Phase 6.)
 - Hot Reload under dotnet watch. (In.)
 - **Unit tests:**
   - `TestFinder` reads tests from code before any build, with tree-sitter, so no parse runs in .NET. (In.)
@@ -211,14 +210,35 @@ Passenger: `Run/`, `Testing/`, `ToolWindows/`; issues #155, #198, #203, #206.
 Done when: Run, Build, Run with Hot Reload and the test tree work on a web app, a console app and an xunit v3
 project, on macOS and Windows.
 
-### Phase 6: Terminal (S)
+### Phase 6: Terminal (S) — in place (`codex/phase6-terminal`)
+Built: a `rsharp-terminal` crate with no gpui, `alacritty_terminal` for the emulator and `portable-pty` for the
+shell. `rsharp_core::process::spawn_pty` is the only way a shell starts, and it keeps the Lifeline's promise: a
+sidecar `pty-guard` ends the child's whole *session* rather than one process group, because an interactive
+shell's jobs lead groups of their own, and it does so on tab close, workspace change and an IDE killed with
+SIGKILL. A session reads in itself, writes from its own thread with a 1 MB pending-input limit that refuses a
+paste rather than blocking the UI, drains the last output with a bounded wait, and publishes the exit once. The
+Terminal tool window is at Bottom Left, opened lazily, with Local tabs and New Session, the person's login shell
+in the folder (home on Welcome), an isolated `HISTFILE` in tests and screenshots, and a failed start left
+visible with its reason. Only the visible grid is shaped and painted; scrollback is bounded at 10,000 lines.
+Selection, Select All, copy and paste, scrollback, mouse reporting, alternate screen, Unicode and wide cells,
+query replies and resize all come from the emulator; Cmd (Ctrl elsewhere) keeps the IDE's shortcuts, Cmd+K
+clears the buffer, and Run/Rerun/Stop stay the IDE's in a program tab. URLs open the browser, stack frames open
+their file at their line, and a plain path with Cmd/Ctrl opens against the session's folder, soft wraps joined.
+The Solution view's Open In > Terminal starts a shell at the row's folder or a file's parent. Run configurations
+have Use external console, off by default and persisted, which starts the same resolved plan — build first,
+arguments, environment, working folder, browser, Stop and Rerun — in a tab named for the configuration, and
+Hot Reload follows the same path. `--agent CMD` runs an explicitly supplied command in an Agent tab and refuses a
+program it cannot find, as every malformed flag is refused.
 - The `alacritty_terminal` crate (Apache-2.0) for the emulator and `portable-pty` for the shell, in place of
-  porting `TerminalScreen`.
+  porting `TerminalScreen`. (In.)
 - Tabs, the IDE keys the terminal leaves to the IDE, links (files appear with Cmd/Ctrl), history kept apart in
-  tests, and the Agent tab.
+  tests, and the Agent tab. (In.)
+- Run in the terminal, deferred from Phase 5. (In.)
 
 Passenger: `Passenger.Terminal`, `MainWindow.Terminal.cs`; issue #138.
-Done when: vim, htop and a 10 MB `cat` run without freezing the window.
+Done when: vim, htop and a 10 MB `cat` run without freezing the window. A 10 MB `cat` is a test
+(`crates/rsharp-terminal/tests/terminal.rs`) that holds scrollback at its bound and keeps the program's last
+output; vim and htop are not exercised by a test, and Windows' ConPTY and Linux are left to CI.
 
 ### Phase 7: Git (M)
 - The `git` executable (porcelain v2), as Passenger uses it, never a library.

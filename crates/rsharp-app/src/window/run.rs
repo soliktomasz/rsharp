@@ -4,6 +4,7 @@
 use super::*;
 use crate::console::ConsoleView;
 use crate::settings::settings;
+use futures::SinkExt;
 use futures::{FutureExt, channel::mpsc};
 use rsharp_core::run::{LaunchPlan, RunConfiguration, browser};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,6 +28,7 @@ pub struct RunOutcome {
 }
 
 pub(super) enum Event {
+    WatchState(rsharp_core::run::watch::Verdict),
     Output(String, bool),
     /// A plan, or why the configuration could not be resolved.
     Resolved(Result<Box<LaunchPlan>, String>),
@@ -282,6 +284,9 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         match event {
+            Event::WatchState(verdict) => {
+                self.said = Some(verdict.said().into());
+            }
             Event::Output(text, error) => {
                 // An event carries the lines that arrived together: what watch said last is what stands, so a change it
                 // could not apply and then restarted the program for is said as the restart.
@@ -405,10 +410,7 @@ impl MainWindow {
                 return;
             }
         };
-        let Some(cancel) = self.run_cancel.clone() else {
-            eprintln!("TRACE2 no cancel");
-            return;
-        };
+        let Some(cancel) = self.run_cancel.clone() else { return };
         let browser_cancel = cancel.clone();
         let line = format!("\n{}\n", shown_command(&command));
         self.run_console.update(cx, |view, cx| {
@@ -424,6 +426,74 @@ impl MainWindow {
         };
         self.said = Some(running.clone().into());
         self.run_outcome = Some(RunOutcome { status: RunStatus::Running, message: running });
+        if plan.use_terminal {
+            let mut pty = rsharp_terminal::CommandBuilder::new(command.get_program());
+            pty.args(command.get_args());
+            if let Some(folder) = command.get_current_dir() {
+                pty.cwd(folder);
+            }
+            for (key, value) in command.get_envs() {
+                if let Some(value) = value {
+                    pty.env(key, value);
+                } else {
+                    pty.env_remove(key);
+                }
+            }
+            let folder = plan.working_directory.clone();
+            let id = self.terminal.update(cx, |panel, cx| panel.start(plan.name.clone(), pty, folder, true, cx));
+            self.dock.show(Tool::Terminal);
+            let terminal = self.terminal.clone();
+            let cancelled = cancel.clone();
+            let mut events = sender.clone();
+            cx.spawn(async move |_, cx| {
+                let mut last_verdict = None;
+                let mut revision = 0;
+                loop {
+                    cx.background_executor().timer(Duration::from_millis(16)).await;
+                    let state = terminal
+                        .read_with(cx, |panel, _| {
+                            if let Some(problem) = panel.problem(id) {
+                                return Some(Err(problem.to_string()));
+                            }
+                            let Some(session) = panel.session(id) else {
+                                // The person closed the program's tab, and its process with it: the run stops.
+                                return Some(Ok(None));
+                            };
+                            if cancelled.load(Ordering::Acquire) {
+                                session.stop();
+                            }
+                            if watching && revision != session.revision() {
+                                revision = session.revision();
+                                let text = session.screen.lock().unwrap().visible_text();
+                                if let Some(verdict) =
+                                    text.lines().filter_map(rsharp_core::run::watch::verdict).next_back()
+                                    && Some(verdict) != last_verdict
+                                {
+                                    last_verdict = Some(verdict);
+                                    let _ = events.try_send(Event::WatchState(verdict));
+                                }
+                            }
+                            session.exit_code().map(|code| Ok(Some(code)))
+                        })
+                        .unwrap_or(Some(Ok(None)));
+                    if let Some(result) = state {
+                        let event = match result {
+                            Ok(Some(code)) if !cancelled.load(Ordering::Acquire) => Event::Ended(Some(code as i32)),
+                            Ok(_) => Event::Ended(None),
+                            Err(problem) => Event::Unstarted(problem),
+                        };
+                        let _ = events.send(event).await;
+                        break;
+                    }
+                }
+            })
+            .detach();
+            if let Some(url) = plan.browser_url.clone() {
+                self.wait_for_browser(url, browser_cancel, sender, cx);
+            }
+            cx.notify();
+            return;
+        }
         let mut output = sender.clone();
         let mut ended = sender.clone();
         let program = plan.clone();
