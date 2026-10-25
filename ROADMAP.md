@@ -332,7 +332,11 @@ the program in that method wherever it is, as does a line breakpoint. The window
 buttons and its frame list, and checks the marked line and the program's output; both debugger suites skip,
 saying why, when dotnet or the adapter is not there. macOS is where they ran; Windows and Linux are CI's.
 - Data breakpoints (Windows x64's to offer). (Not yet.)
-- Decompiled symbols and Hot Reload while debugging. (Not yet.)
+- Decompiled symbols. (Not yet: the adapter's `resolveStackFrame` writes a PDB whose sources are embedded, and names
+  them under a `decompiled/…` path that no file on disk has; the client would have to read the embedded source out of
+  the PDB, or a decompiler of its own would. The client's side — `isResolved` on a frame and `resolveStackFrame` —
+  was written and taken back out until then.)
+- Hot Reload while debugging. (Not yet.)
 - Attach to Process on Windows. (Not yet: its named pipes are not read.)
 
 Passenger: `Debugging/`, `MainWindow.Attach.cs`, the Debugger notes in its CLAUDE.md; issues #145–#157, #214, #219.
