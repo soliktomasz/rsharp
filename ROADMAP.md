@@ -353,8 +353,8 @@ step out's method returned, `$exception` at a throw, whose `Message` an expressi
 from a breakpoint on its statement's column), an evaluation in a paused frame answering for fields, properties, static
 members and calls, a paused frame's locals and their members (a struct's, the object's, an enum's values) on
 `DebuggableConsoleApp`, an exception thrown in a parallel loop stopping where it was thrown, its message read
-through `exceptionInfo`, and a stack naming the program's frames and the library's between them, each placed or
-subtle as Passenger's test expects.
+through `exceptionInfo`, a stack naming the program's frames and the library's between them, each placed or subtle as
+Passenger's test expects, and a stop inside a lambda listing the values it closes over.
 
 ### Phase 9: Avalonia and WPF (L)
 - A XAML host: `Passenger.Xaml` behind a thin JSON-lines (or LSP) process, giving completion, diagnostics,

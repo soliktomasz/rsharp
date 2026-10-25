@@ -961,3 +961,50 @@ fn a_stack_lists_the_programs_frames_and_the_libraries_between_them() {
 
     session.disconnect(true);
 }
+
+#[test]
+fn a_stop_inside_a_lambda_lists_the_values_it_closes_over() {
+    let _serial = one_at_a_time();
+    let Some(program) = debuggee_program("DebuggableConsoleApp") else { return };
+    let lambda = rsharp_core::paths::canonical(
+        &debuggees().expect("the debuggees are there").join("DebuggableConsoleApp/Lambdas/MyLambdaClass.cs"),
+    );
+    let (session, events) = started(
+        &program,
+        &[],
+        vec![(lambda, vec![SourceBreakpoint { line: 27, ..SourceBreakpoint::default() }])],
+        false,
+    );
+
+    let stopped = stop(&events, "breakpoint");
+    let frames = session.stack_trace(stopped.thread).expect("the stack reads");
+    let top = frames.first().expect("the stop has a frame");
+    assert!(top.short_name().contains(">b__"), "the frame is a lambda's own method: {top:?}");
+    let locals = locals_of(&session, top);
+
+    // Passenger's LambdaVariablesTests lists these eleven inside the inner lambda, the captured ones among them.
+    assert_eq!(locals.len(), 11, "the lambda's locals: {locals:?}");
+    let expected = [
+        ("capturedString", "\"captured\"", "string"),
+        ("innerLocalFromOuterLocalInt1", "4", "int"),
+        ("innerLocalFromOuterLocalInt2", "15", "int"),
+        ("innerLocalFromRootLocalInt", "10", "int"),
+        ("innerLocalFromRootLocalString", "\"captured\"", "string"),
+        ("local", "10", "int"),
+        ("outerLocalFromCapturedField", "4", "int"),
+        ("outerLocalFromLocal", "15", "int"),
+        ("result", "25", "int"),
+        ("y", "5", "int"),
+    ];
+    for (name, value, kind) in expected {
+        let variable = locals
+            .iter()
+            .find(|variable| variable.name == name)
+            .unwrap_or_else(|| panic!("{name} is a local of the lambda: {locals:?}"));
+        assert_eq!((variable.value.as_str(), variable.r#type.as_deref()), (value, Some(kind)), "{name}");
+    }
+    let this =
+        locals.iter().find(|variable| variable.name == "this").unwrap_or_else(|| panic!("this is a local: {locals:?}"));
+    assert_eq!(this.value, "{DebuggableConsoleApp.Lambdas.MyLambdaClass}");
+    session.disconnect(true);
+}
