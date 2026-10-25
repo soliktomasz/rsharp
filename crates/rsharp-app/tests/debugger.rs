@@ -900,8 +900,7 @@ fn a_function_breakpoint_stops_the_program_in_its_method() {
     let (main, cx) = open(&run, &mut cx);
 
     // Rider's Add Function Breakpoint, and its name typed in the form.
-    cx.simulate_keystrokes("cmd-shift-f8");
-    assert!(pump(cx, |cx| cx.debug_bounds("breakpoints dialog").is_some()), "Cmd+Shift+F8 did not open the dialog");
+    open_breakpoints(cx);
     click(cx, "button: Add Function Breakpoint");
     click(cx, "breakpoint field: Function name");
     cx.simulate_input("Program.Double");

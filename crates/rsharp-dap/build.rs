@@ -32,7 +32,7 @@ fn main() {
     // target/<profile>/sidecars/debugger, beside the other sidecars, whichever crate's build asked.
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let sidecars = out.ancestors().nth(3).expect("OUT_DIR is target/<profile>/build/<crate>/out").join("sidecars");
-    let output = Command::new(&dotnet)
+    let output = match Command::new(&dotnet)
         .args(["publish", "-c", "Release", "-o"])
         .arg(&sidecars.join("debugger"))
         .arg(&project)
@@ -40,11 +40,18 @@ fn main() {
         // cannot write its audit cache (a sandbox, an offline runner) must still build the adapter.
         .args(["-nologo", "-v", "q", "-p:WarningsNotAsErrors=NU1900"])
         .output()
-        .unwrap_or_else(|e| panic!("dotnet publish could not run: {e}"));
+    {
+        Ok(output) => output,
+        Err(error) => return without(&format!("dotnet publish could not run: {error}")),
+    };
     let said = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
     let (answer, errors) = (said(&output.stdout), said(&output.stderr));
-    assert!(output.status.success(), "dotnet publish {} failed:\n{answer}{errors}", project.display());
+    if !output.status.success() {
+        return without(&format!("dotnet publish {} failed:\n{answer}{errors}", project.display()));
+    }
     let adapter = sidecars.join("debugger").join("Passenger.DebugAdapter.dll");
-    assert!(adapter.is_file(), "the debug adapter is not at {}", adapter.display());
+    if !adapter.is_file() {
+        return without(&format!("the debug adapter is not at {}", adapter.display()));
+    }
     println!("cargo:rustc-env=RSHARP_DEBUG_ADAPTER={}", adapter.display());
 }

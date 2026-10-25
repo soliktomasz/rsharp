@@ -204,9 +204,21 @@ impl MainWindow {
             Event::Started(session) => {
                 let verified = session.verified();
                 self.debug.session = Some(session);
+                // The adapter answers the breakpoints it was sent, in their order: the lines that were sent say where
+                // each answer belongs, as an answer need not name one. Muted, none was sent, so none is verified.
+                let sent: BTreeMap<PathBuf, Vec<usize>> = match self.workspace.as_ref() {
+                    Some(workspace) if !self.debug.breakpoints.muted() => self
+                        .session_breakpoints(&workspace.folder)
+                        .into_iter()
+                        .map(|(path, breakpoints)| {
+                            let lines = breakpoints.into_iter().map(|breakpoint| breakpoint.line).collect();
+                            (rsharp_core::paths::canonical(&path), lines)
+                        })
+                        .collect(),
+                    _ => BTreeMap::new(),
+                };
                 for (path, answers) in verified {
-                    let lines: Vec<usize> =
-                        answers.iter().filter_map(|answer| answer.line.map(|line| line.saturating_sub(1))).collect();
+                    let lines = sent.get(&rsharp_core::paths::canonical(&path)).cloned().unwrap_or_default();
                     self.note_verification(&path, &lines, answers, cx);
                 }
                 self.debug.phase = Phase::Running;
@@ -833,6 +845,10 @@ impl MainWindow {
                 self.finish_debug(&message, cx);
             }
             Said::Terminated | Said::Ended => {
+                // The exit status Said::Exited gave stands: a termination after it is the same session ending again.
+                if self.debug.phase == Phase::Idle {
+                    return;
+                }
                 let name = self.debug_name();
                 self.finish_debug(&format!("Debugging {name} ended"), cx);
             }

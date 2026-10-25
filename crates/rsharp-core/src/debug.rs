@@ -585,12 +585,8 @@ fn candidate_ids() -> Vec<u32> {
     ids
 }
 
-#[cfg(windows)]
-fn candidate_ids() -> Vec<u32> {
-    Vec::new()
-}
-
 /// The process id a runtime transport's pipe names, or none for another file.
+#[cfg(any(not(windows), test))]
 fn transport_pid(name: &str) -> Option<u32> {
     let rest = name.strip_prefix("clr-debug-pipe-")?.strip_suffix("-in")?;
     // <pid>-<started at>
@@ -634,11 +630,6 @@ fn read_process(id: u32) -> Option<DotnetProcess> {
         status.lines().find_map(|line| line.strip_prefix("Uid:")?.split_whitespace().next()?.parse().ok())?;
     let user = user_name(uid).unwrap_or_else(|| uid.to_string());
     Some(DotnetProcess { id, name, command_line: arguments.join(" "), user, is_mine: uid == unsafe { libc::getuid() } })
-}
-
-#[cfg(windows)]
-fn read_process(_: u32) -> Option<DotnetProcess> {
-    None
 }
 
 /// A process's arguments, as `sysctl`'s `KERN_PROCARGS2` holds them: the count, the executable's path, then the
