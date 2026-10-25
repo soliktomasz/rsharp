@@ -295,7 +295,9 @@ the other, and of two `Add` calls the second chosen; and the synthetic variables
 returned in the order they returned, named `$ReturnValue1` and `$ReturnValue`, readable in expressions, replaced by
 the next step's (and not given back for a struct), a step out lists what the method returned, and a stop at a throw
 lists it as `$exception`, whose `Message` an expression reads; and a lambda on the line is stepped into when what it is
-handed to runs it, from a breakpoint on the statement's column; `crates/rsharp-dap/tests/session.rs` stops one
+handed to runs it, from a breakpoint on the statement's column; and an evaluation in a paused frame answers for
+fields, properties, static members and method calls on `DebuggableConsoleApp` (`myInt + 10`, `_instanceField + 4`,
+`ClassProperty.IntField + 4`, `this.Get14() + 4`, `GetObject().IntProperty`); `crates/rsharp-dap/tests/session.rs` stops one
 at a breakpoint through the client alone (frames, locals, evaluate, a step, its output) and `crates/rsharp-app/tests/debugger.rs` the same
 through the window (F9, F5, the Debug window's buttons and lists, the marked line, resume to the end), along with
 the Breakpoints dialog's condition and mute, a false condition and a logpoint as the adapter runs them, Any

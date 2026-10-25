@@ -733,3 +733,58 @@ fn a_condition_that_calls_a_method_stops_a_parallel_loop_on_its_matching_iterati
     );
     session.disconnect(true);
 }
+
+#[test]
+fn evaluation_answers_in_a_paused_frame_with_members_properties_and_methods() {
+    let _serial = one_at_a_time();
+    if adapter().is_none() || rsharp_core::programs::dotnet().is_none() || debuggees().is_none() {
+        eprintln!("skipped: dotnet, the adapter or Passenger's debuggees are not there");
+        return;
+    }
+    let Some(program) = build("DebuggableConsoleApp") else { return };
+    let source = rsharp_core::paths::canonical(
+        &debuggees().expect("the debuggees are there").join("DebuggableConsoleApp/MyClass.cs"),
+    );
+    let (session, events) = started(
+        &program,
+        &[],
+        vec![(source, vec![SourceBreakpoint { line: 21, ..SourceBreakpoint::default() }])],
+        false,
+    );
+
+    let stopped = stop(&events, "breakpoint");
+    let frames = session.stack_trace(stopped.thread).expect("the stack reads");
+    let top = frames.first().expect("the stop has a frame");
+
+    // Passenger's EvalTests asks each of these of the paused frame; private members and calls included.
+    for (expression, expected) in [
+        ("myInt + 10", "14"),
+        ("myInt + myInt", "8"),
+        ("myIntParam + 4", "10"),
+        ("_instanceField + 4", "9"),
+        ("_instanceStaticField + 4", "10"),
+        ("IntProperty + 4", "14"),
+        ("IntStaticProperty + 4", "14"),
+        ("ClassProperty.IntField + 4", "10"),
+        ("this.Get14() + 4", "18"),
+        ("MyClass.IntStaticProperty + 4", "14"),
+        ("DebuggableConsoleApp.MyClass.IntStaticProperty + 4", "14"),
+        ("Namespace1.AnotherClass.IntStaticProperty + 4", "14"),
+        ("this.DoubleNumber(4)", "8"),
+        ("this.DoubleNumber(4f)", "8"),
+        ("Get14()", "14"),
+        ("GetObject().IntProperty", "6"),
+    ] {
+        assert_eq!(evaluate(&session, top.id, expression), expected, "{expression}");
+    }
+
+    let locals = locals_of(&session, top);
+    let value =
+        |name: &str| locals.iter().find(|variable| variable.name == name).map(|variable| variable.value.clone());
+    assert_eq!(value("myParam").as_deref(), Some("13"));
+    assert_eq!(value("myInt").as_deref(), Some("4"));
+    assert_eq!(value("anotherVar").as_deref(), Some("\"asdf\""));
+    assert_eq!(value("nullableInt").as_deref(), Some("null"));
+    assert_eq!(value("enumVar").as_deref(), Some("SecondValue"));
+    session.disconnect(true);
+}
