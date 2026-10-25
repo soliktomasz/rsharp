@@ -2,7 +2,7 @@
 //! this client. The first batch is what Passenger's `PauseTests` asks of `LoopingConsoleApp` — a program that never ends
 //! on its own — including the values a pause in the runtime's sleep leaves readable.
 
-use rsharp_dap::{Event, Launch, Session, Start, adapter};
+use rsharp_dap::{Event, Launch, Session, SourceBreakpoint, Start, adapter};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
@@ -81,7 +81,12 @@ fn wait_for_looping(events: &Receiver<Event>) {
 
 /// Starts a debuggee at its entry, so the thread pausing it later is known; Passenger launches without a stop and takes
 /// the thread its pause answers with, which this client's pause asks for up front.
-fn launched(program: &Path, arguments: &[&str]) -> (Session, Receiver<Event>) {
+fn started(
+    program: &Path,
+    arguments: &[&str],
+    breakpoints: Vec<(PathBuf, Vec<SourceBreakpoint>)>,
+    at_entry: bool,
+) -> (Session, Receiver<Event>) {
     let adapter = adapter().expect("Passenger's debug adapter is built");
     let (sender, events) = mpsc::channel();
     let working_directory = program.parent().expect("the assembly is in a folder").to_path_buf();
@@ -92,10 +97,10 @@ fn launched(program: &Path, arguments: &[&str]) -> (Session, Receiver<Event>) {
             arguments: arguments.iter().map(|argument| argument.to_string()).collect(),
             working_directory,
             environment: BTreeMap::new(),
-            stop_at_entry: true,
+            stop_at_entry: at_entry,
         }),
         &std::env::temp_dir().join("rsharp-passenger-symbols"),
-        Vec::new(),
+        breakpoints,
         Vec::new(),
         Vec::new(),
         None,
@@ -103,6 +108,21 @@ fn launched(program: &Path, arguments: &[&str]) -> (Session, Receiver<Event>) {
     )
     .expect("the session starts");
     (session, events)
+}
+
+fn launched(program: &Path, arguments: &[&str]) -> (Session, Receiver<Event>) {
+    started(program, arguments, Vec::new(), true)
+}
+
+/// The 1-based line of the stop's top frame, as the debuggee's source counts it.
+fn line_at(session: &Session, stop: &rsharp_dap::Stop) -> usize {
+    let frames = session.stack_trace(stop.thread).expect("the stack reads");
+    let top = frames.first().unwrap_or_else(|| panic!("the stop has a frame: {stop:?}"));
+    assert!(
+        top.path().is_some_and(|path| path.ends_with("Program.cs")),
+        "the top frame is in the debuggee's own source: {top:?}"
+    );
+    top.line + 1
 }
 
 fn in_loop(session: &Session, stop: &rsharp_dap::Stop, name: &str) {
@@ -204,5 +224,99 @@ fn a_value_paused_in_a_sleep_shows_its_type_and_fields_where_its_tostring_cannot
     let ticks =
         fields.iter().find(|field| field.name == "_ticks").unwrap_or_else(|| panic!("_ticks is a field: {fields:?}"));
     assert_eq!(ticks.value, "200000", "the nap's ticks");
+    session.disconnect(true);
+}
+
+/// Passenger's `SteppingConsoleApp` cases, found by the code on their lines as its tests find them: `Calls.Run`,
+/// `Awaits.RunAsync` and `Returns.Run`.
+fn stepping_source() -> PathBuf {
+    let root = debuggees().expect("the debuggees are there");
+    rsharp_core::paths::canonical(&root.join("SteppingConsoleApp/Program.cs"))
+}
+
+fn stepping_program() -> Option<PathBuf> {
+    if adapter().is_none() || rsharp_core::programs::dotnet().is_none() || debuggees().is_none() {
+        eprintln!("skipped: dotnet, the adapter or Passenger's debuggees are not there");
+        return None;
+    }
+    build("SteppingConsoleApp")
+}
+
+#[test]
+fn stepping_into_a_call_and_out_of_it_comes_back_to_the_statement() {
+    let Some(program) = stepping_program() else { return };
+    let source = stepping_source();
+    let (session, events) = started(
+        &program,
+        &[],
+        vec![(source.clone(), vec![SourceBreakpoint { line: 12, ..SourceBreakpoint::default() }])],
+        false,
+    );
+
+    let stopped = stop(&events, "breakpoint");
+    assert_eq!(line_at(&session, &stopped), 13, "the breakpoint is on Outer(Inner())");
+    let thread = stopped.thread;
+
+    session.step_into(thread).expect("a step into is asked");
+    let into = stop(&events, "step");
+    assert_eq!(line_at(&session, &into), 18, "the step goes into Inner()");
+
+    session.step_out(thread).expect("a step out is asked");
+    let out = stop(&events, "step");
+    assert_eq!(line_at(&session, &out), 13, "and back to the statement it was called from");
+
+    session.step_over(thread).expect("a step over is asked");
+    let over = stop(&events, "step");
+    assert_eq!(line_at(&session, &over), 14, "a step over goes to the next statement");
+    session.disconnect(true);
+}
+
+#[test]
+fn a_step_over_an_await_goes_on_after_it() {
+    let Some(program) = stepping_program() else { return };
+    let source = stepping_source();
+    let (session, events) = started(
+        &program,
+        &[],
+        vec![(source.clone(), vec![SourceBreakpoint { line: 50, ..SourceBreakpoint::default() }])],
+        false,
+    );
+
+    let stopped = stop(&events, "breakpoint");
+    assert_eq!(line_at(&session, &stopped), 51, "the breakpoint is on the await");
+    session.step_over(stopped.thread).expect("a step over is asked");
+    let over = stop(&events, "step");
+    assert_eq!(line_at(&session, &over), 52, "the step ends after the await");
+    session.disconnect(true);
+}
+
+#[test]
+fn a_step_over_shows_what_the_call_returned() {
+    let Some(program) = stepping_program() else { return };
+    let source = stepping_source();
+    let (session, events) = started(
+        &program,
+        &[],
+        vec![(source.clone(), vec![SourceBreakpoint { line: 67, ..SourceBreakpoint::default() }])],
+        false,
+    );
+
+    let stopped = stop(&events, "breakpoint");
+    assert_eq!(line_at(&session, &stopped), 68, "the breakpoint is on Describe(Count())");
+    session.step_over(stopped.thread).expect("a step over is asked");
+    let over = stop(&events, "step");
+    let frames = session.stack_trace(over.thread).expect("the stack reads");
+    let top = frames.first().expect("the stop has a frame");
+    let scope = session.scopes(top.id).expect("the frame's scopes read").into_iter().next().expect("a scope");
+    let locals = session.variables(scope.variables_reference).expect("the locals read");
+    let returned: Vec<_> = locals.iter().filter(|variable| variable.name.contains("returned")).collect();
+    assert!(
+        returned.iter().any(|variable| variable.name.contains("Describe") && variable.value.contains("count 42")),
+        "what Describe returned is among the locals: {locals:?}"
+    );
+    assert!(
+        returned.iter().any(|variable| variable.name.contains("Count") && variable.value == "42"),
+        "and the value the call inside it returned: {locals:?}"
+    );
     session.disconnect(true);
 }
