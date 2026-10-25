@@ -39,6 +39,15 @@ actions!(
         ToggleNuGet,
         ToggleBuild,
         ToggleRun,
+        ToggleDebug,
+        ShowBreakpoints,
+        AttachToProcess,
+        ReattachToProcess,
+        DetachDebug,
+        EvaluateExpression,
+        SetNextStatement,
+        SmartStepInto,
+        MuteBreakpoints,
         ToggleUnitTests,
         ToggleTerminal,
         ToggleCommit,
@@ -67,6 +76,14 @@ actions!(
         CleanSelected,
         Stop,
         RunProgram,
+        DebugProgram,
+        ResumeDebug,
+        PauseDebug,
+        StepOver,
+        StepInto,
+        StepOut,
+        StopDebug,
+        ToggleBreakpoint,
         RerunProgram,
         EditRunConfigurations,
         ApplyHotReloadChanges,
@@ -114,6 +131,7 @@ actions!(
 );
 
 mod build;
+mod debug;
 mod file_moves;
 mod file_ops;
 mod git;
@@ -307,7 +325,20 @@ pub struct MainWindow {
     browser_opener: Arc<dyn Fn(String) + Send + Sync>,
     /// Rider's Run/Debug Configurations dialog while it is open.
     run_dialog: Option<Entity<crate::run_dialog::RunDialog>>,
+    /// Rider's Breakpoints dialog while it is open.
+    breakpoints_dialog: Option<Entity<crate::breakpoints_dialog::BreakpointsDialog>>,
+    /// Rider's Attach to Process dialog while it is open.
+    attach_dialog: Option<Entity<crate::attach_dialog::AttachDialog>>,
+    /// Rider's Evaluate Expression dialog while it is open.
+    evaluate_dialog: Option<Entity<crate::evaluate_dialog::EvaluateDialog>>,
+    /// Rider's Smart Step Into dialog while it is open.
+    step_dialog: Option<Entity<crate::step_into_dialog::StepIntoDialog>>,
     tests: tests::Tests,
+    /// This window's own handle, so a task without a window (a build's end) reaches one to open a stopped file.
+    handle: gpui::WindowHandle<MainWindow>,
+    debug: debug::DebugState,
+    debug_view: Entity<crate::debug_view::DebugView>,
+    debug_console: Entity<crate::console::ConsoleView>,
 }
 
 impl Drop for MainWindow {
@@ -390,6 +421,17 @@ impl MainWindow {
             m.follow_console_link(link.0.clone(), window, cx);
         })
         .detach();
+        let debug_console = cx.new(|cx| crate::console::ConsoleView::new("debug", cx));
+        let debug_view = cx.new(|cx| crate::debug_view::DebugView::new(debug_console.clone(), cx));
+        cx.subscribe_in(&debug_view, window, |m, _, action: &crate::debug_view::DebugAction, window, cx| {
+            m.debug_action(action.clone(), window, cx)
+        })
+        .detach();
+        let debug_output = debug_console.read(cx).editor().clone();
+        cx.subscribe_in(&debug_output, window, |m, _, link: &editor::ConsoleLink, window, cx| {
+            m.follow_console_link(link.0.clone(), window, cx)
+        })
+        .detach();
         let _nuget_subscription = cx.subscribe(&nuget, |m, _, wrote: &crate::nuget_view::Wrote, cx| {
             for path in &wrote.0 {
                 m.follow_written(path, cx);
@@ -426,6 +468,14 @@ impl MainWindow {
             run_watching: false,
             run_outcome: None,
             run_dialog: None,
+            breakpoints_dialog: None,
+            attach_dialog: None,
+            evaluate_dialog: None,
+            step_dialog: None,
+            handle: window.window_handle().downcast::<MainWindow>().expect("this window is a MainWindow"),
+            debug: debug::DebugState::new(),
+            debug_view,
+            debug_console,
             browser_opener: Arc::new(|url| {
                 if let Err(error) = rsharp_core::run::browser::open(&url) {
                     log::warn!("Could not open {url}: {error}");
@@ -504,6 +554,7 @@ impl MainWindow {
         self.leave_git(cx);
         self.leave_build(cx);
         self.leave_run(cx);
+        self.leave_debug(cx);
         self.terminal.update(cx, |t, cx| t.close_all(cx));
         self.save_state(cx);
         self.leave_editors();
@@ -531,6 +582,7 @@ impl MainWindow {
         // Install the shared client before either a build or Roslyn can start, so both hold the same Host.
         self.host =
             cx.global::<crate::state::Ide>().servers.then(|| rsharp_lsp::SharedHost::carried(&folder)).flatten();
+        self.load_breakpoints(&folder, cx);
         self.workspace = Some(workspace);
         self.open_git(cx);
         let test_state = store.read_for::<crate::test_view::UnitTestsState>(&folder);
@@ -1382,6 +1434,7 @@ impl MainWindow {
                 }
                 self.attach_msbuild(&buffer, cx);
                 self.attach_git_buffer(&buffer, cx);
+                self.show_breakpoints(&path, cx);
                 let editor = self.new_editor(buffer, window, cx);
                 self.area.add(editor, false)
             }
@@ -1498,6 +1551,11 @@ impl MainWindow {
         .detach();
         cx.subscribe_in(&editor, window, |_, editor, _: &editor::ReadOnlyEdit, window, cx| {
             editor::ask_clear_read_only(editor.clone(), editor::AfterClearing::Edit, window, cx)
+        })
+        .detach();
+        cx.subscribe_in(&editor, window, |w, editor, toggle: &editor::ToggleBreakpoint, _, cx| {
+            let path = editor.read(cx).path.clone();
+            w.toggle_breakpoint_at(&path, toggle.line, cx);
         })
         .detach();
         cx.subscribe_in(&editor, window, |w, _, go: &editor::Navigate, window, cx| w.navigate(go, window, cx)).detach();
@@ -1694,6 +1752,7 @@ impl MainWindow {
         self.leave_git(cx);
         self.leave_build(cx);
         self.leave_run(cx);
+        self.leave_debug(cx);
         self.terminal.update(cx, |t, cx| t.close_all(cx));
         self.save_state(cx);
         self.leave_editors();
@@ -2075,6 +2134,7 @@ impl Render for MainWindow {
             .map(|d| self.tab_actions(d, cx))
             .map(|d| self.build_actions(d, cx))
             .map(|d| self.run_actions(d, cx))
+            .map(|d| self.debug_actions(d, cx))
             .map(|d| self.test_actions(d, cx))
             .when(self.workspace.is_some(), |d| {
                 use crate::goto::Kind;
@@ -2183,6 +2243,18 @@ impl Render for MainWindow {
             }))
             .children(self.run_dialog.clone().map(|dialog| {
                 div().absolute().top(px(TOOLBAR_HEIGHT + 40.)).left_0().right_0().flex().justify_center().child(dialog)
+            }))
+            .children(self.breakpoints_dialog.clone().map(|dialog| {
+                div().absolute().top(px(TOOLBAR_HEIGHT + 20.)).left_0().right_0().flex().justify_center().child(dialog)
+            }))
+            .children(self.attach_dialog.clone().map(|dialog| {
+                div().absolute().top(px(TOOLBAR_HEIGHT + 20.)).left_0().right_0().flex().justify_center().child(dialog)
+            }))
+            .children(self.evaluate_dialog.clone().map(|dialog| {
+                div().absolute().top(px(TOOLBAR_HEIGHT + 80.)).left_0().right_0().flex().justify_center().child(dialog)
+            }))
+            .children(self.step_dialog.clone().map(|dialog| {
+                div().absolute().top(px(TOOLBAR_HEIGHT + 80.)).left_0().right_0().flex().justify_center().child(dialog)
             }))
             .children(self.go_to.clone().map(|popup| {
                 div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(
@@ -2478,6 +2550,7 @@ impl MainWindow {
             Tool::NuGet => self.nuget.clone().into_any_element(),
             Tool::Build => self.build.clone().into_any_element(),
             Tool::Run => self.run_console.clone().into_any_element(),
+            Tool::Debug => self.debug_view.clone().into_any_element(),
             Tool::UnitTests => self.tests.view.clone().into_any_element(),
             Tool::Commit => self.git.commit.clone().into_any_element(),
             Tool::Git => self.git.log.clone().into_any_element(),
@@ -2499,6 +2572,7 @@ impl MainWindow {
             Tool::NuGet => None,
             Tool::Build => self.build_outcome.as_ref().map(|outcome| outcome.message.clone()),
             Tool::Run => self.run_outcome.as_ref().map(|outcome| outcome.message.clone()),
+            Tool::Debug => Some(self.debug_view.read(cx).status().to_string()),
             Tool::UnitTests => None,
             Tool::Terminal | Tool::Commit | Tool::Git => None,
         }
@@ -2597,6 +2671,7 @@ impl MainWindow {
             Tool::NuGet => self.nuget.focus_handle(cx),
             Tool::Build => self.build.focus_handle(cx),
             Tool::Run => self.run_console.focus_handle(cx),
+            Tool::Debug => self.debug_view.focus_handle(cx),
             Tool::UnitTests => self.tests.view.focus_handle(cx),
             Tool::Terminal => self.terminal.focus_handle(cx),
             Tool::Commit => self.git.commit.focus_handle(cx),

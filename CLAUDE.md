@@ -136,6 +136,21 @@ terminal and takes focus for a moment.
   `hold` keeps generating design-time builds away from an explicit build until it ends), a
   build's problem passed on as the project's error. Without dotnet or the submodule at build time it warns and runs
   the person's `roslyn-language-server` tool, which opens the solution (`solution/open`) or finds the projects.
+- `crates/rsharp-dap`: the Debug Adapter Protocol client and Passenger's debug adapter it runs. `build.rs`
+  publishes Passenger's `Passenger.DebugAdapter` from the same submodule into `target/<profile>/sidecars/debugger`
+  (its engine, ICorDebug behind DAP, with ILSpy's decompiler). `Session` starts it through `process::spawn` — so it
+  and the program under it end with the IDE — and opens the conversation in the protocol's order: initialize, launch
+  or attach, the adapter's `initialized`, each file's breakpoints, the exception filters, then `configurationDone`,
+  whose answer waits for the program's runtime. Threads, a thread's frames, a frame's scopes and values, an
+  expression (Evaluate and a watch), continue/next/stepIn/stepOut/pause, and disconnect/terminate are typed
+  requests, as are Set Next Statement's `gotoTargets` and `goto`, Set Value's `setExpression`, Smart Step Into's
+  `stepInTargets` (a step into one call of a statement), the function breakpoints' `setFunctionBreakpoints` and the
+  exception a stop is at (`exceptionInfo`), and Hot Reload's ground: a launch's `hotReload` flag (the runtime's Edit and
+  Continue on) and `hotReloadState`, the runtime's capabilities and each loaded module's editability. A
+  source breakpoint carries its line or its column too, which binds one call of a line several share (a lambda's body). What the adapter says unasked (stops, output, exit,
+  termination) comes as `Event`s on its own threads; its own request, a program started in the client's terminal,
+  is answered when the app gives it a terminal runner (announced as `supportsRunInTerminalRequest`) and refused
+  otherwise, so the adapter goes on rather than waiting.
 - `crates/rsharp-mcp`: no UI. RSharp as an MCP server (`rsharp --mcp [FOLDER]`, JSON-RPC a line at a time on
   standard input and output), Roslyn on the folder behind its tools: `workspace`, `diagnostics` (a file's, or the
   solution's with solution-wide analysis), `find_symbol`, `outline`, `usages`, `rename` (a type's file renamed with it)
@@ -165,6 +180,13 @@ terminal and takes focus for a moment.
   `terminal/view.rs` its gpui element: only the visible grid is shaped and painted, with selection, mouse
   reporting, scrolling, the context menu and links (URLs through the console's handler, stack frames, and
   plain paths with Cmd/Ctrl resolved against the session's folder). `terminal.rs` is the module root.
+  `window/debug.rs` owns debugging: the folder's breakpoints (line, function and exception, loaded with it, set
+  from the gutter or F9 or the Breakpoints dialog and sent to a running session at once), the plan a Debug resolves and the build before it, the `rsharp-dap` session on
+  the background executor with a generation that drops a stopped session's replies, the stopped thread's frames
+  and the chosen frame's values, watches answered as they are typed, and Stop/leave ending the session. A stop
+  opens its file with the statement marked. `debug_view.rs` is Rider's Debug window: its step and run keys, Frames,
+  Variables (members opened a level at a time), Watches and the debug console. The editor's gutter shows a
+  breakpoint dot per line and toggles one on a click in its column, and the buffer carries the stopped line's band.
   `run_dialog.rs` is Rider's Run/Debug
   Configurations dialog over the window: Add, Copy and Remove of the folder's own, the chosen one's fields, OK,
   Cancel and Apply, a generated one changing only by copying it.
@@ -261,6 +283,43 @@ Tests say what a person would see or get, and their failure message names the co
 editing session (`rsharp-text/tests/editing_session.rs`) checks 40,000 keys, undo and redo against a plain
 string: keep it passing rather than narrowing it. The Roslyn test runs the real server on a fresh project and
 skips, saying why, when the tool is not installed.
+
+Debug tests use real dotnet programs: `crates/rsharp-dap/tests/passenger.rs` translates Passenger's own debugger
+tests against the same `tests/Debuggees` — `PauseTests`' three first, with `LoopingConsoleApp`: a pause stops its loop
+and a second pause after continuing does too, a step from a pause inside its sleep comes back to the loop, and a
+TimeSpan paused there shows its fields where its ToString cannot run, an evaluation that waits on the paused program's
+other thread is stopped and says why, and a breakpoint condition calling a method stops a parallel loop on the
+iteration it names; then `SteppingConsoleApp`'s cases: a step into
+`Inner()` and out of it comes back to `Outer(Inner())`, a step over goes to the next statement, a step over the await
+goes on after it, and the values `Describe(Count())` returned are among the locals; and Smart Step Into's two: the
+calls of `Outer(Inner())` listed in the order they run and placed on their names, the one chosen stepped into past
+the other, and of two `Add` calls the second chosen; and the synthetic variables: a step over lists what each call
+returned in the order they returned, named `$ReturnValue1` and `$ReturnValue`, readable in expressions, replaced by
+the next step's (and not given back for a struct), a step out lists what the method returned, and a stop at a throw
+lists it as `$exception`, whose `Message` an expression reads; and a lambda on the line is stepped into when what it is
+handed to runs it, from a breakpoint on the statement's column; and an evaluation in a paused frame answers for
+fields, properties, static members and method calls on `DebuggableConsoleApp` (`myInt + 10`, `_instanceField + 4`,
+`ClassProperty.IntField + 4`, `this.Get14() + 4`, `GetObject().IntProperty`), and a paused frame lists its eleven
+locals with their types, a struct's `Id` and `Name`, the object's properties and fields, and an enum's value and
+`Static members`, an exception thrown in a parallel loop stops where it was thrown, its `exceptionInfo` giving the
+message, a stack lists the program's frames and the library's between them (the selector's line and column, the
+library's frames with no source and a subtle hint, the call's frame and `Main`), and a stop inside a lambda lists the
+ten values it closes over and `this`, a step through an async method goes over its sync statements and awaits,
+into the awaited method and out again, and a launched program says what Hot Reload can change (the runtime's
+capabilities and its own module editable); `crates/rsharp-dap/tests/session.rs` stops one
+at a breakpoint through the client alone (frames, locals, evaluate, a step, its output) and `crates/rsharp-app/tests/debugger.rs` the same
+through the window (F9, F5, the Debug window's buttons and lists, the marked line, resume to the end), along with
+the Breakpoints dialog's condition and mute, a false condition and a logpoint as the adapter runs them, Any
+exception turned off before an unhandled exception, attaching to a program the test started (its breakpoint is
+hit, then Stop detaches and the program runs on), and Evaluate Expression answering in the paused frame before
+Set Next Statement moves the thread back to the caret's line, and a local set with Set Value making the program
+print its new total, a program's Main and worker threads listed before the other is chosen and its frames read, and
+Smart Step Into choosing Sum of a statement's two calls and stopping in its body, a configuration with Use external
+console starting its program in a Terminal tab whose text carries what it wrote, a step over showing what Double(21)
+returned, Evaluate Expression showing a paused List's members, a step over an await stopping after it, a stop
+setting its frame's values in at the end of its line (cleared when the program runs on), and a function breakpoint
+added as Program.Double in the dialog stopping the program in that method; both skip, saying why, when dotnet or the
+adapter is not there.
 
 Git tests build real repositories and, when a remote is needed, a bare one beside them — never the person's and
 never a network service: `crates/rsharp-core/tests/git.rs` the repository alone (porcelain records, odd paths,

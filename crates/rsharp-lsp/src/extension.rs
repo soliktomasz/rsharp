@@ -18,6 +18,13 @@ pub const DESCRIBE_HIERARCHY: &str = "Passenger.Roslyn.Extension.DescribeHierarc
 pub const PULL_MEMBERS_UP: &str = "Passenger.Roslyn.Extension.PullMembersUp";
 pub const PUSH_MEMBERS_DOWN: &str = "Passenger.Roslyn.Extension.PushMembersDown";
 
+/// The Hot Reload session's handlers, as the extension names them: Roslyn's Edit and Continue for a debugged program.
+pub const START_HOT_RELOAD: &str = "Passenger.Roslyn.Extension.StartHotReload";
+pub const EMIT_HOT_RELOAD: &str = "Passenger.Roslyn.Extension.EmitHotReload";
+pub const COMMIT_HOT_RELOAD: &str = "Passenger.Roslyn.Extension.CommitHotReload";
+pub const DISCARD_HOT_RELOAD: &str = "Passenger.Roslyn.Extension.DiscardHotReload";
+pub const END_HOT_RELOAD: &str = "Passenger.Roslyn.Extension.EndHotReload";
+
 /// The request that sends `message` to `handler` about the document at `uri`: its method and params (the message as
 /// the JSON string the server reads it from; the method's name is Roslyn's own, typo and all).
 pub fn request(handler: &str, message: &Value, uri: &str) -> (&'static str, Value) {
@@ -25,6 +32,12 @@ pub fn request(handler: &str, message: &Value, uri: &str) -> (&'static str, Valu
         "textDocument/_vs_dipatchExtensionMessage",
         json!({ "messageName": handler, "message": message.to_string(), "textDocument": crate::document(uri) }),
     )
+}
+
+/// The request that sends `message` to a workspace handler, one about the solution rather than a document — the Hot
+/// Reload session's: its method and params (the message as the JSON string the server reads it from).
+pub fn workspace_request(handler: &str, message: &Value) -> (&'static str, Value) {
+    ("workspace/_vs_dispatchExtensionMessage", json!({ "messageName": handler, "message": message.to_string() }))
 }
 
 /// What a handler answered, or why it did not: the exception it threw, or no answer at all.

@@ -17,6 +17,7 @@ futures.workspace = true
 gpui.workspace = true
 log.workspace = true
 rsharp-core.workspace = true
+rsharp-dap.workspace = true
 rsharp-languages.workspace = true
 rsharp-lsp.workspace = true
 rsharp-mcp.workspace = true

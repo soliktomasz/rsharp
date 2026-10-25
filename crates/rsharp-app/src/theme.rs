@@ -179,6 +179,17 @@ pub mod editor {
         rgb(0x484A4A)
     }
     /// TEXT_SEARCH_RESULT_ATTRIBUTES' background (IslandSchemeDark.xml): a find bar's match.
+    /// Rider's line breakpoint: the red dot its gutter shows (#DB5C5C, its stop icon's stroke).
+    pub fn breakpoint() -> Rgba {
+        rgb(0xDB5C5C)
+    }
+
+    /// Rider's execution point: the band under the statement the debugger is stopped at, a step above the current
+    /// line's grey so the stopped statement stands out without colouring the code.
+    pub fn execution_point() -> Rgba {
+        rgb(0x2F3E54)
+    }
+
     pub fn search_result() -> Rgba {
         rgb(0x114957)
     }

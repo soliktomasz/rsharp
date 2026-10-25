@@ -292,17 +292,87 @@ and unsupported non-text changes are refused in the merge view rather than guess
 (a `// shortcut:` in `buffer.rs`), the Log asks for 2,000 commits, and a failed save stops a Git command rather
 than running it on stale bytes.
 
-### Phase 8: Debugger (L)
-- A DAP client in Rust over `debugger/` (Passenger.DebugAdapter, carried as is).
-- Breakpoints (line, exception, conditional, hit counts, logpoints, data), stepping (async, Smart Step Into,
-  return values), call stack, variables, watches, Evaluate, and inline values.
-- Attach to Process, Run in Terminal, decompiled symbols, and Hot Reload while debugging (the extension's
-  `HotReload` and `applyChanges`).
-- The Debug window.
+### Phase 8: Debugger (L) — first slice in place
+Built: the DAP client and the adapter. `crates/rsharp-dap` publishes Passenger's `Passenger.DebugAdapter` from
+the submodule into `sidecars/debugger` and drives it as Passenger does, over the protocol's framed messages on
+standard input and output: initialize, launch or attach, `initialized`, each file's breakpoints, the exception
+filters, `configurationDone`, then threads, frames, scopes, values, evaluate, continue and the steps, pause, and
+disconnect or terminate. Every request waits off the UI thread, the adapter runs under the Lifeline so it and its
+program end with the IDE, and a request the client does not offer — a program started in the terminal — is
+refused rather than left unanswered. A live test stops a real program at a real breakpoint and reads its frame,
+locals and an expression, steps it, and sees its output.
+In the app: a folder's breakpoints are its own `breakpoints.json` (`rsharp-core`'s `debug`), kept relative to the
+folder: each line's enabled flag, condition, hit count and log message, Rider's "Any exception" beside typed CLR
+exception breakpoints with their own conditions and five "Suspend if" cases, and Mute Breakpoints. Rider's
+Breakpoints dialog (Cmd+Shift+F8) lists them, edits every field, adds and removes exception breakpoints and
+mutes them all, applying each change at once: a running session is told again, and the adapter's answer (bound, or
+why not) is the gutter dot's colour. Debug (F5)
+resolves the chosen configuration's plan as Run does, builds it, and starts it under the adapter with the folder's
+breakpoints; F9 sets or clears a breakpoint at the caret and in the gutter's dot column, F10/F11/Shift+F11 step,
+F5 resumes, and Stop (Shift+F5) disconnects, ends a launched program and says where it stood. A stop opens its file
+with the statement marked and shows the thread's frames, the chosen frame's locals (members a level at a time on
+click), watches answered as they are typed, and the program's output in the Debug window's console. Rider's Debug
+window is `debug_view.rs` (its keys, Frames, Variables, Watches and Console) at Bottom Left, and `window/debug.rs`
+is its controller. Attach to Process lists the machine's .NET programs as CoreCLR's own debugger transports name
+them — executable, process id, user and command line, read natively on macOS and Linux — with a search, Refresh and
+"Recently attached" first; the chosen one is attached to with the folder's breakpoints, Stop lets it go on (Detach
+does the same), and Reattach finds the last one in the folder by id, then by program. Windows lists no programs yet. Evaluate Expression (Alt+F8) answers an
+expression in the frame the program is stopped in, Set Next Statement (Ctrl+Shift+F10) moves the paused thread to
+the caret's line where the debugger allows it, the frames and the marked line following, and a variable chosen in
+Variables takes a new value through Set Value, the tree read again and the program going on with it. The Debug
+window lists a paused program's threads above Frames when there is more than one, and choosing one shows its frames
+and values, the steps going to it. Smart Step Into (Shift+Alt+F11) offers the calls the stopped statement makes, in
+the order they run, and steps into the one chosen. A configuration with Use external console debugs its program in
+a Terminal tab: the adapter's runInTerminal request is answered with the tab's process, and Stop ends it. What a
+step over's calls returned is shown in its own Return values group above the locals. Evaluate Expression lists the
+value's members a level deep, and a step over an await stops after it (the adapter's own async stepper, proven by a
+window test). The stopped line carries its frame's simple values at its end as inline values, four at most.
+Function breakpoints (Add Function Breakpoint in the Breakpoints dialog, a method named as `Program.Double`) stop
+the program in that method wherever it is, as does a line breakpoint. The window test takes a breakpoint through F9, F5, the Debug window's own Step Over and Resume
+buttons and its frame list, and checks the marked line and the program's output; both debugger suites skip,
+saying why, when dotnet or the adapter is not there. macOS is where they ran; Windows and Linux are CI's.
+- Data breakpoints (Windows x64's to offer). (Not yet.)
+- Decompiled symbols. (Not yet: the adapter's `resolveStackFrame` writes a PDB whose sources are embedded, and names
+  them under a `decompiled/…` path that no file on disk has; the client would have to read the embedded source out of
+  the PDB, or a decompiler of its own would. The client's side — `isResolved` on a frame and `resolveStackFrame` —
+  was written and taken back out until then.)
+- Hot Reload while debugging. (Started. The engine is already carried: the adapter takes `hotReload` at launch and
+  answers `hotReloadState` and `applyChanges` with module deltas, and Passenger's Roslyn extension — published into
+  `sidecars/roslyn` by `rsharp-lsp/build.rs` — already serves the Edit and Continue session (`Passenger.Roslyn.Extension/
+  HotReloadMessages.cs`, listed in `Passenger.Lsp/RoslynExtension.cs`), so no new C# sidecar is needed. What remains is
+  the Rust side. In so far: every launch turns the runtime's Edit and Continue on (`hotReload`), and
+  `Session::hot_reload_state` reads the runtime's capabilities and each module's editability, proven by a launched
+  program in the parity tests; `rsharp-lsp::extension` has the workspace route and the session's handler names, and
+  the live Roslyn test starts and ends the extension's Edit and Continue session. Next: `Session::apply_changes` (the
+  deltas as the extension emits them), the emit/commit/discard calls filled in around it, and the window's
+  save-while-debugging path: a DebugState carries the Hot Reload session's number and each edited file's text from
+  before its first edit (the originals the emit call needs), the save action — after `buffer.save` succeeds — hands
+  the active buffer's text and its server (`buffer.rs`'s `server`) to a path in `window/debug.rs` that runs
+  state → emit (through `rsharp-lsp::extension::workspace_request`) → `apply_changes` → commit or discard on the
+  background executor, each module's result appended to `debug_console`; its test edits a line, saves, resumes and
+  sees the program print the new value.)
+- Attach to Process on Windows. (Not yet: the Windows listing reads the process's `dotnet-diagnostic-<pid>` named pipe,
+  which is not read; macOS's `clr-debug-pipe` and Linux's `/proc` are.)
+- Data breakpoints (Windows x64's to offer). (Not yet: the adapter answers `dataBreakpointInfo` and
+  `setDataBreakpoints`, and ICorDebug offers them only for Windows x64, so no macOS test can say they work.)
 
 Passenger: `Debugging/`, `MainWindow.Attach.cs`, the Debugger notes in its CLAUDE.md; issues #145–#157, #214, #219.
 Done when: Passenger's debugger window tests, translated, pass on macOS, Windows x64 and Linux, against the same
-`tests/Debuggees`.
+`tests/Debuggees`. The translation has begun: `crates/rsharp-dap/tests/passenger.rs` runs `PauseTests`' three through
+the client against `LoopingConsoleApp` (a pause in its loop and a second after continuing, a step from a pause in its
+sleep back to the loop, a TimeSpan's fields where its ToString cannot run, an evaluation that waits on the paused
+program's other thread being stopped with its reason, and a parallel loop's condition stopping it on its iteration), and `SteppingConsoleApp`'s stepping,
+await and returned-value cases (into `Inner()` and out, over to the next statement, over an await, and the values
+`Describe(Count())` returned), its Smart Step Into cases (the calls of `Outer(Inner())` in the order they run, the one
+chosen stepped into, and the second of two `Add` calls), and its synthetic variables (what each call a step ran
+returned, named `$ReturnValue1` and `$ReturnValue` and readable in an expression, replaced by the next step's, what a
+step out's method returned, `$exception` at a throw, whose `Message` an expression reads, and a lambda stepped into
+from a breakpoint on its statement's column), an evaluation in a paused frame answering for fields, properties, static
+members and calls, a paused frame's locals and their members (a struct's, the object's, an enum's values) on
+`DebuggableConsoleApp`, an exception thrown in a parallel loop stopping where it was thrown, its message read
+through `exceptionInfo`, a stack naming the program's frames and the library's between them, each placed or subtle as
+Passenger's test expects, a stop inside a lambda listing the values it closes over, and a step through an async method
+and the method it awaits, each stop on the line Passenger's AsyncStepTests names.
 
 ### Phase 9: Avalonia and WPF (L)
 - A XAML host: `Passenger.Xaml` behind a thin JSON-lines (or LSP) process, giving completion, diagnostics,

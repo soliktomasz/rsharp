@@ -1,0 +1,610 @@
+//! The Debug Adapter Protocol client and Passenger's debug adapter, which this runs as Passenger does: its engine behind
+//! the protocol in a process of its own. No UI: events come on the adapter's threads, and a request's answer is waited
+//! for off the UI thread.
+
+mod connection;
+pub mod protocol;
+
+use connection::{Connection, Incoming};
+pub use protocol::Capabilities;
+use protocol::{Breakpoint, Evaluated, Frame, Scope, Thread, Variable};
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
+
+/// The adapter Passenger built from vendor/passenger, at build time; beside the executable when it was not built.
+pub fn adapter() -> Option<PathBuf> {
+    let built = env!("RSHARP_DEBUG_ADAPTER");
+    let path = if built.is_empty() {
+        std::env::current_exe().ok()?.parent()?.join("debugger").join("Passenger.DebugAdapter.dll")
+    } else {
+        PathBuf::from(built)
+    };
+    path.is_file().then_some(path)
+}
+
+pub use protocol::RunInTerminal;
+
+/// How the client starts a program the adapter asks for in a terminal of its own.
+pub type TerminalRun = Arc<dyn Fn(RunInTerminal) -> Result<RunInTerminalAnswer, String> + Send + Sync>;
+
+/// What the adapter says while a session runs.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Event {
+    /// The program stopped: at a breakpoint, a step, an exception, or a pause.
+    Stopped(Stop),
+    Continued,
+    Exited(Option<i64>),
+    Terminated,
+    /// What the program wrote, or what the adapter said of itself on its error output.
+    Output {
+        text: String,
+        error: bool,
+    },
+    /// A breakpoint as the adapter last made it: bound and will be hit, or not, with why not.
+    Breakpoint {
+        path: Option<PathBuf>,
+        line: Option<usize>,
+        verified: bool,
+        message: Option<String>,
+    },
+    /// The adapter's process ended; nothing more is asked of it.
+    Ended,
+}
+
+/// Where and why a program stopped.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Stop {
+    /// breakpoint, step, exception, pause, entry, data breakpoint, function breakpoint.
+    pub reason: String,
+    pub thread: i64,
+    pub path: Option<PathBuf>,
+    /// From 0.
+    pub line: Option<usize>,
+}
+
+impl Stop {
+    /// The stop in the person's words: "Paused on a breakpoint", "Paused on an exception".
+    pub fn said(&self) -> String {
+        match self.reason.as_str() {
+            "breakpoint" => "Paused on a breakpoint".into(),
+            "step" => "Paused after a step".into(),
+            "exception" => "Paused on an exception".into(),
+            "pause" => "Paused".into(),
+            "entry" => "Paused at the program's entry".into(),
+            "data breakpoint" => "Paused on a data breakpoint".into(),
+            "function breakpoint" => "Paused on a breakpoint".into(),
+            other => format!("Paused ({other})"),
+        }
+    }
+}
+
+/// A line breakpoint as the debugger is told of it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SourceBreakpoint {
+    /// From 0.
+    pub line: usize,
+    /// From 0, where a breakpoint is for one call on a line several share (a lambda's body, say); usually absent.
+    pub column: Option<usize>,
+    pub condition: Option<String>,
+    /// Rider's hit count: `5`, `> 2`, `% 3` and the like.
+    pub hit_condition: Option<String>,
+    pub log_message: Option<String>,
+}
+
+/// Rider's function breakpoint as the debugger is told of it: the method's name and what a hit asks.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FunctionBreakpoint {
+    /// `Namespace.Type.Method`, with `*` at its end for a suffix that matches any.
+    pub name: String,
+    pub condition: Option<String>,
+    pub hit_condition: Option<String>,
+    pub log_message: Option<String>,
+}
+
+/// A CLR exception breakpoint as the debugger is told of it: the types it is about (none for every exception), the
+/// cases that stop the program, and what a hit asks besides.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExceptionFilter {
+    /// Full names as CLR spells them; empty for every exception.
+    pub types: Vec<String>,
+    /// Rider's "Suspend if": thrownInUserCode, thrownInExternalCode, handledInUserCode, handledInExternalCode, unhandled.
+    pub scenarios: Vec<String>,
+    pub condition: Option<String>,
+    pub hit_condition: Option<String>,
+    pub log_message: Option<String>,
+}
+
+impl ExceptionFilter {
+    /// The path the protocol takes: CLR, then the types; CLR alone is every exception.
+    fn path(&self) -> Vec<String> {
+        let mut path = vec!["CLR".to_string()];
+        path.extend(self.types.iter().filter(|kind| !kind.trim().is_empty()).cloned());
+        path
+    }
+}
+
+/// What a program is started with: the assembly or executable, its arguments, folder and environment.
+#[derive(Clone, Debug)]
+pub struct Launch {
+    pub program: PathBuf,
+    pub arguments: Vec<String>,
+    pub working_directory: PathBuf,
+    pub environment: BTreeMap<String, String>,
+    pub stop_at_entry: bool,
+    /// The program's code may be changed as it runs (Hot Reload): the adapter turns the runtime's Edit and Continue on.
+    pub hot_reload: bool,
+}
+
+/// What the client's terminal answers the adapter with: the program's process, once it runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RunInTerminalAnswer {
+    pub process_id: u32,
+}
+
+/// How a session starts: a program of its own, or a running one attached to.
+#[derive(Clone, Debug)]
+pub enum Start {
+    Launch(Launch),
+    Attach { process_id: u32 },
+}
+
+const INITIALIZE: Duration = Duration::from_secs(20);
+const LAUNCH: Duration = Duration::from_secs(30);
+const INITIALIZED: Duration = Duration::from_secs(60);
+const CONFIGURED: Duration = Duration::from_secs(120);
+const REQUEST: Duration = Duration::from_secs(20);
+
+/// One program under the debugger: the adapter's process, the conversation with it, and the requests the debug window
+/// makes. Every method is safe to call off the UI thread and none needs the UI.
+pub struct Session {
+    connection: Arc<Connection>,
+    /// The process the adapter started, once it said which it is.
+    process_id: Arc<AtomicI64>,
+    /// What the adapter made of each file's breakpoints as the session opened.
+    verified: Mutex<Vec<(PathBuf, Vec<Breakpoint>)>>,
+    pub capabilities: Capabilities,
+    /// What the program is, as the Debug window names it.
+    pub program: String,
+}
+
+impl Session {
+    /// Starts the adapter and the program (or attaches it), with the folder and its lines as breakpoints. The session is
+    /// ready once the adapter's `configurationDone` has been answered, which waits for the program's runtime.
+    pub fn start(
+        adapter: &Path,
+        start: Start,
+        symbols: &Path,
+        breakpoints: Vec<(PathBuf, Vec<SourceBreakpoint>)>,
+        functions: Vec<FunctionBreakpoint>,
+        exceptions: Vec<ExceptionFilter>,
+        terminal: Option<TerminalRun>,
+        events: impl Fn(Event) + Send + Sync + 'static,
+    ) -> Result<Session, String> {
+        let dotnet = rsharp_core::programs::dotnet()
+            .ok_or_else(|| "No .NET command line found: install the .NET SDK, or set DOTNET_ROOT".to_string())?;
+        let mut command = Command::new(&dotnet);
+        command.arg(adapter).args(["--interpreter=vscode"]).arg(format!("--symbolCache={}", symbols.display()));
+        let initialized = Arc::new((Mutex::new(false), Condvar::new()));
+        let process_id = Arc::new(AtomicI64::new(0));
+        let ids = process_id.clone();
+        let ready = initialized.clone();
+        let said = Arc::new(events);
+        let reporting = said.clone();
+        let notify = Arc::new(move |incoming: Incoming| match incoming {
+            Incoming::Event { name, body } => {
+                let event = match name.as_str() {
+                    "initialized" => {
+                        let (ready, woken) = &*ready;
+                        *ready.lock().unwrap() = true;
+                        woken.notify_all();
+                        None
+                    }
+                    "stopped" => Some(Event::Stopped(Stop {
+                        reason: text(&body, "reason").unwrap_or_else(|| "unknown".into()),
+                        thread: number(&body, "threadId").unwrap_or_default(),
+                        path: body["source"]["path"].as_str().map(PathBuf::from),
+                        line: number(&body, "line").map(|line| line.saturating_sub(1) as usize),
+                    })),
+                    "continued" => Some(Event::Continued),
+                    "exited" => Some(Event::Exited(number(&body, "exitCode"))),
+                    "terminated" => Some(Event::Terminated),
+                    "output" => Some(Event::Output {
+                        text: body["output"].as_str().unwrap_or_default().to_string(),
+                        error: body["category"].as_str() == Some("stderr"),
+                    }),
+                    "breakpoint" => {
+                        let breakpoint = &body["breakpoint"];
+                        Some(Event::Breakpoint {
+                            path: breakpoint["source"]["path"].as_str().map(PathBuf::from),
+                            line: number(breakpoint, "line").map(|line| line.saturating_sub(1) as usize),
+                            verified: breakpoint["verified"].as_bool().unwrap_or(false),
+                            message: breakpoint["message"].as_str().map(str::to_string),
+                        })
+                    }
+                    "process" => {
+                        ids.store(number(&body, "systemProcessId").unwrap_or_default(), Ordering::Release);
+                        None
+                    }
+                    _ => None,
+                };
+                if let Some(event) = event {
+                    reporting(event);
+                }
+            }
+            Incoming::Stderr(line) => reporting(Event::Output { text: format!("{line}\n"), error: true }),
+            Incoming::Ended => reporting(Event::Ended),
+        });
+        // The adapter's own request, a program in the terminal: it is answered by the client's terminal when one is
+        // given, and refused otherwise so the adapter goes on rather than waiting.
+        let requests: connection::Requests = {
+            let terminal = terminal.clone();
+            Arc::new(move |command: &str, arguments: &Value| {
+                if command != "runInTerminal" {
+                    return Err(format!("{command} is not supported by this debugger client"));
+                }
+                let Some(terminal) = &terminal else {
+                    return Err("A program in the terminal is not supported by this session".into());
+                };
+                let request: RunInTerminal = serde_json::from_value(arguments.clone())
+                    .map_err(|error| format!("The debugger's runInTerminal did not read: {error}"))?;
+                let answer = terminal(request)?;
+                Ok(json!({ "processId": answer.process_id }))
+            })
+        };
+        let connection = Connection::start(command, notify, requests)
+            .map_err(|error| format!("The debugger did not start: {error}"))?;
+        let mut session = Session {
+            connection,
+            process_id,
+            verified: Mutex::new(Vec::new()),
+            capabilities: Capabilities::default(),
+            program: match &start {
+                Start::Launch(launch) => launch.program.file_stem().unwrap_or_default().to_string_lossy().into_owned(),
+                Start::Attach { process_id } => format!("process {process_id}"),
+            },
+        };
+        match session.begin(start, breakpoints, functions, exceptions, terminal.is_some(), &initialized) {
+            Ok(capabilities) => {
+                session.capabilities = capabilities;
+                Ok(session)
+            }
+            Err(why) => {
+                session.connection.kill();
+                Err(why)
+            }
+        }
+    }
+
+    /// The conversation's opening, as the protocol orders it: initialize, the program or the process told of, the
+    /// breakpoints sent once the adapter is ready for them, then configurationDone, whose answer starts the program.
+    fn begin(
+        &self,
+        start: Start,
+        breakpoints: Vec<(PathBuf, Vec<SourceBreakpoint>)>,
+        functions: Vec<FunctionBreakpoint>,
+        exceptions: Vec<ExceptionFilter>,
+        runs_in_terminal: bool,
+        initialized: &Arc<(Mutex<bool>, Condvar)>,
+    ) -> Result<Capabilities, String> {
+        let body = self.connection.request(
+            "initialize",
+            json!({
+                "clientID": "rsharp",
+                "clientName": "RSharp",
+                "adapterID": "coreclr",
+                "linesStartAt1": true,
+                "columnsStartAt1": true,
+                "pathFormat": "path",
+                "supportsVariableType": true,
+                "supportsRunInTerminalRequest": runs_in_terminal,
+            }),
+            INITIALIZE,
+        )?;
+        let capabilities: Capabilities =
+            serde_json::from_value(body).map_err(|error| format!("The debugger's abilities did not read: {error}"))?;
+        match start {
+            Start::Launch(launch) => self.connection.request(
+                "launch",
+                json!({
+                    "program": launch.program,
+                    "args": launch.arguments,
+                    "cwd": launch.working_directory,
+                    "env": launch.environment,
+                    "console": if runs_in_terminal { "integratedTerminal" } else { "internalConsole" },
+                    "stopAtEntry": launch.stop_at_entry,
+                    "justMyCode": true,
+                    "hotReload": launch.hot_reload,
+                }),
+                LAUNCH,
+            )?,
+            Start::Attach { process_id } => {
+                self.connection.request("attach", json!({ "processId": process_id, "justMyCode": true }), LAUNCH)?
+            }
+        };
+        let (ready, woken) = &**initialized;
+        let mut done = ready.lock().unwrap();
+        while !*done {
+            let (now, timeout) = woken.wait_timeout(done, INITIALIZED).unwrap();
+            done = now;
+            if timeout.timed_out() && !*done {
+                return Err("The debugger did not finish starting".into());
+            }
+        }
+        drop(done);
+        let mut verified = Vec::new();
+        for (path, lines) in breakpoints {
+            let answer = self.set_breakpoints(&path, &lines)?;
+            verified.push((path, answer));
+        }
+        *self.verified.lock().unwrap() = verified;
+        self.set_function_breakpoints(&functions)?;
+        self.set_exceptions(&exceptions)?;
+        self.connection.request("configurationDone", json!({}), CONFIGURED)?;
+        Ok(capabilities)
+    }
+
+    pub fn process_id(&self) -> Option<u32> {
+        match self.process_id.load(Ordering::Acquire) {
+            0 => None,
+            id => Some(id as u32),
+        }
+    }
+
+    /// Sends a file's breakpoints, replacing what the debugger had there; its answer says what it made of each.
+    /// Stops at methods by name, wherever they are: Rider's function breakpoints.
+    pub fn set_function_breakpoints(&self, breakpoints: &[FunctionBreakpoint]) -> Result<Vec<Breakpoint>, String> {
+        let list: Vec<Value> = breakpoints
+            .iter()
+            .map(|breakpoint| {
+                let mut sent = json!({ "name": breakpoint.name });
+                if let Some(condition) = &breakpoint.condition {
+                    sent["condition"] = json!(condition);
+                }
+                if let Some(hit_condition) = &breakpoint.hit_condition {
+                    sent["hitCondition"] = json!(hit_condition);
+                }
+                if let Some(log_message) = &breakpoint.log_message {
+                    sent["logMessage"] = json!(log_message);
+                }
+                sent
+            })
+            .collect();
+        let body = self.connection.request("setFunctionBreakpoints", json!({ "breakpoints": list }), REQUEST)?;
+        let answered: protocol::Breakpoints = serde_json::from_value(body)
+            .map_err(|error| format!("The debugger's function breakpoints did not read: {error}"))?;
+        Ok(answered.breakpoints)
+    }
+
+    pub fn set_breakpoints(&self, path: &Path, breakpoints: &[SourceBreakpoint]) -> Result<Vec<Breakpoint>, String> {
+        let list: Vec<Value> = breakpoints
+            .iter()
+            .map(|breakpoint| {
+                let mut sent = json!({ "line": breakpoint.line + 1 });
+                if let Some(column) = breakpoint.column {
+                    sent["column"] = json!(column + 1);
+                }
+                if let Some(condition) = &breakpoint.condition {
+                    sent["condition"] = json!(condition);
+                }
+                if let Some(hit_condition) = &breakpoint.hit_condition {
+                    sent["hitCondition"] = json!(hit_condition);
+                }
+                if let Some(log_message) = &breakpoint.log_message {
+                    sent["logMessage"] = json!(log_message);
+                }
+                sent
+            })
+            .collect();
+        let body = self.connection.request(
+            "setBreakpoints",
+            json!({ "source": { "path": path }, "breakpoints": list }),
+            REQUEST,
+        )?;
+        let answered: protocol::Breakpoints = serde_json::from_value(body)
+            .map_err(|error| format!("The debugger's breakpoints did not read: {error}"))?;
+        Ok(answered.breakpoints)
+    }
+
+    /// Sends the exception breakpoints that are on. A client that sends none, as DAP has it, stops on every exception
+    /// nothing handles; one that sends options stops only where one of them says.
+    pub fn set_exceptions(&self, exceptions: &[ExceptionFilter]) -> Result<(), String> {
+        let options: Vec<Value> = exceptions
+            .iter()
+            .map(|exception| {
+                let mut option = json!({
+                    "path": [{ "names": exception.path() }],
+                    "breakMode": if exception.scenarios.is_empty() { "never" } else { "always" },
+                    "scenarios": exception.scenarios,
+                });
+                if let Some(condition) = &exception.condition {
+                    option["condition"] = json!(condition);
+                }
+                if let Some(hit_condition) = &exception.hit_condition {
+                    option["hitCondition"] = json!(hit_condition);
+                }
+                if let Some(log_message) = &exception.log_message {
+                    option["logMessage"] = json!(log_message);
+                }
+                option
+            })
+            .collect();
+        self.connection
+            .request("setExceptionBreakpoints", json!({ "filters": [], "exceptionOptions": options }), REQUEST)
+            .map(drop)
+    }
+
+    /// What the adapter made of each file's breakpoints as the session opened: whether each will be hit, and why not.
+    pub fn verified(&self) -> Vec<(PathBuf, Vec<Breakpoint>)> {
+        self.verified.lock().unwrap().clone()
+    }
+
+    pub fn threads(&self) -> Result<Vec<Thread>, String> {
+        let body = self.connection.request("threads", json!({}), REQUEST)?;
+        let answered: protocol::Threads =
+            serde_json::from_value(body).map_err(|error| format!("The debugger's threads did not read: {error}"))?;
+        Ok(answered.threads)
+    }
+
+    /// The thread's frames, innermost first, each with its place from 0.
+    pub fn stack_trace(&self, thread: i64) -> Result<Vec<Frame>, String> {
+        let body = self.connection.request("stackTrace", json!({ "threadId": thread, "startFrame": 0 }), REQUEST)?;
+        let answered: protocol::StackTrace =
+            serde_json::from_value(body).map_err(|error| format!("The debugger's stack did not read: {error}"))?;
+        Ok(answered
+            .stack_frames
+            .into_iter()
+            .map(|frame| Frame { line: frame.line.saturating_sub(1), column: frame.column.saturating_sub(1), ..frame })
+            .collect())
+    }
+
+    /// What the program can take of Hot Reload: the runtime's capabilities and each loaded module, editable or why not.
+    pub fn hot_reload_state(&self) -> Result<protocol::HotReloadState, String> {
+        let body = self.connection.request("hotReloadState", json!({}), REQUEST)?;
+        serde_json::from_value(body).map_err(|error| format!("The debugger's hot reload state did not read: {error}"))
+    }
+
+    /// Hot Reload: applies the updates Roslyn's Edit and Continue emitted, as the extension answered them (each module's
+    /// metadata, IL and PDB deltas are opaque here, already base64 on the wire), and answers what became of each.
+    pub fn apply_changes(&self, updates: Value) -> Result<Vec<protocol::ModuleApplied>, String> {
+        let body = self.connection.request("applyChanges", json!({ "updates": updates }), REQUEST)?;
+        let answered: protocol::ApplyChanges = serde_json::from_value(body)
+            .map_err(|error| format!("The debugger's applied changes did not read: {error}"))?;
+        Ok(answered.modules)
+    }
+
+    /// The exception a stopped thread is at, as the adapter describes it: its type, message and place.
+    pub fn exception_info(&self, thread: i64) -> Result<protocol::ExceptionInfo, String> {
+        let body = self.connection.request("exceptionInfo", json!({ "threadId": thread }), REQUEST)?;
+        serde_json::from_value(body).map_err(|error| format!("The debugger's exception did not read: {error}"))
+    }
+
+    pub fn scopes(&self, frame: i64) -> Result<Vec<Scope>, String> {
+        let body = self.connection.request("scopes", json!({ "frameId": frame }), REQUEST)?;
+        let answered: protocol::Scopes =
+            serde_json::from_value(body).map_err(|error| format!("The debugger's scopes did not read: {error}"))?;
+        Ok(answered.scopes)
+    }
+
+    pub fn variables(&self, reference: i64) -> Result<Vec<Variable>, String> {
+        let body = self.connection.request("variables", json!({ "variablesReference": reference }), REQUEST)?;
+        let answered: protocol::Variables =
+            serde_json::from_value(body).map_err(|error| format!("The debugger's values did not read: {error}"))?;
+        Ok(answered.variables)
+    }
+
+    /// What an expression is in a frame: Evaluate, and what a watch asks as it is typed. The adapter evaluates only
+    /// where the program is paused, so a frame is always named.
+    pub fn evaluate(&self, expression: &str, frame: i64) -> Result<Evaluated, String> {
+        let body = self.connection.request(
+            "evaluate",
+            json!({ "expression": expression, "frameId": frame, "context": "watch" }),
+            REQUEST,
+        )?;
+        serde_json::from_value(body).map_err(|error| format!("The debugger's answer did not read: {error}"))
+    }
+
+    /// Set Value: an expression's value in a frame, as a local, a member or an element is changed there.
+    pub fn set_expression(&self, expression: &str, value: &str, frame: i64) -> Result<protocol::SetValue, String> {
+        let body = self.connection.request(
+            "setExpression",
+            json!({ "expression": expression, "value": value, "frameId": frame }),
+            REQUEST,
+        )?;
+        serde_json::from_value(body).map_err(|error| format!("The debugger's set value did not read: {error}"))
+    }
+
+    /// The places a paused thread could go on from in a file at a line (Set Next Statement's question), from 0.
+    pub fn goto_targets(&self, path: &Path, line: usize) -> Result<Vec<protocol::GotoTarget>, String> {
+        let body =
+            self.connection.request("gotoTargets", json!({ "source": { "path": path }, "line": line + 1 }), REQUEST)?;
+        let answered: protocol::GotoTargets = serde_json::from_value(body)
+            .map_err(|error| format!("The debugger's goto targets did not read: {error}"))?;
+        Ok(answered
+            .targets
+            .into_iter()
+            .map(|target| protocol::GotoTarget {
+                line: target.line.saturating_sub(1),
+                column: target.column.saturating_sub(1),
+                ..target
+            })
+            .collect())
+    }
+
+    /// Set Next Statement: the thread goes on from a target [`Session::goto_targets`] gave.
+    pub fn set_next_statement(&self, thread: i64, target: i64) -> Result<(), String> {
+        self.connection.request("goto", json!({ "threadId": thread, "targetId": target }), REQUEST).map(drop)
+    }
+
+    pub fn resume(&self, thread: i64) -> Result<(), String> {
+        self.connection.request("continue", json!({ "threadId": thread }), REQUEST).map(drop)
+    }
+
+    pub fn step_over(&self, thread: i64) -> Result<(), String> {
+        self.connection.request("next", json!({ "threadId": thread }), REQUEST).map(drop)
+    }
+
+    pub fn step_into(&self, thread: i64) -> Result<(), String> {
+        self.connection.request("stepIn", json!({ "threadId": thread }), REQUEST).map(drop)
+    }
+
+    /// The calls a frame's statement can step into, in the order they run (Smart Step Into's question), from 0.
+    pub fn step_in_targets(&self, frame: i64) -> Result<Vec<protocol::StepInTarget>, String> {
+        let body = self.connection.request("stepInTargets", json!({ "frameId": frame }), REQUEST)?;
+        let answered: protocol::StepInTargets = serde_json::from_value(body)
+            .map_err(|error| format!("The debugger's step in targets did not read: {error}"))?;
+        Ok(answered
+            .targets
+            .into_iter()
+            .map(|target| protocol::StepInTarget {
+                line: target.line.saturating_sub(1),
+                column: target.column.saturating_sub(1),
+                ..target
+            })
+            .collect())
+    }
+
+    /// Smart Step Into: a step into one of the calls [`Session::step_in_targets`] gave.
+    pub fn step_into_target(&self, thread: i64, target: i64) -> Result<(), String> {
+        self.connection.request("stepIn", json!({ "threadId": thread, "targetId": target }), REQUEST).map(drop)
+    }
+
+    pub fn step_out(&self, thread: i64) -> Result<(), String> {
+        self.connection.request("stepOut", json!({ "threadId": thread }), REQUEST).map(drop)
+    }
+
+    /// Breaks a running program at its next statement.
+    pub fn pause(&self, thread: i64) -> Result<(), String> {
+        self.connection.request("pause", json!({ "threadId": thread }), REQUEST).map(drop)
+    }
+
+    /// Ends the session: a launched program ends, one attached to is let go.
+    pub fn disconnect(&self, terminate: bool) {
+        let _ =
+            self.connection.request("disconnect", json!({ "terminateDebuggee": terminate }), Duration::from_secs(3));
+        self.connection.kill();
+    }
+
+    /// Whether the adapter's process has ended, without ending it.
+    pub fn ended(&self) -> bool {
+        self.connection.ended()
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.connection.kill();
+    }
+}
+
+fn text(body: &Value, name: &str) -> Option<String> {
+    body.get(name).and_then(Value::as_str).map(str::to_string)
+}
+
+fn number(body: &Value, name: &str) -> Option<i64> {
+    body.get(name).and_then(Value::as_i64)
+}

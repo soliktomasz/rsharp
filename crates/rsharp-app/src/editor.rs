@@ -202,6 +202,13 @@ pub struct ConsoleLink(pub ConsoleTarget);
 
 impl gpui::EventEmitter<ConsoleLink> for CodeEditor {}
 
+/// A click in the gutter's breakpoint column, on a line from 0: set one there or clear the one there.
+pub struct ToggleBreakpoint {
+    pub line: usize,
+}
+
+impl gpui::EventEmitter<ToggleBreakpoint> for CodeEditor {}
+
 /// An edit refused because the file is read-only: the window asks to clear that.
 pub struct ReadOnlyEdit;
 
@@ -839,6 +846,21 @@ impl CodeEditor {
             self.toggle_fold(fold, cx);
             return;
         }
+        // Rider's gutter: a click in the breakpoint column sets or clears one on its line.
+        if self.console.is_none()
+            && let Some(layout) = &self.layout
+            && layout.viewport.contains(&event.position)
+            && event.position.x < layout.viewport.origin.x + px(20.)
+        {
+            let rows = self.rows.len(&self.text);
+            let y = event.position.y - layout.viewport.origin.y + self.scroll_y;
+            let row = (f32::from(y) / f32::from(self.line_height)).floor().max(0.) as usize;
+            let line = self.rows.row(&self.text, row.min(rows.saturating_sub(1))).line;
+            self.selecting = false;
+            cx.emit(ToggleBreakpoint { line });
+            cx.notify();
+            return;
+        }
         let offset = self.offset_for_point(event.position);
         let m = event.modifiers;
         if let Some(console) = &mut self.console {
@@ -1406,6 +1428,9 @@ struct Prepainted {
     /// The bracket by the caret and its pair, in a tree that is current.
     braces: Vec<Range<usize>>,
     show_whitespace: bool,
+    /// The file's breakpoints and the line the debugger is stopped at.
+    breakpoints: Vec<crate::buffer::BreakpointMark>,
+    execution_line: Option<usize>,
 }
 
 impl IntoElement for EditorElement {
@@ -1503,6 +1528,9 @@ impl Element for EditorElement {
             let byte_range = shown.first().map_or(0, |r| r.start)..shown.last().map_or(0, |r| r.end);
             let buffer = editor.buffer.clone();
             let buffer = buffer.read(cx);
+            let breakpoints = buffer.breakpoints.clone();
+            let execution_line = buffer.execution_line;
+            let inline_values = buffer.inline_values.clone();
             let syntax: Vec<Highlight> =
                 buffer.tree.as_ref().map(|tree| highlights(tree, text, byte_range.clone())).unwrap_or_default();
             // Roslyn's colours win where it named a word; the syntax's fill the rest.
@@ -1535,14 +1563,22 @@ impl Element for EditorElement {
             for row in &shown {
                 let content: String = text.byte_slice(row.start..row.end).to_string();
                 let runs = runs_for(&content, row.start, &colours, &code_font);
-                // The hints on the row, a wrapped row's last place being the next row's first.
-                let hints: Vec<(usize, &str)> = editor
+                // The hints on the row, a wrapped row's last place being the next row's first; the debugger's inline
+                // values are one more, at the stopped row's end.
+                let mut hints: Vec<(usize, &str)> = editor
                     .assist
                     .hints
                     .iter()
                     .filter(|(at, _)| (row.start..row.end).contains(at) || (*at == row.end && row.last))
                     .map(|(at, label)| (at - row.start, label.as_str()))
                     .collect();
+                if let Some((line, values)) = &inline_values
+                    && *line == row.line
+                    && row.last
+                    && !hints.iter().any(|(at, _)| *at == row.end - row.start)
+                {
+                    hints.push((row.end - row.start, values.as_str()));
+                }
                 lines.push(Shaped::new(&content, runs, &hints, font_size, &code_font, window));
                 let number = (row.first && show_numbers).then(|| {
                     let number = (row.line + 1).to_string();
@@ -1593,6 +1629,8 @@ impl Element for EditorElement {
                 placeholder,
                 braces,
                 show_whitespace: settings.show_whitespace,
+                breakpoints,
+                execution_line,
             }
         })
     }
@@ -1643,6 +1681,12 @@ impl Element for EditorElement {
                 let span = state.rows[i];
                 let (start, end) = (span.start, span.end);
                 let top = top_of(row);
+                if span.first && state.execution_line == Some(span.line) {
+                    window.paint_quad(fill(
+                        Bounds::new(point(bounds.origin.x, top), size(bounds.size.width, line_height)),
+                        theme::editor::execution_point(),
+                    ));
+                }
                 let left = state.text_origin.x + state.char_width * span.indent as f32;
                 let band = |window: &mut Window, x0: Pixels, x1: Pixels, colour: gpui::Rgba| {
                     window.paint_quad(fill(
@@ -1729,6 +1773,25 @@ impl Element for EditorElement {
                         git_changes
                             .push((Bounds::new(point(bounds.origin.x, top), size(px(10.), line_height)), hunk.clone()));
                     }
+                }
+                if span.first
+                    && let Some(mark) = state.breakpoints.iter().find(|mark| mark.line == span.line)
+                {
+                    // Rider's dot: full red where the debugger will hit it, a warning where it will not, dim where
+                    // it is off.
+                    let (diameter, colour) = match (mark.enabled, mark.verified) {
+                        (true, true) => (px(10.), theme::editor::breakpoint()),
+                        (true, false) => (px(8.), theme::warning()),
+                        (false, _) => (px(8.), theme::text_secondary()),
+                    };
+                    let dot = Bounds::new(
+                        point(
+                            bounds.origin.x + px(7.) + (px(10.) - diameter) / 2.,
+                            top + (line_height - diameter) / 2.,
+                        ),
+                        size(diameter, diameter),
+                    );
+                    window.paint_quad(fill(dot, colour).corner_radii(diameter / 2.));
                 }
                 if let Some(Some(number)) = state.line_numbers.get(i) {
                     let _ = number.paint(

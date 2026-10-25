@@ -19,6 +19,8 @@ colors:
   modified: "#548AF7"
   error: "#F75464"
   warning: "#E5A336"
+  debug-breakpoint: "#DB5C5C"
+  execution-point: "#2F3E54"
   editor-text: "#BCBEC4"
   editor-line-number: "#4B5059"
   editor-line-number-current: "#A1A3AB"
@@ -245,6 +247,34 @@ Soft rounded rectangles at four radii: 10px for islands, 6px for tabs, toolbar w
 
 ### Primary Button
 - 28px, 14px side padding, 4px radius, accent fill with white text. Used on the welcome screen.
+
+### Debug Window
+- The toolbar is 32px: 28px square buttons with 16px icons (Resume, Pause, Step Over, Step Into, Step Out, Stop),
+  dimmed to 35% while they cannot act, and the session's state at the right in text-secondary.
+- After a step over, a Return values group sits above Variables: 24px rows with the method's name, `= value` in
+  text-muted and the type in text-secondary. Its members are not opened in place yet.
+- Frames and Variables share the body: Frames is a 300px column of 24px rows (a paused program's threads above it
+  when there is more than one, the chosen thread in selection; the chosen frame in selection) and
+  Variables takes the rest, its rows indented 18px a level with a 12px chevron (the chosen variable in selection,
+  with a 28px Set value row — a field and a Set button — under the tree while one is chosen); Watches sit under it
+  around a 28px search-field-styled row. The console is a bordered-off share of the bottom under a 24px "Console" label.
+- A stopped line's frame values are one inlay hint at the line's end — `a = 41 · b = 42` — in the inlay-hint colour
+  on the inlay-hint chip, four values at most.
+- The gutter draws a 10px breakpoint dot in breakpoint red, left of the line numbers; one the debugger will not hit
+  is 8px in warning amber, and one turned off or muted is 8px in text-secondary. The stopped statement's band is
+  execution-point over the full width, behind the text.
+- Rider's Smart Step Into popup is 460 wide: a 40px title, then 26px rows of the statement's calls (the chosen one in
+  selection) with their line:column in text-secondary.
+- Rider's Evaluate Expression dialog is 560 wide: a 44px title with the frame's name, the expression field in a
+  26px box, a Result box at least 48px high (warning when the debugger refused), the value's members as 22px rows in
+  a 160px scroll (name, `= value` in text-muted, type in text-secondary), and Close beside Evaluate.
+- Rider's Attach to Process dialog is 820×520: a 44px title, a 40px row with the search field and Refresh, the
+  Executable / Process ID / User / Command Line headings over 24px rows (Recently attached first), and Cancel beside
+  the primary "Attach with .NET Debugger" in a 56px footer.
+- Rider's Breakpoints dialog is 760×540 over the window: a 44px title row with Mute Breakpoints, a 300px list
+  (26px rows, the chosen one in selection, a 16px tick before each name) of Line breakpoints, Function breakpoints
+  (whose form has a Function name field) and Exception breakpoints, and the chosen item's form on the right, with
+  Add Function Breakpoint, Add Exception Breakpoint, Remove and Done in a 56px footer.
 
 ### Empty Editor Hints
 - Two aligned columns 10px apart: instructions right-aligned in text-secondary, the keys left-aligned in the accent (an instruction that is not a key stays text-secondary).

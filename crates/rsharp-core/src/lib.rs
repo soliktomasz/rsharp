@@ -1,6 +1,7 @@
 //! What every part of RSharp shares and no UI needs.
 
 pub mod build;
+pub mod debug;
 pub mod dotnet;
 pub mod editorconfig;
 pub mod encodings;

@@ -2,13 +2,17 @@
 
 pub mod actions;
 pub mod assets;
+pub mod attach_dialog;
 pub mod bench;
+pub mod breakpoints_dialog;
 pub mod buffer;
 pub mod console;
+pub mod debug_view;
 pub mod dock;
 pub mod editor;
 pub mod editor_area;
 pub mod editor_window;
+pub mod evaluate_dialog;
 pub mod field;
 pub mod find_action;
 pub mod find_bar;
@@ -30,6 +34,7 @@ pub mod settings_dialog;
 pub mod solution_menu;
 pub mod solution_view;
 pub mod state;
+pub mod step_into_dialog;
 pub mod templates;
 pub mod test_finder;
 pub mod test_view;

@@ -4758,6 +4758,7 @@ dependencies = [
  "log",
  "regex",
  "rsharp-core",
+ "rsharp-dap",
  "rsharp-languages",
  "rsharp-lsp",
  "rsharp-mcp",
@@ -4787,6 +4788,15 @@ dependencies = [
  "trash",
  "ureq",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "rsharp-dap"
+version = "0.1.0"
+dependencies = [
+ "rsharp-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -38,8 +38,9 @@ OSX on macOS); builds, runs, tests and Git alongside the editor; often several w
 - Every program the IDE starts goes through one child-process module and dies with the IDE.
 - Never Microsoft's vsdbg or anything from C# Dev Kit, and no proprietary UI components.
 - Every dependency carries an open-source licence and an entry in THIRD_PARTY_NOTICES.md.
-- Undecided: the debugger (Passenger's own is C#; RSharp needs a DAP adapter that is not vsdbg), the
-  profiler, the XAML tooling, and whether RSharp and Passenger share state on disk.
+- The debugger is Passenger's own engine behind the Debug Adapter Protocol, carried as a process of its own
+  and driven by `crates/rsharp-dap`; never vsdbg or C# Dev Kit.
+- Undecided: the profiler, the XAML tooling, and whether RSharp and Passenger share state on disk.
 
 ## Brand Commitments
 

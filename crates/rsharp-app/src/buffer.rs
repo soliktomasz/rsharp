@@ -27,6 +27,16 @@ pub enum BufferEvent {
     ContextChanged,
 }
 
+/// A breakpoint as the gutter draws it: its line from 0, whether the debugger will hit it, and whether it is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BreakpointMark {
+    pub line: usize,
+    /// The adapter's word, once a session has one: bound, or not and why not.
+    pub verified: bool,
+    /// Off, or every breakpoint muted: the dot is still there, dimmed.
+    pub enabled: bool,
+}
+
 /// Where a file's indentation comes from, the first of these that says, as Rider's indent widget names it.
 #[derive(Clone, PartialEq, Debug)]
 pub enum IndentSource {
@@ -56,6 +66,12 @@ pub struct Buffer {
     pub tree_version: u64,
     pub git_base: Option<Arc<str>>,
     pub git_hunks: Arc<Vec<rsharp_text::DiffHunk>>,
+    /// The breakpoints of the file, as the folder has them and the debugger last bound them.
+    pub breakpoints: Vec<BreakpointMark>,
+    /// The line the debugger is stopped at, if it is stopped in this file.
+    pub execution_line: Option<usize>,
+    /// The frame's values, set in at the end of the stopped line as Rider's inline values are.
+    pub inline_values: Option<(usize, String)>,
     git_comparing: Option<Task<()>>,
     is_csharp: bool,
     parsing: Option<Task<()>>,
@@ -206,6 +222,9 @@ impl Buffer {
             tree_version: u64::MAX,
             git_base: None,
             git_hunks: Arc::new(Vec::new()),
+            breakpoints: Vec::new(),
+            execution_line: None,
+            inline_values: None,
             git_comparing: None,
             is_csharp,
             parsing: None,
@@ -321,6 +340,30 @@ impl Buffer {
         self.inspect(Duration::from_millis(500), cx);
         cx.emit(BufferEvent::Edited { changes, by });
         cx.notify();
+    }
+
+    /// A file's breakpoints as the folder has them: the gutter shows a dot at each.
+    pub fn set_breakpoints(&mut self, lines: Vec<BreakpointMark>, cx: &mut Context<Self>) {
+        if self.breakpoints != lines {
+            self.breakpoints = lines;
+            cx.notify();
+        }
+    }
+
+    /// The frame's values as the stopped line shows them, or none.
+    pub fn set_inline_values(&mut self, values: Option<(usize, String)>, cx: &mut Context<Self>) {
+        if self.inline_values != values {
+            self.inline_values = values;
+            cx.notify();
+        }
+    }
+
+    /// The line the program is stopped at here, or none.
+    pub fn set_execution_line(&mut self, line: Option<usize>, cx: &mut Context<Self>) {
+        if self.execution_line != line {
+            self.execution_line = line;
+            cx.notify();
+        }
     }
 
     pub fn set_git_base(&mut self, baseline: Option<String>, cx: &mut Context<Self>) {

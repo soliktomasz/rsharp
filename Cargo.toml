@@ -15,6 +15,7 @@ rsharp-terminal = { path = "crates/rsharp-terminal" }
 async_zip = { version = "0.0.17", default-features = false, features = ["deflate"] }
 serde_json_lenient = { version = "0.2.4", features = ["preserve_order"] }
 rsharp-core = { path = "crates/rsharp-core" }
+rsharp-dap = { path = "crates/rsharp-dap" }
 rsharp-text = { path = "crates/rsharp-text" }
 rsharp-lsp = { path = "crates/rsharp-lsp" }
 rsharp-languages = { path = "crates/rsharp-languages" }
