@@ -41,6 +41,20 @@ actions!(
         ToggleRun,
         ToggleUnitTests,
         ToggleTerminal,
+        ToggleCommit,
+        ToggleGit,
+        GitRefresh,
+        GitPush,
+        GitUpdate,
+        GitHistory,
+        GitSelectionHistory,
+        GitCompare,
+        GitResolve,
+        GitContinue,
+        GitAbort,
+        NextChange,
+        PreviousChange,
+        RollbackLines,
         RunAllTests,
         RunTests,
         RerunFailedTests,
@@ -102,6 +116,7 @@ actions!(
 mod build;
 mod file_moves;
 mod file_ops;
+mod git;
 mod msbuild;
 mod new_project;
 mod nuget;
@@ -170,6 +185,7 @@ struct Found {
 pub struct MainWindow {
     workspace: Option<Workspace>,
     branch: Option<String>,
+    git: git::GitState,
     expanded: HashSet<PathBuf>,
     rows: Vec<TreeRow>,
     /// The solution as the Solution view shows it; none for a folder without one, which shows its files.
@@ -312,6 +328,7 @@ impl MainWindow {
                 m.cancel_build();
                 m.stop_run(cx);
                 m.cancel_tests();
+                m.leave_git(cx);
                 m.terminal.update(cx, |t, cx| t.close_all(cx));
                 if let Some(handle) = m.creation_dialog {
                     let _ = handle.update(cx, |d, w, cx| d.cancel(w, cx));
@@ -378,7 +395,18 @@ impl MainWindow {
                 m.follow_written(path, cx);
             }
         });
+        let git = git::GitState::new(cx);
+        for view in [&git.commit, &git.log] {
+            cx.subscribe_in(view, window, |m, _, request: &crate::git_view::GitRequest, window, cx| {
+                m.git_request(request.clone(), window, cx);
+            })
+            .detach();
+        }
+        let draft_buffer = git.commit.read(cx).message_editor().read(cx).buffer.clone();
+        cx.observe(&draft_buffer, |m, _, cx| m.save_git_choices(cx)).detach();
+        cx.observe(&git.log, |m, _, cx| m.save_git_choices(cx)).detach();
         Self {
+            git,
             tests: tests::Tests::new(test_view),
             build,
             terminal,
@@ -473,6 +501,7 @@ impl MainWindow {
 
     pub fn open_workspace(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
         self.leave_tests(cx);
+        self.leave_git(cx);
         self.leave_build(cx);
         self.leave_run(cx);
         self.terminal.update(cx, |t, cx| t.close_all(cx));
@@ -489,7 +518,7 @@ impl MainWindow {
 
         let kept: FolderState = store.read_for(&workspace.folder);
         let folder = workspace.folder.clone();
-        self.branch = current_branch(&folder);
+        self.branch = None;
         self.expanded = std::iter::once(folder.clone()).chain(kept.expanded.iter().map(|p| folder.join(p))).collect();
         self.dock = kept.dock.clone().unwrap_or_else(|| store.read::<DockLayout>()).complete().clamped();
         self.solution_wide = kept.solution_wide;
@@ -503,6 +532,7 @@ impl MainWindow {
         self.host =
             cx.global::<crate::state::Ide>().servers.then(|| rsharp_lsp::SharedHost::carried(&folder)).flatten();
         self.workspace = Some(workspace);
+        self.open_git(cx);
         let test_state = store.read_for::<crate::test_view::UnitTestsState>(&folder);
         self.tests.view.update(cx, |view, cx| view.restore(test_state, cx));
         self.selected = Some(0);
@@ -1351,6 +1381,7 @@ impl MainWindow {
                     buffer.update(cx, |b, cx| b.attach_server(server, cx));
                 }
                 self.attach_msbuild(&buffer, cx);
+                self.attach_git_buffer(&buffer, cx);
                 let editor = self.new_editor(buffer, window, cx);
                 self.area.add(editor, false)
             }
@@ -1660,6 +1691,7 @@ impl MainWindow {
     /// Back to the Welcome screen, the folder's state kept, as Rider's File | Close Solution.
     pub fn close_solution(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.leave_tests(cx);
+        self.leave_git(cx);
         self.leave_build(cx);
         self.leave_run(cx);
         self.terminal.update(cx, |t, cx| t.close_all(cx));
@@ -1915,14 +1947,6 @@ fn unavailable_action(index: usize) -> SharedString {
     }
 }
 
-/// The branch `.git/HEAD` names, or the commit's short hash when detached.
-fn current_branch(folder: &Path) -> Option<String> {
-    let head = folder.ancestors().map(|f| f.join(".git/HEAD")).find(|h| h.is_file())?;
-    let head = std::fs::read_to_string(head).ok()?;
-    let head = head.trim();
-    Some(head.strip_prefix("ref: refs/heads/").map(str::to_string).unwrap_or_else(|| head.chars().take(8).collect()))
-}
-
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let floating = if self.workspace.is_some() { self.floating_islands(window, cx) } else { Vec::new() };
@@ -1967,6 +1991,32 @@ impl Render for MainWindow {
             })
             .on_action(cx.listener(|w, _: &FindAction, window, cx| w.find_action(window, cx)))
             .on_action(cx.listener(|w, _: &ToggleTerminal, window, cx| w.toggle_terminal(window, cx)))
+            .on_action(cx.listener(|w, _: &ToggleCommit, window, cx| w.toggle_tool(Tool::Commit, window, cx)))
+            .on_action(cx.listener(|w, _: &ToggleGit, window, cx| w.toggle_tool(Tool::Git, window, cx)))
+            .on_action(cx.listener(|w, _: &GitRefresh, _, cx| w.refresh_git(cx)))
+            .when(self.git_status().is_some() && !self.git_busy(), |d| {
+                d.on_action(
+                    cx.listener(|w, _: &GitPush, win, cx| w.git_request(crate::git_view::GitRequest::Push, win, cx)),
+                )
+                .on_action(
+                    cx.listener(|w, _: &GitUpdate, win, cx| {
+                        w.git_request(crate::git_view::GitRequest::Update, win, cx)
+                    }),
+                )
+                .on_action(cx.listener(|w, _: &GitHistory, win, cx| w.git_history(false, win, cx)))
+                .on_action(cx.listener(|w, _: &GitSelectionHistory, win, cx| w.git_history(true, win, cx)))
+                .on_action(cx.listener(|w, _: &GitCompare, win, cx| w.git_compare(win, cx)))
+                .on_action(cx.listener(|w, _: &GitResolve, win, cx| w.git_resolve_selected(win, cx)))
+                .on_action(cx.listener(|w, _: &GitContinue, win, cx| {
+                    w.git_request(crate::git_view::GitRequest::Continue, win, cx)
+                }))
+                .on_action(
+                    cx.listener(|w, _: &GitAbort, win, cx| w.git_request(crate::git_view::GitRequest::Abort, win, cx)),
+                )
+                .on_action(cx.listener(|w, _: &NextChange, _, cx| w.git_change(false, false, cx)))
+                .on_action(cx.listener(|w, _: &PreviousChange, _, cx| w.git_change(true, false, cx)))
+                .on_action(cx.listener(|w, _: &RollbackLines, _, cx| w.git_change(false, true, cx)))
+            })
             // Each acts only while it has something to act on, so menus and Find Action grey it otherwise.
             .when(self.workspace.is_some(), |d| {
                 d.on_action(cx.listener(|w, _: &CloseSolution, window, cx| w.close_solution(window, cx)))
@@ -2080,6 +2130,7 @@ impl Render for MainWindow {
                         {
                             w.evaluate_projects(cx);
                         }
+                        w.refresh_git(cx);
                         w.refresh_solution_problems(cx);
                         cx.notify();
                     }
@@ -2226,9 +2277,19 @@ impl MainWindow {
                     }))
             }))
             .children(self.workspace.is_some().then(|| self.run_widget(cx)))
-            .children(
-                self.branch.clone().map(|branch| widget("branch-widget").child(icon("branch", 16.)).child(branch)),
-            )
+            .children(self.branch.clone().map(|branch| {
+                widget("branch-widget")
+                    .debug_selector(|| "branch widget".into())
+                    .child(icon("branch", 16.))
+                    .child(branch)
+                    .child(icon("chevron-down", 12.))
+                    .on_click(cx.listener(|m, _, window, cx| {
+                        m.dock.show(Tool::Git);
+                        m.refresh_git_log(cx);
+                        window.focus(&m.git.log.focus_handle(cx));
+                        cx.notify();
+                    }))
+            }))
             .when(cfg!(windows), |d| d.child(div().flex_1()).child(caption_buttons()))
     }
 
@@ -2251,10 +2312,12 @@ impl MainWindow {
         let bottom: Vec<Tool> =
             [Place::BottomLeft, Place::BottomRight].iter().filter_map(|p| dock.open_in(*p)).collect();
         let bottom = (!bottom.is_empty()).then(|| {
-            div().h(px(dock.bottom_height)).flex_none().flex().gap(px(GAP)).children(
+            // The band is the height a person dragged it to, so a tool's content stays inside it: the island takes
+            // the band's height and its window scrolls what does not fit, instead of drawing past the status bar.
+            div().h(px(dock.bottom_height)).flex_none().flex().gap(px(GAP)).pb(px(GAP)).children(
                 bottom
                     .into_iter()
-                    .map(|t| self.tool_island(t, window, cx).flex_1().min_w_0().mb(px(GAP)).into_any_element())
+                    .map(|t| self.tool_island(t, window, cx).h_full().min_h_0().flex_1().min_w_0().into_any_element())
                     .collect::<Vec<_>>(),
             )
         });
@@ -2416,6 +2479,8 @@ impl MainWindow {
             Tool::Build => self.build.clone().into_any_element(),
             Tool::Run => self.run_console.clone().into_any_element(),
             Tool::UnitTests => self.tests.view.clone().into_any_element(),
+            Tool::Commit => self.git.commit.clone().into_any_element(),
+            Tool::Git => self.git.log.clone().into_any_element(),
             Tool::Terminal => {
                 self.ensure_terminal(cx);
                 self.terminal.clone().into_any_element()
@@ -2435,7 +2500,7 @@ impl MainWindow {
             Tool::Build => self.build_outcome.as_ref().map(|outcome| outcome.message.clone()),
             Tool::Run => self.run_outcome.as_ref().map(|outcome| outcome.message.clone()),
             Tool::UnitTests => None,
-            Tool::Terminal => None,
+            Tool::Terminal | Tool::Commit | Tool::Git => None,
         }
     }
 
@@ -2534,11 +2599,16 @@ impl MainWindow {
             Tool::Run => self.run_console.focus_handle(cx),
             Tool::UnitTests => self.tests.view.focus_handle(cx),
             Tool::Terminal => self.terminal.focus_handle(cx),
+            Tool::Commit => self.git.commit.focus_handle(cx),
+            Tool::Git => self.git.log.focus_handle(cx),
         }
     }
 
     /// Opens or closes a tool window; one opened takes the keys, one closed with them gives them to the editor.
     pub fn toggle_tool(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
+        if tool == Tool::Git {
+            self.refresh_git_log(cx);
+        }
         if tool == Tool::Terminal {
             self.ensure_terminal(cx);
         }
@@ -2852,6 +2922,8 @@ impl MainWindow {
             NodeKind::File => file_icon(&row.name),
         };
         let tip = row.tip.clone();
+        let git_kind =
+            row.path.as_ref().and_then(|p| self.git_status()?.changes.iter().find(|c| &c.path == p).map(|c| c.kind));
         div()
             .id(("row", index))
             .debug_selector({
@@ -2881,6 +2953,16 @@ impl MainWindow {
                     .truncate()
                     .when(index == 0, |d| d.font_weight(FontWeight::SEMIBOLD))
                     .when(row.dimmed, |d| d.text_color(theme::text_muted()))
+                    .when_some(git_kind, |d, kind| {
+                        d.text_color(match kind {
+                            rsharp_core::git::ChangeKind::Conflicted => theme::error(),
+                            rsharp_core::git::ChangeKind::Added
+                            | rsharp_core::git::ChangeKind::Unversioned
+                            | rsharp_core::git::ChangeKind::Modified
+                            | rsharp_core::git::ChangeKind::Renamed => theme::modified(),
+                            _ => theme::text_muted(),
+                        })
+                    })
                     .child(row.name.clone()),
             )
             .when_some(row.detail.clone(), |d, detail| {

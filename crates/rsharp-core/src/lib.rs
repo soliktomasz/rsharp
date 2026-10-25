@@ -5,6 +5,7 @@ pub mod dotnet;
 pub mod editorconfig;
 pub mod encodings;
 pub mod files;
+pub mod git;
 pub mod history;
 pub mod logs;
 pub mod msbuild;

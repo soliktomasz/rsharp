@@ -13,6 +13,7 @@ pub mod field;
 pub mod find_action;
 pub mod find_bar;
 pub mod fuzzy;
+pub mod git_view;
 pub mod goto;
 pub mod history_window;
 pub mod keymap;
