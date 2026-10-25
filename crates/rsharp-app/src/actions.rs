@@ -24,9 +24,9 @@ use crate::find_bar::{Find, FindNext, FindPrevious, Replace};
 use crate::keymap::{OpenSettings, Quit};
 use crate::window::{
     ApplyHotReloadChanges, AttachToProcess, BuildSelected, BuildSolution, CleanSelected, CleanSolution, DebugProgram,
-    DetachDebug, EditRunConfigurations, MuteBreakpoints, PauseDebug, ReattachToProcess, RebuildSelected,
-    RebuildSolution, RerunProgram, ResumeDebug, RunProgram, ShowBreakpoints, StepInto, StepOut, StepOver, Stop,
-    StopDebug, ToggleBreakpoint, ToggleBuild, ToggleDebug, ToggleRun,
+    DetachDebug, EditRunConfigurations, EvaluateExpression, MuteBreakpoints, PauseDebug, ReattachToProcess,
+    RebuildSelected, RebuildSolution, RerunProgram, ResumeDebug, RunProgram, SetNextStatement, ShowBreakpoints,
+    StepInto, StepOut, StepOver, Stop, StopDebug, ToggleBreakpoint, ToggleBuild, ToggleDebug, ToggleRun,
 };
 use crate::window::{Back, FindInFiles, Forward, GoToFile, GoToSymbol, GoToType, LastEditLocation, RecentFiles};
 use crate::window::{
@@ -89,6 +89,8 @@ pub static ALL: &[IdeAction] = &[
     ide!("Step Over", "Run", ["next statement", "f10"], StepOver),
     ide!("Step Into", "Run", ["step into", "f11"], StepInto),
     ide!("Step Out", "Run", ["step out"], StepOut),
+    ide!("Evaluate Expression…", "Run", ["evaluate", "expression", "watch"], EvaluateExpression),
+    ide!("Set Next Statement", "Run", ["set next statement", "move the execution point"], SetNextStatement),
     ide!("Stop Debugging", "Run", ["stop debugger", "stop program"], StopDebug),
     ide!("Toggle Line Breakpoint", "Run", ["breakpoint", "f9"], ToggleBreakpoint),
     ide!("View Breakpoints…", "Run", ["breakpoints", "breakpoint list"], ShowBreakpoints),

@@ -76,6 +76,11 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("shift-f11", StepOut, None),
         // Rider's Visual Studio keymap breaks all programs with Ctrl+Alt+Break, which gpui has no key for.
         KeyBinding::new("ctrl-alt-p", PauseDebug, None),
+        KeyBinding::new("alt-f8", EvaluateExpression, None),
+        // Rider's Visual Studio keymap's; its macOS keymap leaves Set Next Statement to the menu.
+        KeyBinding::new("ctrl-shift-f10", SetNextStatement, None),
+        KeyBinding::new("escape", Dismiss, Some("EvaluateDialog")),
+        KeyBinding::new("enter", Choose, Some("EvaluateDialog")),
         KeyBinding::new("ctrl-f5", RunProgram, None),
         KeyBinding::new(if mac { "alt-shift-f5" } else { "ctrl-shift-f5" }, RerunProgram, None),
         KeyBinding::new(if mac { "cmd-4" } else { "alt-4" }, ToggleRun, None),

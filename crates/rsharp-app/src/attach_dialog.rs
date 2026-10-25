@@ -204,6 +204,7 @@ impl Render for AttachDialog {
                         div()
                             .id("attach search box")
                             .debug_selector(|| "attach field: Search processes".into())
+                            .track_focus(&search_focus)
                             .flex_1()
                             .h(px(26.))
                             .px(px(6.))
@@ -211,7 +212,15 @@ impl Render for AttachDialog {
                             .border_1()
                             .border_color(theme::control_border())
                             .bg(theme::search_field())
-                            .on_mouse_down(gpui::MouseButton::Left, move |_, window, _| {
+                            .on_mouse_down(gpui::MouseButton::Left, {
+                                let search_focus = search_focus.clone();
+                                move |_, window, _| {
+                                    window.focus(&search_focus);
+                                    // The dialog takes focus on a click that bubbles to it; the field keeps it.
+                                    window.prevent_default();
+                                }
+                            })
+                            .on_click(move |_, window, _| {
                                 window.focus(&search_focus);
                                 window.prevent_default();
                             })

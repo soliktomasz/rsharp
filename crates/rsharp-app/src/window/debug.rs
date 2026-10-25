@@ -253,6 +253,105 @@ impl MainWindow {
         }
     }
 
+    /// Evaluate Expression (Alt+F8): Rider's dialog over the paused program, the text chosen in the editor if any.
+    pub(super) fn open_evaluate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.evaluate_dialog.is_some() {
+            return;
+        }
+        if self.debug.phase != Phase::Paused {
+            self.said = Some("The program must be paused to evaluate an expression".into());
+            cx.notify();
+            return;
+        }
+        let initial = self.selected_text(cx);
+        let frame = self.debug.frames.first().map(|frame| frame.short_name());
+        let dialog = cx.new(|cx| crate::evaluate_dialog::EvaluateDialog::new(&initial, frame, cx));
+        cx.subscribe_in(&dialog, window, |m, dialog, ended: &crate::evaluate_dialog::Ended, window, cx| match ended {
+            crate::evaluate_dialog::Ended::Evaluate(expression) => {
+                m.evaluate_in(dialog.clone(), expression.clone(), cx)
+            }
+            crate::evaluate_dialog::Ended::Dismissed => {
+                m.evaluate_dialog = None;
+                m.focus_editor(window, cx);
+            }
+        })
+        .detach();
+        window.focus(&dialog.read(cx).expression_focus(cx));
+        self.evaluate_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    /// The text chosen in the editor, which Evaluate Expression starts with.
+    fn selected_text(&self, cx: &App) -> String {
+        let Some(editor) = self.active_editor() else { return String::new() };
+        let editor = editor.read(cx);
+        let selection = editor.primary();
+        if selection.is_empty() {
+            return String::new();
+        }
+        let text = editor.text();
+        let start = selection.start().min(text.len_bytes());
+        let end = selection.end().min(text.len_bytes());
+        text.byte_slice(start..end).to_string().trim().to_string()
+    }
+
+    fn evaluate_in(
+        &mut self,
+        dialog: Entity<crate::evaluate_dialog::EvaluateDialog>,
+        expression: String,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(frame) = self.debug.frames.first().map(|frame| frame.id) else { return };
+        let Some(session) = self.debug.session.clone() else { return };
+        let generation = self.debug.generation;
+        let handle = self.handle;
+        cx.spawn(async move |_, cx| {
+            let read = cx.background_executor().spawn(async move { session.evaluate(&expression, frame) }).await;
+            let _ = handle.update(cx, |m, _, cx| {
+                if m.debug.generation != generation || m.evaluate_dialog.as_ref() != Some(&dialog) {
+                    return;
+                }
+                match read {
+                    Ok(value) => {
+                        let answer = match value.r#type {
+                            Some(kind) => format!("{} ({kind})", value.result),
+                            None => value.result,
+                        };
+                        dialog.update(cx, |dialog, cx| dialog.set_result(answer, false, cx));
+                    }
+                    Err(why) => dialog.update(cx, |dialog, cx| dialog.set_result(why, true, cx)),
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Set Next Statement: the paused thread goes on from the caret's line, where the debugger allows it.
+    pub(super) fn set_next_statement(&mut self, cx: &mut Context<Self>) {
+        if self.debug.phase != Phase::Paused {
+            return;
+        }
+        let (Some(thread), Some(editor)) = (self.debug.thread, self.active_editor()) else { return };
+        let (path, line) = {
+            let editor = editor.read(cx);
+            (editor.path.clone(), editor.caret().line)
+        };
+        self.ask_session(
+            cx,
+            move |session| {
+                let targets = session.goto_targets(&path, line)?;
+                let target = targets
+                    .first()
+                    .ok_or_else(|| format!("The debugger cannot go on from {}:{}", path.display(), line + 1))?;
+                session.set_next_statement(thread, target.id)?;
+                read_stop(&session, thread)
+            },
+            |m, (frames, variables), window, cx| {
+                m.show_stopped("Paused where Set Next Statement put it".into(), None, frames, variables, window, cx);
+            },
+        );
+    }
+
     /// The build before the launch has ended: a session starts when it succeeded.
     pub(super) fn after_debug_build(&mut self, ended: BuildStatus, cx: &mut Context<Self>) {
         let Some(plan) = self.debug.after_build.take() else { return };
@@ -607,6 +706,7 @@ impl MainWindow {
                 line: frame.line,
             })
             .collect();
+        let at = at.or_else(|| frames.first().and_then(|frame| frame.path().map(|path| (path, frame.line))));
         self.debug.frames = frames;
         self.debug.phase = Phase::Paused;
         self.debug_view.update(cx, |view, cx| {
@@ -711,7 +811,7 @@ impl MainWindow {
         self.clear_execution_line(cx);
         self.debug_view.update(cx, |view, cx| view.running(cx));
         self.said = Some("Running…".into());
-        self.ask_session(cx, move |session| session.resume(thread), |_, (), _| {});
+        self.ask_session(cx, move |session| session.resume(thread), |_, (), _, _| {});
     }
 
     pub(super) fn pause_debug(&mut self, cx: &mut Context<Self>) {
@@ -719,7 +819,7 @@ impl MainWindow {
             return;
         }
         let thread = self.debug.thread.unwrap_or(1);
-        self.ask_session(cx, move |session| session.pause(thread), |_, (), _| {});
+        self.ask_session(cx, move |session| session.pause(thread), |_, (), _, _| {});
     }
 
     /// Step Over, Step Into or Step Out, as Rider's keys do them.
@@ -739,7 +839,7 @@ impl MainWindow {
                 Step::Into => session.step_into(thread),
                 Step::Out => session.step_out(thread),
             },
-            |_, (), _| {},
+            |_, (), _, _| {},
         );
     }
 
@@ -749,19 +849,19 @@ impl MainWindow {
     where
         T: Send + 'static,
         F: FnOnce(Arc<Session>) -> Result<T, String> + Send + 'static,
-        G: FnOnce(&mut Self, T, &mut Context<Self>) + 'static,
+        G: FnOnce(&mut Self, T, &mut Window, &mut Context<Self>) + 'static,
     {
         let Some(session) = self.debug.session.clone() else { return };
         let generation = self.debug.generation;
         let handle = self.handle;
         cx.spawn(async move |_, cx| {
             let answer = cx.background_executor().spawn(async move { work(session) }).await;
-            let _ = handle.update(cx, |m, _, cx| {
+            let _ = handle.update(cx, |m, window, cx| {
                 if m.debug.generation != generation {
                     return;
                 }
                 match answer {
-                    Ok(value) => then(m, value, cx),
+                    Ok(value) => then(m, value, window, cx),
                     Err(why) => m.fail_debug(&why, cx),
                 }
             });
@@ -792,6 +892,7 @@ impl MainWindow {
 
     /// The session ended or was stopped: the lists go, and the status bar says how.
     fn finish_debug(&mut self, message: &str, cx: &mut Context<Self>) {
+        self.evaluate_dialog = None;
         self.debug.session = None;
         self.debug.attached = None;
         self.debug.phase = Phase::Idle;
@@ -810,6 +911,7 @@ impl MainWindow {
 
     /// Leaving the folder: the session ends and everything it started with it.
     pub(super) fn leave_debug(&mut self, cx: &mut Context<Self>) {
+        self.evaluate_dialog = None;
         self.debug.generation += 1;
         self.debug._task = None;
         self.debug.after_build = None;
@@ -830,6 +932,7 @@ impl MainWindow {
     }
 
     fn refuse_debug(&mut self, message: &str, cx: &mut Context<Self>) {
+        self.evaluate_dialog = None;
         self.debug.generation += 1;
         self.debug._task = None;
         self.debug.session = None;
@@ -1153,6 +1256,11 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// The Evaluate Expression dialog while it is open, for a test to drive.
+    pub fn evaluate_dialog(&self) -> Option<Entity<crate::evaluate_dialog::EvaluateDialog>> {
+        self.evaluate_dialog.clone()
+    }
+
     /// The Attach to Process dialog while it is open, for a test to drive.
     pub fn attach_dialog(&self) -> Option<Entity<crate::attach_dialog::AttachDialog>> {
         self.attach_dialog.clone()
@@ -1211,6 +1319,8 @@ impl MainWindow {
                 })
                 .when(self.debug.phase == Phase::Paused, |d| {
                     d.on_action(cx.listener(|m, _: &ResumeDebug, _, cx| m.resume_debug(cx)))
+                        .on_action(cx.listener(|m, _: &EvaluateExpression, window, cx| m.open_evaluate(window, cx)))
+                        .on_action(cx.listener(|m, _: &SetNextStatement, _, cx| m.set_next_statement(cx)))
                         .on_action(cx.listener(|m, _: &StepOver, _, cx| m.step_debug(Step::Over, cx)))
                         .on_action(cx.listener(|m, _: &StepInto, _, cx| m.step_debug(Step::Into, cx)))
                         .on_action(cx.listener(|m, _: &StepOut, _, cx| m.step_debug(Step::Out, cx)))

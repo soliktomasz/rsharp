@@ -337,7 +337,12 @@ fn running_program(run: &Run) -> Option<(rsharp_core::process::Child, PathBuf)> 
         "App/Program.cs",
         "using System;\nusing System.Threading;\n\nclass Program\n{\n    static void Main()\n    {\n        var total = 0;\n        while (true)\n        {\n            total++;\n            Thread.Sleep(50);\n        }\n    }\n}\n",
     );
-    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    // A name of its own, so Attach to Process's list can tell it from another test's program running beside it.
+    write(
+        &run.folder,
+        "App/App.csproj",
+        "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><AssemblyName>AttachApp</AssemblyName></PropertyGroup></Project>",
+    );
     if !offline(run) {
         return None;
     }
@@ -360,7 +365,7 @@ fn running_program(run: &Run) -> Option<(rsharp_core::process::Child, PathBuf)> 
     );
     let mut command = std::process::Command::new(&dotnet);
     command
-        .arg(built.join("App.dll"))
+        .arg(built.join("AttachApp.dll"))
         .current_dir(&built)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -407,9 +412,9 @@ fn attach_to_a_running_program_stops_at_its_breakpoint_and_detaching_lets_it_run
     assert!(opened, "Find Action did not open Attach to Process");
     click(cx, "attach field: Search processes");
     cx.simulate_input(&id.to_string());
-    let listed = pump(cx, |cx| cx.debug_bounds("attach row: App").is_some());
+    let listed = pump(cx, |cx| cx.debug_bounds("attach row: AttachApp").is_some());
     assert!(listed, "Attach to Process did not list the running program");
-    click(cx, "attach row: App");
+    click(cx, "attach row: AttachApp");
     click(cx, "button: Attach with .NET Debugger");
 
     let paused = pump(cx, |cx| main.read_with(cx, |main, _| main.debug_phase() == Phase::Paused));
@@ -424,4 +429,69 @@ fn attach_to_a_running_program_stops_at_its_breakpoint_and_detaching_lets_it_run
     std::thread::sleep(Duration::from_millis(200));
     assert!(program.process.try_wait().ok().flatten().is_none(), "Detach let the program go on rather than ending it");
     program.kill();
+}
+
+#[test]
+fn evaluate_expression_answers_in_the_paused_frame_and_set_next_statement_moves_the_thread() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-evaluate", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(&run.folder, "App/Program.cs", PROGRAM);
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    // The breakpoint is on "int b = a + 1;", where a is 41.
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((7, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    cx.simulate_keystrokes("f5");
+    let paused = pump(cx, |cx| main.read_with(cx, |main, _| main.debug_phase() == Phase::Paused));
+    assert!(paused, "the program did not stop at its breakpoint");
+
+    cx.simulate_keystrokes("alt-f8");
+    let opened = pump(cx, |cx| cx.debug_bounds("evaluate dialog").is_some());
+    assert!(opened, "Alt+F8 did not open Evaluate Expression");
+    click(cx, "evaluate field: Expression");
+    cx.simulate_input("a + 1");
+    let typed = main.read_with(cx, |main, cx| main.evaluate_dialog().map(|dialog| dialog.read(cx).expression(cx)));
+    assert_eq!(typed.as_deref(), Some("a + 1"), "the expression field took the typing");
+    cx.simulate_keystrokes("enter");
+    let answered = pump(cx, |cx| {
+        main.read_with(cx, |main, cx| {
+            main.evaluate_dialog()
+                .and_then(|dialog| dialog.read(cx).result().map(|result| result.contains("42")))
+                .unwrap_or(false)
+        })
+    });
+    let result = main.read_with(cx, |main, cx| {
+        main.evaluate_dialog().and_then(|dialog| dialog.read(cx).result().map(str::to_string))
+    });
+    assert!(answered, "a + 1 was not answered 42 in the paused frame: {result:?}");
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(main.read_with(cx, |main, _| main.evaluate_dialog().is_none()), "Escape closed Evaluate Expression");
+
+    // Step to the next statement, then move the execution point back to the assignment's line.
+    cx.simulate_keystrokes("f10");
+    let stepped = pump(cx, |cx| {
+        main.read_with(cx, |main, _| {
+            main.debug_phase() == Phase::Paused && main.debug_frames().first().is_some_and(|frame| frame.line == 8)
+        })
+    });
+    assert!(stepped, "Step Over did not reach the WriteLine's line");
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((6, 0)), window, cx));
+    cx.simulate_keystrokes("ctrl-shift-f10");
+    let moved =
+        pump(cx, |cx| main.read_with(cx, |main, _| main.debug_frames().first().is_some_and(|frame| frame.line == 6)));
+    assert!(moved, "Set Next Statement did not move the thread to the assignment's line");
+    let marked = main
+        .read_with(cx, |_, cx| rsharp_app::buffer::find(&source, cx).and_then(|buffer| buffer.read(cx).execution_line));
+    assert_eq!(marked, Some(6), "the editor marks the line Set Next Statement put the thread on");
+    cx.simulate_keystrokes("shift-f5");
 }

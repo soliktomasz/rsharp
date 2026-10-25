@@ -143,8 +143,9 @@ terminal and takes focus for a moment.
   or attach, the adapter's `initialized`, each file's breakpoints, the exception filters, then `configurationDone`,
   whose answer waits for the program's runtime. Threads, a thread's frames, a frame's scopes and values, an
   expression (Evaluate and a watch), continue/next/stepIn/stepOut/pause, and disconnect/terminate are typed
-  requests; what the adapter says unasked (stops, output, exit, termination) comes as `Event`s on its own threads,
-  and a request the client does not offer — a program in the terminal — is refused rather than left waiting.
+  requests, as are Set Next Statement's `gotoTargets` and `goto`; what the adapter says unasked (stops, output, exit,
+  termination) comes as `Event`s on its own threads, and a request the client does not offer — a program in the
+  terminal — is refused rather than left waiting.
 - `crates/rsharp-mcp`: no UI. RSharp as an MCP server (`rsharp --mcp [FOLDER]`, JSON-RPC a line at a time on
   standard input and output), Roslyn on the folder behind its tools: `workspace`, `diagnostics` (a file's, or the
   solution's with solution-wide analysis), `find_symbol`, `outline`, `usages`, `rename` (a type's file renamed with it)
@@ -282,9 +283,10 @@ Debug tests use real dotnet programs: `crates/rsharp-dap/tests/session.rs` stops
 client alone (frames, locals, evaluate, a step, its output) and `crates/rsharp-app/tests/debugger.rs` the same
 through the window (F9, F5, the Debug window's buttons and lists, the marked line, resume to the end), along with
 the Breakpoints dialog's condition and mute, a false condition and a logpoint as the adapter runs them, Any
-exception turned off before an unhandled exception, and attaching to a program the test started (its breakpoint
-is hit, then Stop detaches and the program runs on); both skip, saying why, when dotnet or the adapter is not
-there.
+exception turned off before an unhandled exception, attaching to a program the test started (its breakpoint is
+hit, then Stop detaches and the program runs on), and Evaluate Expression answering in the paused frame before
+Set Next Statement moves the thread back to the caret's line; both skip, saying why, when dotnet or the adapter is
+not there.
 
 Git tests build real repositories and, when a remote is needed, a bare one beside them — never the person's and
 never a network service: `crates/rsharp-core/tests/git.rs` the repository alone (porcelain records, odd paths,

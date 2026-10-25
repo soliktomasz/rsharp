@@ -44,6 +44,8 @@ actions!(
         AttachToProcess,
         ReattachToProcess,
         DetachDebug,
+        EvaluateExpression,
+        SetNextStatement,
         MuteBreakpoints,
         ToggleUnitTests,
         ToggleTerminal,
@@ -326,6 +328,8 @@ pub struct MainWindow {
     breakpoints_dialog: Option<Entity<crate::breakpoints_dialog::BreakpointsDialog>>,
     /// Rider's Attach to Process dialog while it is open.
     attach_dialog: Option<Entity<crate::attach_dialog::AttachDialog>>,
+    /// Rider's Evaluate Expression dialog while it is open.
+    evaluate_dialog: Option<Entity<crate::evaluate_dialog::EvaluateDialog>>,
     tests: tests::Tests,
     /// This window's own handle, so a task without a window (a build's end) reaches one to open a stopped file.
     handle: gpui::WindowHandle<MainWindow>,
@@ -463,6 +467,7 @@ impl MainWindow {
             run_dialog: None,
             breakpoints_dialog: None,
             attach_dialog: None,
+            evaluate_dialog: None,
             handle: window.window_handle().downcast::<MainWindow>().expect("this window is a MainWindow"),
             debug: debug::DebugState::new(),
             debug_view,
@@ -2240,6 +2245,9 @@ impl Render for MainWindow {
             }))
             .children(self.attach_dialog.clone().map(|dialog| {
                 div().absolute().top(px(TOOLBAR_HEIGHT + 20.)).left_0().right_0().flex().justify_center().child(dialog)
+            }))
+            .children(self.evaluate_dialog.clone().map(|dialog| {
+                div().absolute().top(px(TOOLBAR_HEIGHT + 80.)).left_0().right_0().flex().justify_center().child(dialog)
             }))
             .children(self.go_to.clone().map(|popup| {
                 div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(

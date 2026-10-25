@@ -412,6 +412,28 @@ impl Session {
         serde_json::from_value(body).map_err(|error| format!("The debugger's answer did not read: {error}"))
     }
 
+    /// The places a paused thread could go on from in a file at a line (Set Next Statement's question), from 0.
+    pub fn goto_targets(&self, path: &Path, line: usize) -> Result<Vec<protocol::GotoTarget>, String> {
+        let body =
+            self.connection.request("gotoTargets", json!({ "source": { "path": path }, "line": line + 1 }), REQUEST)?;
+        let answered: protocol::GotoTargets = serde_json::from_value(body)
+            .map_err(|error| format!("The debugger's goto targets did not read: {error}"))?;
+        Ok(answered
+            .targets
+            .into_iter()
+            .map(|target| protocol::GotoTarget {
+                line: target.line.saturating_sub(1),
+                column: target.column.saturating_sub(1),
+                ..target
+            })
+            .collect())
+    }
+
+    /// Set Next Statement: the thread goes on from a target [`Session::goto_targets`] gave.
+    pub fn set_next_statement(&self, thread: i64, target: i64) -> Result<(), String> {
+        self.connection.request("goto", json!({ "threadId": thread, "targetId": target }), REQUEST).map(drop)
+    }
+
     pub fn resume(&self, thread: i64) -> Result<(), String> {
         self.connection.request("continue", json!({ "threadId": thread }), REQUEST).map(drop)
     }

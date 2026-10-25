@@ -95,6 +95,12 @@ fn a_breakpoint_stops_the_program_and_its_values_are_read() {
     let here = session.stack_trace(after.thread).expect("the stack is read after the step");
     assert_eq!(session.evaluate("b", here[0].id).expect("evaluate answers").result, "42");
 
+    let targets = session.goto_targets(&source, 6).expect("the goto targets answer");
+    assert!(!targets.is_empty(), "Set Next Statement has a place to go to on the assignment's line");
+    session.set_next_statement(after.thread, targets[0].id).expect("the thread goes to it");
+    let moved = session.stack_trace(after.thread).expect("the stack is read after Set Next Statement");
+    assert_eq!(moved[0].line, 6, "Set Next Statement moved the thread back to the assignment's line");
+
     session.resume(stop.thread).expect("the program goes on");
     let wrote = wait_for_output(&events);
     assert!(wrote.contains("answer 42"), "the program's output is told of: {wrote:?}");

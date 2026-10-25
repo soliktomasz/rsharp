@@ -12,6 +12,7 @@ pub mod dock;
 pub mod editor;
 pub mod editor_area;
 pub mod editor_window;
+pub mod evaluate_dialog;
 pub mod field;
 pub mod find_action;
 pub mod find_bar;

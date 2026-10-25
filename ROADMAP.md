@@ -316,15 +316,18 @@ window is `debug_view.rs` (its keys, Frames, Variables, Watches and Console) at 
 is its controller. Attach to Process lists the machine's .NET programs as CoreCLR's own debugger transports name
 them — executable, process id, user and command line, read natively on macOS and Linux — with a search, Refresh and
 "Recently attached" first; the chosen one is attached to with the folder's breakpoints, Stop lets it go on (Detach
-does the same), and Reattach finds the last one in the folder by id, then by program. Windows lists no programs yet. The window test takes a breakpoint through F9, F5, the Debug window's own Step Over and Resume
+does the same), and Reattach finds the last one in the folder by id, then by program. Windows lists no programs yet. Evaluate Expression (Alt+F8) answers an
+expression in the frame the program is stopped in, and Set Next Statement (Ctrl+Shift+F10) moves the paused thread to
+the caret's line where the debugger allows it, the frames and the marked line following. The window test takes a breakpoint through F9, F5, the Debug window's own Step Over and Resume
 buttons and its frame list, and checks the marked line and the program's output; both debugger suites skip,
 saying why, when dotnet or the adapter is not there. macOS is where they ran; Windows and Linux are CI's.
 - Data breakpoints and function breakpoints. (Not yet; data breakpoints are Windows x64's to offer.)
 - Smart Step Into, return values, async stepping and inline values. (Not yet.)
+- Set Value on a variable, and the Debug window's Threads. (Not yet.)
 - Run in Terminal, decompiled symbols, and Hot Reload while debugging. (Not yet: the client refuses the adapter's
   `runInTerminal` request.)
 - Attach to Process on Windows. (Not yet: its named pipes are not read.)
-- The Debug window in full: Threads, Evaluate Expression, Set Value/Next Statement. (Not yet.)
+- The Debug window in full: Threads, Set Value. (Evaluate Expression and Set Next Statement are in.)
 
 Passenger: `Debugging/`, `MainWindow.Attach.cs`, the Debugger notes in its CLAUDE.md; issues #145–#157, #214, #219.
 Done when: Passenger's debugger window tests, translated, pass on macOS, Windows x64 and Linux, against the same

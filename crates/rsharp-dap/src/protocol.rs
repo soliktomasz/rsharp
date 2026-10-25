@@ -138,3 +138,22 @@ pub struct Breakpoints {
 pub struct Continued {
     pub all_threads_continued: Option<bool>,
 }
+
+/// A place a paused thread could go on from in a source at a line: Set Next Statement's choice.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GotoTarget {
+    pub id: i64,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub line: usize,
+    #[serde(default)]
+    pub column: usize,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GotoTargets {
+    pub targets: Vec<GotoTarget>,
+}
