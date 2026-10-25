@@ -2,6 +2,7 @@
 
 pub mod actions;
 pub mod assets;
+pub mod attach_dialog;
 pub mod bench;
 pub mod breakpoints_dialog;
 pub mod buffer;

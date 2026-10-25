@@ -28,6 +28,10 @@ pub(super) struct DebugState {
     shown_at: Option<PathBuf>,
     /// What the debugger made of each breakpoint: whether it will be hit, and why not.
     verification: BTreeMap<(PathBuf, usize), (bool, Option<String>)>,
+    /// The program attached to, while one is; none for a launch.
+    attached: Option<rsharp_core::debug::DotnetProcess>,
+    /// The program attached to last in this folder, which Reattach asks for.
+    recent_attached: Option<rsharp_core::debug::DotnetProcess>,
     /// What the adapter said while the session was still starting.
     pending: Vec<Said>,
     _task: Option<Task<()>>,
@@ -46,6 +50,8 @@ impl DebugState {
             frames: Vec::new(),
             shown_at: None,
             verification: BTreeMap::new(),
+            attached: None,
+            recent_attached: None,
             pending: Vec::new(),
             _task: None,
         }
@@ -191,7 +197,13 @@ impl MainWindow {
                 }
                 self.debug.phase = Phase::Running;
                 self.debug_view.update(cx, |view, cx| view.running(cx));
-                self.said = Some(format!("Debugging {}…", self.debug_name()).into());
+                self.said = Some(
+                    match &self.debug.attached {
+                        Some(process) => format!("Attached to {}…", process.program()),
+                        None => format!("Debugging {}…", self.debug_name()),
+                    }
+                    .into(),
+                );
                 // A stop told before the session was ready stands, as one told before a build's end does.
                 let pending = std::mem::take(&mut self.debug.pending);
                 for said in pending {
@@ -205,7 +217,12 @@ impl MainWindow {
     }
 
     fn debug_name(&self) -> String {
-        self.debug.plan.as_ref().map(|plan| plan.name.clone()).unwrap_or_default()
+        self.debug
+            .plan
+            .as_ref()
+            .map(|plan| plan.name.clone())
+            .or_else(|| self.debug.attached.as_ref().map(|process| process.program()))
+            .unwrap_or_default()
     }
 
     /// The plan is worked out: its project builds first when it says so, and the session starts after it.
@@ -270,10 +287,33 @@ impl MainWindow {
             environment: plan.environment.clone(),
             stop_at_entry: false,
         };
-        let breakpoints: Vec<(PathBuf, Vec<SourceBreakpoint>)> = self
-            .debug
+        let breakpoints = self.session_breakpoints(&folder);
+        let exceptions = self.enabled_exceptions();
+        let symbols = store(cx).root().join("cache").join("symbols");
+        let (sender, receiver) = mpsc::unbounded();
+        let generation = self.debug.generation;
+        std::thread::spawn(move || {
+            let reports = sender.clone();
+            let result =
+                Session::start(&adapter, Start::Launch(launch), &symbols, breakpoints, exceptions, move |said| {
+                    let _ = reports.unbounded_send(Event::Said(said));
+                });
+            let event = match result {
+                Ok(session) => Event::Started(Arc::new(session)),
+                Err(why) => Event::Failed(why),
+            };
+            let _ = sender.unbounded_send(event);
+        });
+        self.watch_session(receiver, generation, cx);
+        self.said = Some(format!("Starting {} under the debugger…", plan.name).into());
+        cx.notify();
+    }
+
+    /// The folder's breakpoints as a session is told of them: only the enabled lines, each with what it asks.
+    fn session_breakpoints(&self, folder: &Path) -> Vec<(PathBuf, Vec<SourceBreakpoint>)> {
+        self.debug
             .breakpoints
-            .resolved(&folder)
+            .resolved(folder)
             .enabled()
             .into_iter()
             .map(|(path, lines)| {
@@ -288,23 +328,11 @@ impl MainWindow {
                     .collect();
                 (path, lines)
             })
-            .collect();
-        let exceptions = self.enabled_exceptions();
-        let symbols = store(cx).root().join("cache").join("symbols");
-        let (sender, mut receiver) = mpsc::unbounded();
-        let generation = self.debug.generation;
-        std::thread::spawn(move || {
-            let reports = sender.clone();
-            let result =
-                Session::start(&adapter, Start::Launch(launch), &symbols, breakpoints, exceptions, move |said| {
-                    let _ = reports.unbounded_send(Event::Said(said));
-                });
-            let event = match result {
-                Ok(session) => Event::Started(Arc::new(session)),
-                Err(why) => Event::Failed(why),
-            };
-            let _ = sender.unbounded_send(event);
-        });
+            .collect()
+    }
+
+    /// Drains a session's events into the window until it ends, each event applied only while its generation stands.
+    fn watch_session(&mut self, mut receiver: mpsc::UnboundedReceiver<Event>, generation: u64, cx: &mut Context<Self>) {
         let handle = self.handle;
         self.debug._task = Some(cx.spawn(async move |_, cx| {
             while let Some(first) = receiver.next().await {
@@ -329,8 +357,152 @@ impl MainWindow {
                 }
             }
         }));
-        self.said = Some(format!("Starting {} under the debugger…", plan.name).into());
+    }
+
+    /// Attach to Process: the program chosen in the dialog, with the folder's breakpoints, as Rider's Debug attaches.
+    pub(super) fn attach_to(&mut self, process: rsharp_core::debug::DotnetProcess, cx: &mut Context<Self>) {
+        if self.is_debugging() {
+            self.said = Some("A debugging session is already running".into());
+            cx.notify();
+            return;
+        }
+        if let Err(message) = self.save_all(cx) {
+            self.refuse_debug(&message, cx);
+            return;
+        }
+        let Some(adapter) = rsharp_dap::adapter() else {
+            self.refuse_debug("The debugger is not available: Passenger's debug adapter was not built", cx);
+            return;
+        };
+        self.debug.generation += 1;
+        let generation = self.debug.generation;
+        self.debug.phase = Phase::Starting;
+        self.debug.plan = None;
+        self.debug.after_build = None;
+        self.debug.frames.clear();
+        self.debug.thread = None;
+        self.debug.pending.clear();
+        self.debug.verification.clear();
+        self.debug.attached = Some(process.clone());
+        self.debug.recent_attached = Some(process.clone());
+        self.save_debug_sessions(cx);
+        let folder = self
+            .workspace
+            .as_ref()
+            .map(|workspace| workspace.folder.clone())
+            .unwrap_or_else(rsharp_core::programs::home);
+        self.debug_console.update(cx, |view, cx| view.start(folder.clone(), cx));
+        self.debug_view.update(cx, |view, cx| view.starting(&process.program(), cx));
+        if !self.dock.is_open(Tool::Debug) {
+            self.dock.show(Tool::Debug);
+            self.save_state(cx);
+        }
+        let breakpoints = self.session_breakpoints(&folder);
+        let exceptions = self.enabled_exceptions();
+        let symbols = store(cx).root().join("cache").join("symbols");
+        let id = process.id;
+        let (sender, receiver) = mpsc::unbounded();
+        std::thread::spawn(move || {
+            let reports = sender.clone();
+            let result = Session::start(
+                &adapter,
+                Start::Attach { process_id: id },
+                &symbols,
+                breakpoints,
+                exceptions,
+                move |said| {
+                    let _ = reports.unbounded_send(Event::Said(said));
+                },
+            );
+            let event = match result {
+                Ok(session) => Event::Started(Arc::new(session)),
+                Err(why) => Event::Failed(why),
+            };
+            let _ = sender.unbounded_send(event);
+        });
+        self.watch_session(receiver, generation, cx);
+        self.said = Some(format!("Attaching to {}…", process.program()).into());
         cx.notify();
+    }
+
+    /// The program attached to, while one is.
+    pub fn attached_process(&self) -> Option<&rsharp_core::debug::DotnetProcess> {
+        self.debug.attached.as_ref()
+    }
+
+    /// The program attached to last in this folder.
+    pub fn recent_attached(&self) -> Option<&rsharp_core::debug::DotnetProcess> {
+        self.debug.recent_attached.as_ref()
+    }
+
+    fn save_debug_sessions(&self, cx: &App) {
+        let Some(folder) = self.workspace.as_ref().map(|workspace| workspace.folder.clone()) else { return };
+        let sessions = rsharp_core::debug::DebugSessions { recent_attached: self.debug.recent_attached.clone() };
+        store(cx).write_for(&folder, &sessions);
+    }
+
+    /// Detach: the program goes on without the debugger, which is what Stop does to an attached one, as Rider's Detach.
+    pub(super) fn detach_debug(&mut self, cx: &mut Context<Self>) {
+        if self.debug.attached.is_none() {
+            return;
+        }
+        self.debug.generation += 1;
+        self.debug._task = None;
+        self.debug.after_build = None;
+        if let Some(session) = self.debug.session.take() {
+            std::thread::spawn(move || session.disconnect(false));
+        }
+        let name = self.debug_name();
+        self.finish_debug(&format!("Detached from {name}"), cx);
+    }
+
+    /// Reattach to Process: the program attached to last in this folder, if it is running and alone.
+    pub(super) fn reattach(&mut self, cx: &mut Context<Self>) {
+        let Some(last) = self.debug.recent_attached.clone() else {
+            self.said = Some("Nothing has been attached to in this folder: Attach to Process chooses a program".into());
+            cx.notify();
+            return;
+        };
+        let handle = self.handle;
+        let generation = self.debug.generation;
+        self.said = Some(format!("Looking for {}…", last.program()).into());
+        cx.spawn(async move |_, cx| {
+            let listed = cx.background_executor().spawn(async move { rsharp_core::debug::processes() }).await;
+            let _ = handle.update(cx, |m, _, cx| {
+                if m.debug.generation != generation {
+                    return;
+                }
+                if let Some(same) =
+                    listed.iter().find(|process| process.id == last.id && process.program() == last.program())
+                {
+                    m.attach_to(same.clone(), cx);
+                    return;
+                }
+                let mut alike: Vec<_> =
+                    listed.iter().filter(|process| process.program() == last.program()).cloned().collect();
+                match alike.len() {
+                    0 => {
+                        m.said = Some(
+                            format!("{} is not running: Attach to Process chooses another program", last.program())
+                                .into(),
+                        );
+                        cx.notify();
+                    }
+                    1 => m.attach_to(alike.remove(0), cx),
+                    _ => {
+                        m.said = Some(
+                            format!(
+                                "Several programs named {} are running: Attach to Process chooses one",
+                                last.program()
+                            )
+                            .into(),
+                        );
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
     }
 
     /// What the adapter says while a session runs.
@@ -602,6 +774,11 @@ impl MainWindow {
         if !self.is_debugging() {
             return;
         }
+        // An attached program is the person's, not this window's: Stop lets it go rather than ending it.
+        if self.debug.attached.is_some() {
+            self.detach_debug(cx);
+            return;
+        }
         self.debug.generation += 1;
         self.debug._task = None;
         self.debug.after_build = None;
@@ -616,6 +793,7 @@ impl MainWindow {
     /// The session ended or was stopped: the lists go, and the status bar says how.
     fn finish_debug(&mut self, message: &str, cx: &mut Context<Self>) {
         self.debug.session = None;
+        self.debug.attached = None;
         self.debug.phase = Phase::Idle;
         self.debug.frames.clear();
         self.debug.thread = None;
@@ -636,9 +814,11 @@ impl MainWindow {
         self.debug._task = None;
         self.debug.after_build = None;
         if let Some(session) = self.debug.session.take() {
-            std::thread::spawn(move || session.disconnect(true));
+            let terminate = self.debug.attached.is_none();
+            std::thread::spawn(move || session.disconnect(terminate));
         }
         self.debug.phase = Phase::Idle;
+        self.debug.attached = None;
         self.debug.frames.clear();
         self.debug.thread = None;
         self.debug.pending.clear();
@@ -653,6 +833,7 @@ impl MainWindow {
         self.debug.generation += 1;
         self.debug._task = None;
         self.debug.session = None;
+        self.debug.attached = None;
         self.debug.phase = Phase::Idle;
         self.debug.after_build = None;
         self.debug.pending.clear();
@@ -671,6 +852,7 @@ impl MainWindow {
     /// The folder's breakpoints as its document has them.
     pub(super) fn load_breakpoints(&mut self, folder: &Path, cx: &App) {
         self.debug.breakpoints = store(cx).read_for::<rsharp_core::debug::Breakpoints>(folder).resolved(folder);
+        self.debug.recent_attached = store(cx).read_for::<rsharp_core::debug::DebugSessions>(folder).recent_attached;
     }
 
     /// F9 at the caret: a breakpoint set there, or the one there cleared.
@@ -912,6 +1094,70 @@ impl MainWindow {
         }
     }
 
+    /// Attach to Process: the machine's .NET programs listed off the UI thread, then Rider's dialog over the window.
+    pub(super) fn open_attach_dialog(&mut self, cx: &mut Context<Self>) {
+        if self.attach_dialog.is_some() {
+            return;
+        }
+        self.said = Some("Looking for .NET programs…".into());
+        let handle = self.handle;
+        let generation = self.debug.generation;
+        let recent = self.debug.recent_attached.clone();
+        cx.spawn(async move |_, cx| {
+            let listed = cx.background_executor().spawn(async move { rsharp_core::debug::processes() }).await;
+            let _ = handle.update(cx, |m, window, cx| {
+                if m.debug.generation != generation {
+                    return;
+                }
+                m.show_attach_dialog(listed, recent, window, cx);
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn show_attach_dialog(
+        &mut self,
+        processes: Vec<rsharp_core::debug::DotnetProcess>,
+        recent: Option<rsharp_core::debug::DotnetProcess>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let count = processes.len();
+        let dialog = cx.new(|cx| crate::attach_dialog::AttachDialog::new(processes, recent, cx));
+        cx.subscribe_in(&dialog, window, |m, _, ended: &crate::attach_dialog::Ended, window, cx| match ended {
+            crate::attach_dialog::Ended::Chosen(process) => {
+                m.attach_dialog = None;
+                m.attach_to(process.clone(), cx);
+            }
+            crate::attach_dialog::Ended::Refresh => {
+                m.attach_dialog = None;
+                m.open_attach_dialog(cx);
+            }
+            crate::attach_dialog::Ended::Dismissed => {
+                m.attach_dialog = None;
+                m.focus_editor(window, cx);
+            }
+        })
+        .detach();
+        window.focus(&dialog.focus_handle(cx));
+        self.attach_dialog = Some(dialog);
+        self.said = Some(
+            if count == 0 {
+                "No .NET program to attach to: start one, then Refresh".to_string()
+            } else {
+                format!("{count} .NET program(s) can be attached to")
+            }
+            .into(),
+        );
+        cx.notify();
+    }
+
+    /// The Attach to Process dialog while it is open, for a test to drive.
+    pub fn attach_dialog(&self) -> Option<Entity<crate::attach_dialog::AttachDialog>> {
+        self.attach_dialog.clone()
+    }
+
     /// View Breakpoints (Cmd+Shift+F8): Rider's dialog over the window, every change applied as it is made.
     pub(super) fn open_breakpoints(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.breakpoints_dialog.is_some() {
@@ -951,6 +1197,11 @@ impl MainWindow {
             d.on_action(cx.listener(|m, _: &ToggleDebug, window, cx| m.toggle_tool(Tool::Debug, window, cx)))
                 .on_action(cx.listener(|m, _: &ToggleBreakpoint, _, cx| m.toggle_breakpoint(cx)))
                 .on_action(cx.listener(|m, _: &ShowBreakpoints, window, cx| m.open_breakpoints(window, cx)))
+                .on_action(cx.listener(|m, _: &AttachToProcess, _, cx| m.open_attach_dialog(cx)))
+                .on_action(cx.listener(|m, _: &ReattachToProcess, _, cx| m.reattach(cx)))
+                .when(self.debug.attached.is_some(), |d| {
+                    d.on_action(cx.listener(|m, _: &DetachDebug, _, cx| m.detach_debug(cx)))
+                })
                 .on_action(cx.listener(|m, _: &MuteBreakpoints, _, cx| {
                     let muted = m.debug.breakpoints.muted();
                     m.set_breakpoints_muted(!muted, cx)

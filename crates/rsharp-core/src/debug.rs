@@ -347,6 +347,37 @@ mod tests {
     }
 
     #[test]
+    fn a_process_is_named_by_the_dll_dotnet_runs() {
+        let hosted = DotnetProcess {
+            id: 42,
+            name: "dotnet".into(),
+            command_line: "/Users/me/.dotnet/dotnet /work/Shop.Api.dll --port 5000".into(),
+            user: "me".into(),
+            is_mine: true,
+        };
+        assert_eq!(hosted.program(), "Shop.Api", "the dll the host runs names it");
+        let apphost =
+            DotnetProcess { name: "Shop.Api".into(), command_line: "/work/Shop.Api".into(), ..hosted.clone() };
+        assert_eq!(apphost.program(), "Shop.Api", "an apphost names it without its extension");
+        let exe = DotnetProcess { name: "Shop.exe".into(), ..hosted.clone() };
+        assert_eq!(exe.program(), "Shop", "and Windows' .exe is dropped");
+        assert!(
+            hosted.matches("shop") && hosted.matches("42") && hosted.matches("--port"),
+            "search finds name, id and command line"
+        );
+        assert!(!hosted.matches("passenger"));
+
+        assert_eq!(transport_pid("clr-debug-pipe-123-456789-in"), Some(123));
+        assert_eq!(transport_pid("clr-debug-pipe-123-456789-out"), None);
+        assert_eq!(transport_pid("dotnet-diagnostic-123"), None);
+
+        let kept = DebugSessions { recent_attached: Some(hosted) };
+        let json = serde_json::to_string(&kept).unwrap();
+        assert_eq!(serde_json::from_str::<DebugSessions>(&json).unwrap(), kept, "the recent attach is kept as JSON");
+        assert_eq!(<DebugSessions as StateDocument>::FILE, "debug.json");
+    }
+
+    #[test]
     fn any_exception_is_always_there_and_mute_silences_every_breakpoint() {
         let folder = folder("exceptions");
         let file = folder.join("App").join("Program.cs");
@@ -374,4 +405,219 @@ mod tests {
         assert!(breakpoints.exceptions().is_empty());
         let _ = std::fs::remove_dir_all(&folder);
     }
+}
+
+/// A .NET program a debugger can attach to: its process, its executable's name, its command line and the user it runs
+/// as, [`DotnetProcess::is_mine`] when that is the person running RSharp.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DotnetProcess {
+    pub id: u32,
+    pub name: String,
+    pub command_line: String,
+    pub user: String,
+    pub is_mine: bool,
+}
+
+impl DotnetProcess {
+    /// What the program is to a person: the .dll the dotnet host runs ("Shop.Api" for "dotnet Shop.Api.dll"), else the
+    /// executable's name without its extension.
+    pub fn program(&self) -> String {
+        let executable = self.name.strip_suffix(".exe").unwrap_or(&self.name);
+        if executable.eq_ignore_ascii_case("dotnet")
+            && let Some(dll) = self
+                .command_line
+                .split_whitespace()
+                .skip(1)
+                .map(|word| word.trim_matches('"'))
+                .find(|word| word.to_ascii_lowercase().ends_with(".dll"))
+            && let Some(stem) = Path::new(dll).file_stem()
+        {
+            return stem.to_string_lossy().into_owned();
+        }
+        executable.to_string()
+    }
+
+    /// Whether a search typed into Attach to Process finds it: in its name, its process id, its user or its command line.
+    pub fn matches(&self, search: &str) -> bool {
+        let search = search.trim();
+        let lower = search.to_ascii_lowercase();
+        search.is_empty()
+            || self.name.to_ascii_lowercase().contains(&lower)
+            || self.id.to_string().contains(search)
+            || self.user.to_ascii_lowercase().contains(&lower)
+            || self.command_line.to_ascii_lowercase().contains(&lower)
+    }
+}
+
+/// The .NET programs on this machine a debugger can attach to, as Rider's Attach to Process lists them: CoreCLR's alone,
+/// found by the debugger transport its runtime opened (a `clr-debug-pipe-<pid>-<started>-in` in the temporary folder).
+/// RSharp's own process is left out. Each one's user and command line are read with `ps`, off the UI thread.
+// shortcut: Windows lists no programs yet, its named pipes not being read; list them from `\\.\pipe\` when a Windows
+// attach is wanted.
+#[cfg(not(windows))]
+pub fn processes() -> Vec<DotnetProcess> {
+    let mut found: Vec<DotnetProcess> = candidate_ids().into_iter().filter_map(read_process).collect();
+    found.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()).then(a.id.cmp(&b.id)));
+    found.dedup_by_key(|process| process.id);
+    found
+}
+
+#[cfg(windows)]
+pub fn processes() -> Vec<DotnetProcess> {
+    Vec::new()
+}
+
+/// One program by its process id, when it is one a debugger can attach to.
+pub fn find_process(id: u32) -> Option<DotnetProcess> {
+    processes().into_iter().find(|process| process.id == id)
+}
+
+/// The process each of the runtime's transport pipes names, RSharp's own left out.
+#[cfg(not(windows))]
+fn candidate_ids() -> Vec<u32> {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else { return Vec::new() };
+    let mut ids: Vec<u32> = entries
+        .flatten()
+        .filter_map(|entry| transport_pid(&entry.file_name().to_string_lossy()))
+        .filter(|id| *id != std::process::id())
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+#[cfg(windows)]
+fn candidate_ids() -> Vec<u32> {
+    Vec::new()
+}
+
+/// The process id a runtime transport's pipe names, or none for another file.
+fn transport_pid(name: &str) -> Option<u32> {
+    let rest = name.strip_prefix("clr-debug-pipe-")?.strip_suffix("-in")?;
+    // <pid>-<started at>
+    rest.split('-').next()?.parse().ok()
+}
+
+/// A process as the system describes it, or none when it has gone or is not one the pipes named: macOS asks
+/// `proc_pidpath` for the executable and `sysctl` for its arguments, as Passenger reads it.
+#[cfg(target_os = "macos")]
+fn read_process(id: u32) -> Option<DotnetProcess> {
+    use std::ffi::c_void;
+    let pid = id as libc::c_int;
+    let mut path = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    let length = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr() as *mut c_void, path.len() as u32) };
+    if length <= 0 {
+        return None;
+    }
+    path.truncate(length as usize);
+    let executable = String::from_utf8_lossy(&path).into_owned();
+    let arguments = mac_arguments(pid)?;
+    let command_line = if arguments.is_empty() { executable.clone() } else { arguments.join(" ") };
+    let name = Path::new(&executable).file_name()?.to_string_lossy().into_owned();
+    let uid = mac_uid(pid)?;
+    let user = user_name(uid).unwrap_or_else(|| uid.to_string());
+    Some(DotnetProcess { id, name, command_line, user, is_mine: uid == unsafe { libc::getuid() } })
+}
+
+/// A process as the system describes it: Linux's `/proc` holds its arguments and its uid.
+#[cfg(target_os = "linux")]
+fn read_process(id: u32) -> Option<DotnetProcess> {
+    let bytes = std::fs::read(format!("/proc/{id}/cmdline")).ok()?;
+    let arguments: Vec<String> = bytes
+        .split(|byte| *byte == 0)
+        .filter(|argument| !argument.is_empty())
+        .map(|argument| String::from_utf8_lossy(argument).into_owned())
+        .collect();
+    let first = arguments.first()?;
+    let name = Path::new(first).file_name()?.to_string_lossy().into_owned();
+    let status = std::fs::read_to_string(format!("/proc/{id}/status")).ok()?;
+    let uid: u32 =
+        status.lines().find_map(|line| line.strip_prefix("Uid:")?.split_whitespace().next()?.parse().ok())?;
+    let user = user_name(uid).unwrap_or_else(|| uid.to_string());
+    Some(DotnetProcess { id, name, command_line: arguments.join(" "), user, is_mine: uid == unsafe { libc::getuid() } })
+}
+
+#[cfg(windows)]
+fn read_process(_: u32) -> Option<DotnetProcess> {
+    None
+}
+
+/// A process's arguments, as `sysctl`'s `KERN_PROCARGS2` holds them: the count, the executable's path, then the
+/// arguments, each NUL-terminated, with padding between the path and the first.
+#[cfg(target_os = "macos")]
+fn mac_arguments(pid: libc::c_int) -> Option<Vec<String>> {
+    use std::ffi::c_void;
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+    let mut size = 0usize;
+    if unsafe { libc::sysctl(mib.as_mut_ptr(), 3, std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0) } != 0
+        || size < 4
+    {
+        return None;
+    }
+    let mut buffer = vec![0u8; size];
+    if unsafe {
+        libc::sysctl(mib.as_mut_ptr(), 3, buffer.as_mut_ptr() as *mut c_void, &mut size, std::ptr::null_mut(), 0)
+    } != 0
+    {
+        return None;
+    }
+    buffer.truncate(size);
+    let count = i32::from_ne_bytes(buffer.get(..4)?.try_into().ok()?) as usize;
+    // The executable's path, the NUL after it, then zeros up to the first argument.
+    let mut at = 4;
+    while at < buffer.len() && buffer[at] != 0 {
+        at += 1;
+    }
+    while at < buffer.len() && buffer[at] == 0 {
+        at += 1;
+    }
+    let mut arguments = Vec::with_capacity(count);
+    for _ in 0..count {
+        if at >= buffer.len() {
+            break;
+        }
+        let end = at + buffer[at..].iter().position(|byte| *byte == 0)?;
+        arguments.push(String::from_utf8_lossy(&buffer[at..end]).into_owned());
+        at = end + 1;
+    }
+    Some(arguments)
+}
+
+/// A process's uid, from `proc_pidinfo`'s BSD side.
+#[cfg(target_os = "macos")]
+fn mac_uid(pid: libc::c_int) -> Option<u32> {
+    use std::ffi::c_void;
+    // proc_bsdinfo: pbi_flags, pbi_status, pbi_xstatus, pbi_pid, pbi_ppid, pbi_uid …
+    let mut info = [0u8; 136];
+    let read = unsafe {
+        libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, info.as_mut_ptr() as *mut c_void, info.len() as i32)
+    };
+    if read < 24 {
+        return None;
+    }
+    Some(u32::from_ne_bytes(info[20..24].try_into().ok()?))
+}
+
+/// A user's name, by their uid.
+#[cfg(unix)]
+fn user_name(uid: u32) -> Option<String> {
+    let passwd = unsafe { libc::getpwuid(uid) };
+    if passwd.is_null() {
+        return None;
+    }
+    let name = unsafe { std::ffi::CStr::from_ptr((*passwd).pw_name) };
+    Some(name.to_string_lossy().into_owned())
+}
+
+/// The process last attached to in a folder, which Reattach to Process asks for: enough to tell it from a program given
+/// the same number since.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DebugSessions {
+    pub recent_attached: Option<DotnetProcess>,
+}
+
+impl StateDocument for DebugSessions {
+    const FILE: &'static str = "debug.json";
 }

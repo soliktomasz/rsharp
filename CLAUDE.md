@@ -281,8 +281,9 @@ skips, saying why, when the tool is not installed.
 Debug tests use real dotnet programs: `crates/rsharp-dap/tests/session.rs` stops one at a breakpoint through the
 client alone (frames, locals, evaluate, a step, its output) and `crates/rsharp-app/tests/debugger.rs` the same
 through the window (F9, F5, the Debug window's buttons and lists, the marked line, resume to the end), along with
-the Breakpoints dialog's condition and mute, a false condition and a logpoint as the adapter runs them, and Any
-exception turned off before an unhandled exception; both skip, saying why, when dotnet or the adapter is not
+the Breakpoints dialog's condition and mute, a false condition and a logpoint as the adapter runs them, Any
+exception turned off before an unhandled exception, and attaching to a program the test started (its breakpoint
+is hit, then Stop detaches and the program runs on); both skip, saying why, when dotnet or the adapter is not
 there.
 
 Git tests build real repositories and, when a remote is needed, a bare one beside them — never the person's and

@@ -23,10 +23,10 @@ use crate::editor::{
 use crate::find_bar::{Find, FindNext, FindPrevious, Replace};
 use crate::keymap::{OpenSettings, Quit};
 use crate::window::{
-    ApplyHotReloadChanges, BuildSelected, BuildSolution, CleanSelected, CleanSolution, DebugProgram,
-    EditRunConfigurations, MuteBreakpoints, PauseDebug, RebuildSelected, RebuildSolution, RerunProgram, ResumeDebug,
-    RunProgram, ShowBreakpoints, StepInto, StepOut, StepOver, Stop, StopDebug, ToggleBreakpoint, ToggleBuild,
-    ToggleDebug, ToggleRun,
+    ApplyHotReloadChanges, AttachToProcess, BuildSelected, BuildSolution, CleanSelected, CleanSolution, DebugProgram,
+    DetachDebug, EditRunConfigurations, MuteBreakpoints, PauseDebug, ReattachToProcess, RebuildSelected,
+    RebuildSolution, RerunProgram, ResumeDebug, RunProgram, ShowBreakpoints, StepInto, StepOut, StepOver, Stop,
+    StopDebug, ToggleBreakpoint, ToggleBuild, ToggleDebug, ToggleRun,
 };
 use crate::window::{Back, FindInFiles, Forward, GoToFile, GoToSymbol, GoToType, LastEditLocation, RecentFiles};
 use crate::window::{
@@ -81,6 +81,9 @@ pub static ALL: &[IdeAction] = &[
     ide!("Build", "View", ["build output", "console", "tool window"], ToggleBuild),
     ide!("Run", "Run", ["run program", "start", "execute"], RunProgram),
     ide!("Debug", "Run", ["debug program", "start debugging", "f5"], DebugProgram),
+    ide!("Attach to Process…", "Run", ["attach", "process", "debugger"], AttachToProcess),
+    ide!("Reattach to Process", "Run", ["attach", "reattach", "debugger"], ReattachToProcess),
+    ide!("Detach", "Run", ["detach", "let go", "debugger"], DetachDebug),
     ide!("Resume Program", "Run", ["continue", "resume", "f5"], ResumeDebug),
     ide!("Pause Program", "Run", ["break all", "pause"], PauseDebug),
     ide!("Step Over", "Run", ["next statement", "f10"], StepOver),

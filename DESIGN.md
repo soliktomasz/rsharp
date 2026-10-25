@@ -257,6 +257,9 @@ Soft rounded rectangles at four radii: 10px for islands, 6px for tabs, toolbar w
 - The gutter draws a 10px breakpoint dot in breakpoint red, left of the line numbers; one the debugger will not hit
   is 8px in warning amber, and one turned off or muted is 8px in text-secondary. The stopped statement's band is
   execution-point over the full width, behind the text.
+- Rider's Attach to Process dialog is 820×520: a 44px title, a 40px row with the search field and Refresh, the
+  Executable / Process ID / User / Command Line headings over 24px rows (Recently attached first), and Cancel beside
+  the primary "Attach with .NET Debugger" in a 56px footer.
 - Rider's Breakpoints dialog is 760×540 over the window: a 44px title row with Mute Breakpoints, a 300px list
   (26px rows, the chosen one in selection, a 16px tick before each name) and the chosen item's form on the right,
   with Add Exception Breakpoint, Remove and Done in a 56px footer.

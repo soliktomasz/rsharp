@@ -6,7 +6,7 @@ mod support;
 use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
 use rsharp_app::debug_view::Phase;
 use rsharp_app::window::MainWindow;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use support::Run;
 
@@ -327,4 +327,101 @@ fn any_exception_off_lets_an_unhandled_exception_run_to_its_end() {
     assert!(!paused, "an unhandled exception stopped the program with Any exception off");
     let output = main.read_with(cx, |main, cx| main.debug_console().read(cx).text());
     assert!(output.contains("before"), "the program ran: {output:?}");
+}
+
+/// Builds a program that loops until it is killed, starts it, and waits for its debugger transport.
+fn running_program(run: &Run) -> Option<(rsharp_core::process::Child, PathBuf)> {
+    let dotnet = rsharp_core::programs::dotnet()?;
+    write(
+        &run.folder,
+        "App/Program.cs",
+        "using System;\nusing System.Threading;\n\nclass Program\n{\n    static void Main()\n    {\n        var total = 0;\n        while (true)\n        {\n            total++;\n            Thread.Sleep(50);\n        }\n    }\n}\n",
+    );
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    if !offline(run) {
+        return None;
+    }
+    let built = run.folder.join("bin");
+    let output = std::process::Command::new(&dotnet)
+        .args(["build", "-c", "Debug", "-o"])
+        .arg(&built)
+        .arg("App/App.csproj")
+        .arg("--nologo")
+        .arg("-v")
+        .arg("q")
+        .current_dir(&run.folder)
+        .output()
+        .expect("dotnet build runs");
+    assert!(
+        output.status.success(),
+        "the attaching program did not build: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut command = std::process::Command::new(&dotnet);
+    command
+        .arg(built.join("App.dll"))
+        .current_dir(&built)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let program = rsharp_core::process::spawn(command).expect("the program starts");
+    // The runtime opens its debugger transport a moment after start: Attach to Process finds programs by it.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let pipe = std::fs::read_dir(std::env::temp_dir()).ok().into_iter().flatten().flatten().find(|entry| {
+            entry.file_name().to_string_lossy().starts_with(&format!("clr-debug-pipe-{}-", program.id()))
+        });
+        if pipe.is_some() {
+            return Some((program, rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"))));
+        }
+        assert!(Instant::now() < deadline, "the program opened no debugger transport within twenty seconds");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn attach_to_a_running_program_stops_at_its_breakpoint_and_detaching_lets_it_run_on() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    if cfg!(windows) {
+        eprintln!("skipped: Attach to Process lists no programs on Windows yet");
+        return;
+    }
+    let run = Run::new("debugger-attach", &[]);
+    let Some((mut program, source)) = running_program(&run) else { return };
+    let id = program.id();
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((10, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes("secondary-shift-a");
+    cx.simulate_input("attach to process");
+    cx.simulate_keystrokes("enter");
+    let opened = pump(cx, |cx| cx.debug_bounds("attach dialog").is_some());
+    assert!(opened, "Find Action did not open Attach to Process");
+    click(cx, "attach field: Search processes");
+    cx.simulate_input(&id.to_string());
+    let listed = pump(cx, |cx| cx.debug_bounds("attach row: App").is_some());
+    assert!(listed, "Attach to Process did not list the running program");
+    click(cx, "attach row: App");
+    click(cx, "button: Attach with .NET Debugger");
+
+    let paused = pump(cx, |cx| main.read_with(cx, |main, _| main.debug_phase() == Phase::Paused));
+    assert!(paused, "the attached program did not stop at the breakpoint");
+    let frames = main.read_with(cx, |main, _| main.debug_frames().to_vec());
+    assert_eq!(frames[0].path().as_deref(), Some(source.as_path()), "the frame is in the attached program");
+    assert_eq!(main.read_with(cx, |main, _| main.attached_process().map(|process| process.id)), Some(id));
+
+    click(cx, "debug: Stop");
+    assert!(!main.read_with(cx, |main, _| main.is_debugging()), "Stop ended the session");
+    assert!(main.read_with(cx, |main, _| main.attached_process().is_none()));
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(program.process.try_wait().ok().flatten().is_none(), "Detach let the program go on rather than ending it");
+    program.kill();
 }
