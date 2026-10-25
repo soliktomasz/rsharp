@@ -251,6 +251,8 @@ Soft rounded rectangles at four radii: 10px for islands, 6px for tabs, toolbar w
 ### Debug Window
 - The toolbar is 32px: 28px square buttons with 16px icons (Resume, Pause, Step Over, Step Into, Step Out, Stop),
   dimmed to 35% while they cannot act, and the session's state at the right in text-secondary.
+- After a step over, a Return values group sits above Variables: 24px rows with the method's name, `= value` in
+  text-muted and the type in text-secondary. Its members are not opened in place yet.
 - Frames and Variables share the body: Frames is a 300px column of 24px rows (a paused program's threads above it
   when there is more than one, the chosen thread in selection; the chosen frame in selection) and
   Variables takes the rest, its rows indented 18px a level with a 12px chevron (the chosen variable in selection,

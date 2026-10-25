@@ -690,3 +690,52 @@ fn a_debug_configuration_that_runs_in_a_terminal_starts_its_program_there() {
     let ended = pump(cx, |cx| main.read_with(cx, |main, _| !main.is_debugging()));
     assert!(ended, "the session ended when the program did");
 }
+
+#[test]
+fn a_step_over_shows_what_its_call_returned() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-return-value", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(
+        &run.folder,
+        "App/Program.cs",
+        "using System;\n\nclass Program\n{\n    static int Double(int x)\n    {\n        return x * 2;\n    }\n\n    static void Main()\n    {\n        var value = Double(21);\n        Console.WriteLine($\"value {value}\");\n    }\n}\n",
+    );
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((11, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    cx.simulate_keystrokes("f5");
+    assert!(pump(cx, |cx| main.read_with(cx, |main, _| main.debug_phase() == Phase::Paused)));
+    cx.simulate_keystrokes("f10");
+    assert!(
+        pump(cx, |cx| {
+            main.read_with(cx, |main, _| {
+                main.debug_phase() == Phase::Paused && main.debug_frames().first().is_some_and(|frame| frame.line == 12)
+            })
+        }),
+        "Step Over did not reach the WriteLine's line"
+    );
+
+    let returned = main.read_with(cx, |main, cx| {
+        main.debug_view()
+            .read(cx)
+            .return_values()
+            .iter()
+            .map(|row| (row.name.clone(), row.value.clone()))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(returned.len(), 1, "the step left one returned value: {returned:?}");
+    assert!(returned[0].0.contains("Double"), "it names the method that returned it: {returned:?}");
+    assert_eq!(returned[0].1, "42", "and carries what it returned");
+    assert!(cx.debug_bounds("debug return value 0").is_some(), "the Debug window shows the Return values group");
+    cx.simulate_keystrokes("shift-f5");
+}

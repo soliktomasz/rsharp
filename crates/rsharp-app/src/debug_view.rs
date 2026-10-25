@@ -101,6 +101,8 @@ pub struct DebugView {
     variables: Vec<Node>,
     watch: Entity<TextField>,
     watches: Vec<(String, String)>,
+    /// The values a step over left at the top of the frame, as Rider's Return values group shows them.
+    return_values: Vec<VariableRow>,
     /// The variable chosen in the tree, by its place in it, and the field that sets its value.
     selected_variable: Option<Vec<usize>>,
     set_value: Entity<TextField>,
@@ -141,6 +143,7 @@ impl DebugView {
             variables: Vec::new(),
             watch,
             watches: Vec::new(),
+            return_values: Vec::new(),
             selected_variable: None,
             set_value: cx.new(|cx| TextField::new("A new value", cx)),
             set_expression: None,
@@ -214,6 +217,7 @@ impl DebugView {
     pub fn running(&mut self, cx: &mut Context<Self>) {
         self.phase = Phase::Running;
         self.status = "Running".into();
+        self.return_values.clear();
         self.threads.clear();
         self.chosen_thread = None;
         self.frames.clear();
@@ -238,7 +242,13 @@ impl DebugView {
     }
 
     pub fn set_variables(&mut self, variables: Vec<VariableRow>, cx: &mut Context<Self>) {
-        self.variables = variables.into_iter().map(|row| Node { row, open: false, children: None }).collect();
+        // A step over puts the values its calls returned at the top of the frame, named "$ReturnValue…": Rider shows
+        // them apart from the locals, as its Return values group does.
+        let (returned, locals): (Vec<VariableRow>, Vec<VariableRow>) = variables
+            .into_iter()
+            .partition(|row| row.evaluate_name.as_deref().is_some_and(|name| name.starts_with("$ReturnValue")));
+        self.return_values = returned;
+        self.variables = locals.into_iter().map(|row| Node { row, open: false, children: None }).collect();
         // The chosen variable stays chosen if its place still holds one, its value read again.
         if let Some(path) = self.selected_variable.clone() {
             match find(&mut self.variables, &path) {
@@ -254,6 +264,26 @@ impl DebugView {
             }
         }
         cx.notify();
+    }
+
+    /// The values a step over returned, as the Return values group shows them.
+    pub fn return_values(&self) -> &[VariableRow] {
+        &self.return_values
+    }
+
+    /// The names in the Variables tree, for a test.
+    pub fn variable_names(&self) -> Vec<String> {
+        fn walk(nodes: &[Node], names: &mut Vec<String>) {
+            for node in nodes {
+                names.push(node.row.name.clone());
+                if let Some(children) = &node.children {
+                    walk(children, names);
+                }
+            }
+        }
+        let mut names = Vec::new();
+        walk(&self.variables, &mut names);
+        names
     }
 
     /// A value as the Variables tree shows it, for a test.
@@ -323,6 +353,7 @@ impl DebugView {
     pub fn finished(&mut self, status: &str, cx: &mut Context<Self>) {
         self.phase = Phase::Idle;
         self.status = status.to_string().into();
+        self.return_values.clear();
         self.threads.clear();
         self.chosen_thread = None;
         self.frames.clear();
@@ -536,6 +567,45 @@ impl Render for DebugView {
                             .min_h_0()
                             .flex()
                             .flex_col()
+                            // shortcut: a returned value's members are not opened here; Evaluate Expression can, until
+                            // the group carries the tree's members.
+                            .children((!self.return_values.is_empty()).then(|| {
+                                let rows: Vec<gpui::AnyElement> = self
+                                    .return_values
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(index, row)| {
+                                        div()
+                                            .id(("debug return value", index))
+                                            .debug_selector(move || format!("debug return value {index}"))
+                                            .h(px(24.))
+                                            .px(px(6.))
+                                            .rounded(px(4.))
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(4.))
+                                            .hover(|d| d.bg(theme::row_hover()))
+                                            .child(div().flex_none().child(row.name.clone()))
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .text_color(theme::text_muted())
+                                                    .child(format!("= {}", row.value)),
+                                            )
+                                            .children(row.r#type.clone().map(|kind| {
+                                                div()
+                                                    .flex_none()
+                                                    .pr(px(4.))
+                                                    .text_color(theme::text_secondary())
+                                                    .child(kind)
+                                            }))
+                                            .into_any_element()
+                                    })
+                                    .collect();
+                                div().flex().flex_col().child(label("Return values")).children(rows)
+                            }))
                             .child(label("Variables"))
                             .child(
                                 div()
