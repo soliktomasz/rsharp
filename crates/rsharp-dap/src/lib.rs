@@ -468,6 +468,15 @@ impl Session {
         serde_json::from_value(body).map_err(|error| format!("The debugger's hot reload state did not read: {error}"))
     }
 
+    /// Hot Reload: applies the updates Roslyn's Edit and Continue emitted, as the extension answered them (each module's
+    /// metadata, IL and PDB deltas are opaque here, already base64 on the wire), and answers what became of each.
+    pub fn apply_changes(&self, updates: Value) -> Result<Vec<protocol::ModuleApplied>, String> {
+        let body = self.connection.request("applyChanges", json!({ "updates": updates }), REQUEST)?;
+        let answered: protocol::ApplyChanges = serde_json::from_value(body)
+            .map_err(|error| format!("The debugger's applied changes did not read: {error}"))?;
+        Ok(answered.modules)
+    }
+
     /// The exception a stopped thread is at, as the adapter describes it: its type, message and place.
     pub fn exception_info(&self, thread: i64) -> Result<protocol::ExceptionInfo, String> {
         let body = self.connection.request("exceptionInfo", json!({ "threadId": thread }), REQUEST)?;

@@ -153,6 +153,22 @@ pub struct HotReloadModule {
     pub why_not: Option<String>,
 }
 
+/// What became of each module's Hot Reload update, in the order given: applied, or why not.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ApplyChanges {
+    pub modules: Vec<ModuleApplied>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ModuleApplied {
+    pub module: String,
+    pub name: String,
+    pub applied: bool,
+    pub message: Option<String>,
+}
+
 /// A stop at an exception, as the adapter describes it: what was thrown and where.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
