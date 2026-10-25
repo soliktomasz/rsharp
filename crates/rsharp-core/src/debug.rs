@@ -19,6 +19,8 @@ pub const SCENARIOS: [&str; 5] =
 pub struct LineBreakpoint {
     /// From 0.
     pub line: usize,
+    /// From 0, for one call on a line several share (a lambda's body, say); usually none, as a line breakpoint is.
+    pub column: Option<usize>,
     pub enabled: bool,
     /// A C# expression the debugger evaluates where it stopped: it stops only when this is true.
     pub condition: String,
@@ -30,7 +32,14 @@ pub struct LineBreakpoint {
 
 impl Default for LineBreakpoint {
     fn default() -> Self {
-        Self { line: 0, enabled: true, condition: String::new(), hit_count: String::new(), log_message: String::new() }
+        Self {
+            line: 0,
+            column: None,
+            enabled: true,
+            condition: String::new(),
+            hit_count: String::new(),
+            log_message: String::new(),
+        }
     }
 }
 

@@ -144,7 +144,8 @@ terminal and takes focus for a moment.
   whose answer waits for the program's runtime. Threads, a thread's frames, a frame's scopes and values, an
   expression (Evaluate and a watch), continue/next/stepIn/stepOut/pause, and disconnect/terminate are typed
   requests, as are Set Next Statement's `gotoTargets` and `goto`, Set Value's `setExpression`, Smart Step Into's
-  `stepInTargets` (a step into one call of a statement) and the function breakpoints' `setFunctionBreakpoints`. What the adapter says unasked (stops, output, exit,
+  `stepInTargets` (a step into one call of a statement) and the function breakpoints' `setFunctionBreakpoints`. A
+  source breakpoint carries its line or its column too, which binds one call of a line several share (a lambda's body). What the adapter says unasked (stops, output, exit,
   termination) comes as `Event`s on its own threads; its own request, a program started in the client's terminal,
   is answered when the app gives it a terminal runner (announced as `supportsRunInTerminalRequest`) and refused
   otherwise, so the adapter goes on rather than waiting.
@@ -291,7 +292,8 @@ calls of `Outer(Inner())` listed in the order they run and placed on their names
 the other, and of two `Add` calls the second chosen; and the synthetic variables: a step over lists what each call
 returned in the order they returned, named `$ReturnValue1` and `$ReturnValue`, readable in expressions, replaced by
 the next step's (and not given back for a struct), a step out lists what the method returned, and a stop at a throw
-lists it as `$exception`, whose `Message` an expression reads; `crates/rsharp-dap/tests/session.rs` stops one
+lists it as `$exception`, whose `Message` an expression reads; and a lambda on the line is stepped into when what it is
+handed to runs it, from a breakpoint on the statement's column; `crates/rsharp-dap/tests/session.rs` stops one
 at a breakpoint through the client alone (frames, locals, evaluate, a step, its output) and `crates/rsharp-app/tests/debugger.rs` the same
 through the window (F9, F5, the Debug window's buttons and lists, the marked line, resume to the end), along with
 the Breakpoints dialog's condition and mute, a false condition and a logpoint as the adapter runs them, Any

@@ -88,6 +88,8 @@ impl Stop {
 pub struct SourceBreakpoint {
     /// From 0.
     pub line: usize,
+    /// From 0, where a breakpoint is for one call on a line several share (a lambda's body, say); usually absent.
+    pub column: Option<usize>,
     pub condition: Option<String>,
     /// Rider's hit count: `5`, `> 2`, `% 3` and the like.
     pub hit_condition: Option<String>,
@@ -380,6 +382,9 @@ impl Session {
             .iter()
             .map(|breakpoint| {
                 let mut sent = json!({ "line": breakpoint.line + 1 });
+                if let Some(column) = breakpoint.column {
+                    sent["column"] = json!(column + 1);
+                }
                 if let Some(condition) = &breakpoint.condition {
                     sent["condition"] = json!(condition);
                 }

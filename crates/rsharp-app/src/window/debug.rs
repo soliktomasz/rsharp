@@ -564,6 +564,7 @@ impl MainWindow {
                     .into_iter()
                     .map(|line| SourceBreakpoint {
                         line: line.line,
+                        column: line.column,
                         condition: filled(&line.condition),
                         hit_condition: filled(&line.hit_count),
                         log_message: filled(&line.log_message),
@@ -1231,6 +1232,7 @@ impl MainWindow {
             .iter()
             .map(|breakpoint| SourceBreakpoint {
                 line: breakpoint.line,
+                column: breakpoint.column,
                 condition: filled(&breakpoint.condition),
                 hit_condition: filled(&breakpoint.hit_count),
                 log_message: filled(&breakpoint.log_message),

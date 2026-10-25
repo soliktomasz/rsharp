@@ -332,8 +332,6 @@ the program in that method wherever it is, as does a line breakpoint. The window
 buttons and its frame list, and checks the marked line and the program's output; both debugger suites skip,
 saying why, when dotnet or the adapter is not there. macOS is where they ran; Windows and Linux are CI's.
 - Data breakpoints (Windows x64's to offer). (Not yet.)
-- A breakpoint's column: Passenger's lambda case puts one on the statement's column so the breakpoint binds the
-  lambda's body, and this client sends only the line. (Not yet.)
 - Decompiled symbols. (Not yet: the adapter's `resolveStackFrame` writes a PDB whose sources are embedded, and names
   them under a `decompiled/…` path that no file on disk has; the client would have to read the embedded source out of
   the PDB, or a decompiler of its own would. The client's side — `isResolved` on a frame and `resolveStackFrame` —
@@ -350,7 +348,8 @@ await and returned-value cases (into `Inner()` and out, over to the next stateme
 `Describe(Count())` returned), its Smart Step Into cases (the calls of `Outer(Inner())` in the order they run, the one
 chosen stepped into, and the second of two `Add` calls), and its synthetic variables (what each call a step ran
 returned, named `$ReturnValue1` and `$ReturnValue` and readable in an expression, replaced by the next step's, what a
-step out's method returned, and `$exception` at a throw, whose `Message` an expression reads).
+step out's method returned, `$exception` at a throw, whose `Message` an expression reads, and a lambda stepped into
+from a breakpoint on its statement's column).
 
 ### Phase 9: Avalonia and WPF (L)
 - A XAML host: `Passenger.Xaml` behind a thin JSON-lines (or LSP) process, giving completion, diagnostics,

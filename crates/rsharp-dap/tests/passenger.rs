@@ -627,3 +627,38 @@ fn a_stop_at_an_exception_lists_it_as_exception_and_an_expression_reads_its_mess
     assert_eq!(evaluate(&session, top.id, "$exception.Message"), "\"bad input\"");
     session.disconnect(true);
 }
+
+#[test]
+fn a_lambda_on_the_line_is_stepped_into_when_what_it_is_handed_to_runs_it() {
+    let _serial = one_at_a_time();
+    let Some(program) = stepping_program() else { return };
+    let source = stepping_source();
+    let statement = "int[] doubled = [.. Numbers().Select(n => Twice(n))];";
+    let line = line_of("SteppingConsoleApp", statement);
+    // At the statement's column: a breakpoint on the line alone binds to the lambda's body, which shares it.
+    let column = source_text("SteppingConsoleApp", line).find(statement).expect("the statement is written there");
+    let (session, events) = started(
+        &program,
+        &[],
+        vec![(source, vec![SourceBreakpoint { line: line - 1, column: Some(column), ..SourceBreakpoint::default() }])],
+        false,
+    );
+
+    let stopped = stop(&events, "breakpoint");
+    assert_eq!(line_at(&session, &stopped), line, "the stop is on the statement's line");
+    let frames = session.stack_trace(stopped.thread).expect("the stack reads");
+    let targets = session.step_in_targets(frames[0].id).expect("the calls are listed");
+    let labels: Vec<&str> = targets.iter().map(|target| target.label.as_str()).collect();
+    assert_eq!(labels, ["Numbers()", "n => Twice(n)"], "the calls in the order they run: {targets:?}");
+
+    // Select is the framework's; the lambda's body is the program's own.
+    session.step_into_target(stopped.thread, targets[1].id).expect("a step into the lambda is asked");
+    let into = stop(&events, "step");
+    assert_eq!(line_at(&session, &into), line, "the lambda's body shares the statement's line");
+    let frames = session.stack_trace(into.thread).expect("the stack reads");
+    let top = frames.first().expect("the stop has a frame");
+    assert!(top.name.contains(">b__"), "the frame is the lambda's own method: {top:?}");
+    let locals = locals_of(&session, top);
+    assert_eq!(locals.iter().find(|variable| variable.name == "n").map(|variable| variable.value.as_str()), Some("1"));
+    session.disconnect(true);
+}
