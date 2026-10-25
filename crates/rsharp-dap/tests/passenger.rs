@@ -146,6 +146,15 @@ fn started_filtering(
     (session, events)
 }
 
+/// One of Passenger's debuggees, built for the case that asks; skipped when the tools or the debuggees are absent.
+fn debuggee_program(name: &str) -> Option<PathBuf> {
+    if adapter().is_none() || rsharp_core::programs::dotnet().is_none() || debuggees().is_none() {
+        eprintln!("skipped: dotnet, the adapter or Passenger's debuggees are not there");
+        return None;
+    }
+    build(name)
+}
+
 /// Passenger's `LoopingConsoleApp`, built once per test as its case asks.
 fn looping_program() -> Option<PathBuf> {
     if adapter().is_none() || rsharp_core::programs::dotnet().is_none() || debuggees().is_none() {
@@ -786,5 +795,74 @@ fn evaluation_answers_in_a_paused_frame_with_members_properties_and_methods() {
     assert_eq!(value("anotherVar").as_deref(), Some("\"asdf\""));
     assert_eq!(value("nullableInt").as_deref(), Some("null"));
     assert_eq!(value("enumVar").as_deref(), Some("SecondValue"));
+    session.disconnect(true);
+}
+
+#[test]
+fn a_paused_frame_lists_its_locals_and_their_members() {
+    let _serial = one_at_a_time();
+    let Some(program) = debuggee_program("DebuggableConsoleApp") else { return };
+    let source = rsharp_core::paths::canonical(
+        &debuggees().expect("the debuggees are there").join("DebuggableConsoleApp/MyClass.cs"),
+    );
+    let (session, events) = started(
+        &program,
+        &[],
+        vec![(source, vec![SourceBreakpoint { line: 21, ..SourceBreakpoint::default() }])],
+        false,
+    );
+
+    let stopped = stop(&events, "breakpoint");
+    let frames = session.stack_trace(stopped.thread).expect("the stack reads");
+    let top = frames.first().expect("the stop has a frame");
+    let locals = locals_of(&session, top);
+    let named = |name: &str| locals.iter().find(|variable| variable.name == name).cloned();
+
+    // Passenger's VariablesTests lists these eleven for MyClass.MyMethod.
+    assert_eq!(locals.len(), 11, "the frame's locals: {locals:?}");
+    let expected = [
+        ("myParam", "13", "long"),
+        ("myIntParam", "6", "int"),
+        ("myInt", "4", "int"),
+        ("enumVar", "SecondValue", "DebuggableConsoleApp.MyEnum"),
+        ("enumWithFlagsVar", "FlagValue1 | FlagValue3", "DebuggableConsoleApp.MyEnumWithFlags"),
+        ("nullableInt", "null", "int?"),
+        ("structVar", "{DebuggableConsoleApp.MyStruct}", "DebuggableConsoleApp.MyStruct"),
+        ("nullableIntWithVal", "4", "int?"),
+        ("nullableRefType", "null", "DebuggableConsoleApp.MyClass"),
+        ("anotherVar", "\"asdf\"", "string"),
+    ];
+    for (name, value, kind) in expected {
+        let variable = named(name).unwrap_or_else(|| panic!("{name} is a local: {locals:?}"));
+        assert_eq!((variable.value.as_str(), variable.r#type.as_deref()), (value, Some(kind)), "{name}");
+    }
+    let this = named("this").unwrap_or_else(|| panic!("this is a local: {locals:?}"));
+    assert_eq!(this.value, "{DebuggableConsoleApp.MyClass}");
+
+    // The struct's own members, and the object's, as the tree opens them.
+    let struct_var = named("structVar").expect("structVar is a local");
+    let members = session.variables(struct_var.variables_reference).expect("the struct's members read");
+    let member = |members: &[rsharp_dap::protocol::Variable], name: &str| {
+        members.iter().find(|variable| variable.name == name).map(|variable| variable.value.clone())
+    };
+    assert_eq!(member(&members, "Id").as_deref(), Some("5"), "the struct's Id: {members:?}");
+    assert_eq!(member(&members, "Name").as_deref(), Some("\"StructName\""), "the struct's Name: {members:?}");
+
+    let this_members = session.variables(this.variables_reference).expect("the object's members read");
+    assert_eq!(member(&this_members, "IntProperty").as_deref(), Some("10"));
+    assert_eq!(member(&this_members, "_instanceField").as_deref(), Some("5"));
+    assert_eq!(member(&this_members, "_name").as_deref(), Some("\"TestName\""));
+
+    // An enum: its value and the group holding its members.
+    let enum_var = named("enumVar").expect("enumVar is a local");
+    let enum_members = session.variables(enum_var.variables_reference).expect("the enum's members read");
+    assert_eq!(member(&enum_members, "value__").as_deref(), Some("1"), "the enum's value: {enum_members:?}");
+    let statics = enum_members
+        .iter()
+        .find(|variable| variable.name == "Static members")
+        .unwrap_or_else(|| panic!("the enum has its Static members: {enum_members:?}"));
+    let values = session.variables(statics.variables_reference).expect("the enum's values read");
+    let names: Vec<&str> = values.iter().map(|variable| variable.name.as_str()).collect();
+    assert_eq!(names, ["FirstValue", "SecondValue", "ThirdValue"], "the enum's values: {values:?}");
     session.disconnect(true);
 }
