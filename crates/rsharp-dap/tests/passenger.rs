@@ -8,6 +8,13 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
+/// The parity tests run one at a time: each builds a debuggee and debugs a real program, and ten at once starved this
+/// machine's SDK until one never stopped.
+fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
 /// Where Passenger's debuggees are, beside this client's crate.
 fn debuggees() -> Option<PathBuf> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/passenger/tests/Debuggees");
@@ -142,6 +149,7 @@ fn in_loop(session: &Session, stop: &rsharp_dap::Stop, name: &str) {
 
 #[test]
 fn a_pause_stops_a_looping_program_in_its_loop_and_a_second_pause_after_continuing_does_too() {
+    let _serial = one_at_a_time();
     if adapter().is_none() || rsharp_core::programs::dotnet().is_none() || debuggees().is_none() {
         eprintln!("skipped: dotnet, the adapter or Passenger's debuggees are not there");
         return;
@@ -167,6 +175,7 @@ fn a_pause_stops_a_looping_program_in_its_loop_and_a_second_pause_after_continui
 
 #[test]
 fn a_step_from_a_pause_inside_a_sleep_comes_back_to_the_loop() {
+    let _serial = one_at_a_time();
     if adapter().is_none() || rsharp_core::programs::dotnet().is_none() || debuggees().is_none() {
         eprintln!("skipped: dotnet, the adapter or Passenger's debuggees are not there");
         return;
@@ -190,6 +199,7 @@ fn a_step_from_a_pause_inside_a_sleep_comes_back_to_the_loop() {
 
 #[test]
 fn a_value_paused_in_a_sleep_shows_its_type_and_fields_where_its_tostring_cannot_run() {
+    let _serial = one_at_a_time();
     if adapter().is_none() || rsharp_core::programs::dotnet().is_none() || debuggees().is_none() {
         eprintln!("skipped: dotnet, the adapter or Passenger's debuggees are not there");
         return;
@@ -244,6 +254,7 @@ fn stepping_program() -> Option<PathBuf> {
 
 #[test]
 fn stepping_into_a_call_and_out_of_it_comes_back_to_the_statement() {
+    let _serial = one_at_a_time();
     let Some(program) = stepping_program() else { return };
     let source = stepping_source();
     let (session, events) = started(
@@ -273,6 +284,7 @@ fn stepping_into_a_call_and_out_of_it_comes_back_to_the_statement() {
 
 #[test]
 fn a_step_over_an_await_goes_on_after_it() {
+    let _serial = one_at_a_time();
     let Some(program) = stepping_program() else { return };
     let source = stepping_source();
     let (session, events) = started(
@@ -292,6 +304,7 @@ fn a_step_over_an_await_goes_on_after_it() {
 
 #[test]
 fn a_step_over_shows_what_the_call_returned() {
+    let _serial = one_at_a_time();
     let Some(program) = stepping_program() else { return };
     let source = stepping_source();
     let (session, events) = started(
@@ -341,6 +354,7 @@ fn locals_of(session: &Session, frame: &rsharp_dap::protocol::Frame) -> Vec<rsha
 
 #[test]
 fn smart_step_into_lists_the_calls_in_the_order_they_run_and_steps_into_the_one_chosen() {
+    let _serial = one_at_a_time();
     let Some(program) = stepping_program() else { return };
     let source = stepping_source();
     let (session, events) = started(
@@ -378,6 +392,7 @@ fn smart_step_into_lists_the_calls_in_the_order_they_run_and_steps_into_the_one_
 
 #[test]
 fn of_two_calls_of_the_same_method_the_second_chosen_is_the_one_stepped_into() {
+    let _serial = one_at_a_time();
     let Some(program) = stepping_program() else { return };
     let source = stepping_source();
     let (session, events) = started(
@@ -406,5 +421,133 @@ fn of_two_calls_of_the_same_method_the_second_chosen_is_the_one_stepped_into() {
         "the outer call's arguments: {locals:?}"
     );
     assert_eq!(line_at(&session, &into), 26, "Add's own line");
+    session.disconnect(true);
+}
+
+/// Passenger's `SyntheticVariablesTests`: the debugger's own names, `$ReturnValue…` and `$exception`.
+fn synthetic_line(code: &str) -> usize {
+    line_of("SteppingConsoleApp", code)
+}
+
+fn evaluate(session: &Session, frame: i64, expression: &str) -> String {
+    let answer =
+        session.evaluate(expression, frame).unwrap_or_else(|why| panic!("{expression} did not evaluate: {why}"));
+    assert!(!answer.result.contains("error"), "{expression} did not evaluate: {}", answer.result);
+    answer.result
+}
+
+#[test]
+fn a_step_over_lists_what_each_call_returned_in_the_order_they_returned_and_names_them_for_an_expression() {
+    let _serial = one_at_a_time();
+    let Some(program) = stepping_program() else { return };
+    let source = stepping_source();
+    let line = synthetic_line("string described = Describe(Count());");
+    let (session, events) = started(
+        &program,
+        &[],
+        vec![(source, vec![SourceBreakpoint { line: line - 1, ..SourceBreakpoint::default() }])],
+        false,
+    );
+
+    let stopped = stop(&events, "breakpoint");
+    let frames = session.stack_trace(stopped.thread).expect("the stack reads");
+    let locals = locals_of(&session, frames.first().expect("the stop has a frame"));
+    assert!(
+        !locals.iter().any(|variable| variable.name.ends_with(" returned")),
+        "nothing has returned yet: {locals:?}"
+    );
+
+    session.step_over(stopped.thread).expect("a step over is asked");
+    let over = stop(&events, "step");
+    let frames = session.stack_trace(over.thread).expect("the stack reads");
+    let top = frames.first().expect("the stop has a frame");
+    let locals = locals_of(&session, top);
+    assert!(locals.len() >= 2, "the step's values are listed: {locals:?}");
+    let named = |index: usize| {
+        let variable = &locals[index];
+        (
+            variable.name.clone(),
+            variable.value.clone(),
+            variable.r#type.clone().unwrap_or_default(),
+            variable.evaluate_name.clone().unwrap_or_default(),
+        )
+    };
+    assert_eq!(named(0), ("Count() returned".into(), "42".into(), "int".into(), "$ReturnValue1".into()));
+    assert_eq!(named(1), ("Describe() returned".into(), "\"count 42\"".into(), "string".into(), "$ReturnValue".into()));
+    assert_eq!(
+        locals.iter().find(|variable| variable.name == "described").map(|variable| variable.value.as_str()),
+        Some("\"count 42\"")
+    );
+    assert_eq!(evaluate(&session, top.id, "$returnvalue"), "\"count 42\"");
+    assert_eq!(evaluate(&session, top.id, "$ReturnValue1"), "42");
+    assert_eq!(evaluate(&session, top.id, "$ReturnValue.Length"), "8");
+    assert_eq!(evaluate(&session, top.id, "$ReturnValue1 + 1"), "43");
+
+    // The next step's values replace the last's: a double, kept boxed as the int was.
+    session.step_over(over.thread).expect("a step over is asked");
+    let over = stop(&events, "step");
+    let frames = session.stack_trace(over.thread).expect("the stack reads");
+    let top = frames.first().expect("the stop has a frame");
+    let locals = locals_of(&session, top);
+    // The adapter prints a double in the machine's culture, so its decimal mark may be a comma, as this one's is.
+    let ratio = named_value(&locals, 0);
+    assert_eq!(
+        (ratio.0.as_str(), ratio.1.replace(',', ".").as_str(), ratio.2.as_str(), ratio.3.as_str()),
+        ("Ratio() returned", "0.75", "double", "$ReturnValue")
+    );
+    assert!(
+        !locals.iter().any(|variable| variable.name == "Count() returned" || variable.name == "Describe() returned")
+    );
+    assert_eq!(evaluate(&session, top.id, "$ReturnValue * 4"), "3");
+
+    // A struct is a value the runtime does not give back: nothing is listed for it.
+    session.step_over(over.thread).expect("a step over is asked");
+    let over = stop(&events, "step");
+    let frames = session.stack_trace(over.thread).expect("the stack reads");
+    let locals = locals_of(&session, frames.first().expect("the stop has a frame"));
+    assert!(
+        !locals.iter().any(|variable| variable.name.ends_with(" returned")),
+        "a struct is not given back: {locals:?}"
+    );
+    session.disconnect(true);
+}
+
+fn named_value(locals: &[rsharp_dap::protocol::Variable], index: usize) -> (String, String, String, String) {
+    let variable = &locals[index];
+    (
+        variable.name.clone(),
+        variable.value.clone(),
+        variable.r#type.clone().unwrap_or_default(),
+        variable.evaluate_name.clone().unwrap_or_default(),
+    )
+}
+
+#[test]
+fn a_step_out_lists_what_the_method_stepped_out_of_returned() {
+    let _serial = one_at_a_time();
+    let Some(program) = stepping_program() else { return };
+    let source = stepping_source();
+    let line = synthetic_line("string described = Describe(Count());");
+    let (session, events) = started(
+        &program,
+        &[],
+        vec![(source, vec![SourceBreakpoint { line: line - 1, ..SourceBreakpoint::default() }])],
+        false,
+    );
+
+    let stopped = stop(&events, "breakpoint");
+    let thread = stopped.thread;
+    session.step_into(thread).expect("a step into is asked");
+    let into = stop(&events, "step");
+    assert_eq!(line_at(&session, &into), synthetic_line("static int Count() => 42;"), "into Count()");
+    session.step_out(thread).expect("a step out is asked");
+    let out = stop(&events, "step");
+    assert_eq!(line_at(&session, &out), line, "back at the statement");
+    let frames = session.stack_trace(out.thread).expect("the stack reads");
+    let top = frames.first().expect("the stop has a frame");
+    let locals = locals_of(&session, top);
+    let returned = locals.first().unwrap_or_else(|| panic!("the returned value is listed: {locals:?}"));
+    assert_eq!((returned.name.as_str(), returned.value.as_str()), ("Count() returned", "42"));
+    assert_eq!(evaluate(&session, top.id, "$ReturnValue"), "42");
     session.disconnect(true);
 }
