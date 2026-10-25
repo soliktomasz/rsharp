@@ -920,3 +920,44 @@ fn an_exception_in_a_parallel_loop_whose_iterations_test_a_condition_stops_where
     );
     session.disconnect(true);
 }
+
+#[test]
+fn a_stack_lists_the_programs_frames_and_the_libraries_between_them() {
+    let _serial = one_at_a_time();
+    let Some(program) = debuggee_program("DebuggableConsoleApp") else { return };
+    let debuggees = debuggees().expect("the debuggees are there");
+    let with_bcl = rsharp_core::paths::canonical(&debuggees.join("DebuggableConsoleApp/ClassWithBclCall.cs"));
+    let (session, events) = started(
+        &program,
+        &[],
+        vec![(with_bcl.clone(), vec![SourceBreakpoint { line: 11, ..SourceBreakpoint::default() }])],
+        false,
+    );
+
+    let stopped = stop(&events, "breakpoint");
+    let frames = session.stack_trace(stopped.thread).expect("the stack reads");
+    let names: Vec<String> = frames.iter().map(|frame| frame.short_name()).collect();
+    let paths: Vec<Option<PathBuf>> = frames.iter().map(|frame| frame.path()).collect();
+    let lines: Vec<usize> = frames.iter().map(|frame| frame.line + 1).collect();
+
+    // Passenger's StackTraceTests lists five, the library's frames among the program's.
+    assert_eq!(frames.len(), 5, "the stack: {names:?}");
+    assert!(names[0].ends_with("ClassWithBclCall.Selector(int x)"), "the top frame: {names:?}");
+    assert_eq!(paths[0].as_deref(), Some(with_bcl.as_path()));
+    assert_eq!(lines[0], 12, "the selector's own line");
+    assert_eq!(frames[0].column, 2, "on return x * 2's column, from 0");
+    assert!(names[1].contains("RangeSelectIterator"), "the library's fill: {names:?}");
+    assert!(names[2].contains("ToArray"), "and its ToArray: {names:?}");
+    assert_eq!((paths[1].clone(), paths[2].clone()), (None, None), "no source for the library's frames");
+    assert_eq!(
+        (frames[1].presentation_hint.as_deref(), frames[2].presentation_hint.as_deref()),
+        (Some("subtle"), Some("subtle")),
+        "the library's frames are outside the program's code"
+    );
+    assert!(names[3].ends_with("ClassWithBclCall.Test(int myParam)"), "{names:?}");
+    assert_eq!((lines[3], paths[3].clone()), (7, Some(with_bcl)), "the call's own line");
+    assert!(names[4].ends_with("Program.Main(string[] args)"), "{names:?}");
+    assert_eq!(lines[4], 31, "the loop's call of Test");
+
+    session.disconnect(true);
+}
