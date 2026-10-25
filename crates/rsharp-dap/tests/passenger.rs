@@ -117,6 +117,35 @@ fn started(
     (session, events)
 }
 
+/// Starts a debuggee with exception breakpoints, as a case that stops at a throw asks.
+fn started_filtering(
+    program: &Path,
+    breakpoints: Vec<(PathBuf, Vec<SourceBreakpoint>)>,
+    exceptions: Vec<rsharp_dap::ExceptionFilter>,
+) -> (Session, Receiver<Event>) {
+    let adapter = adapter().expect("Passenger's debug adapter is built");
+    let (sender, events) = mpsc::channel();
+    let working_directory = program.parent().expect("the assembly is in a folder").to_path_buf();
+    let session = Session::start(
+        &adapter,
+        Start::Launch(Launch {
+            program: program.to_path_buf(),
+            arguments: Vec::new(),
+            working_directory,
+            environment: BTreeMap::new(),
+            stop_at_entry: false,
+        }),
+        &std::env::temp_dir().join("rsharp-passenger-symbols"),
+        breakpoints,
+        Vec::new(),
+        exceptions,
+        None,
+        move |event| drop(sender.send(event)),
+    )
+    .expect("the session starts");
+    (session, events)
+}
+
 fn launched(program: &Path, arguments: &[&str]) -> (Session, Receiver<Event>) {
     started(program, arguments, Vec::new(), true)
 }
@@ -549,5 +578,52 @@ fn a_step_out_lists_what_the_method_stepped_out_of_returned() {
     let returned = locals.first().unwrap_or_else(|| panic!("the returned value is listed: {locals:?}"));
     assert_eq!((returned.name.as_str(), returned.value.as_str()), ("Count() returned", "42"));
     assert_eq!(evaluate(&session, top.id, "$ReturnValue"), "42");
+    session.disconnect(true);
+}
+
+#[test]
+fn a_stop_at_an_exception_lists_it_as_exception_and_an_expression_reads_its_message() {
+    let _serial = one_at_a_time();
+    let Some(program) = stepping_program() else { return };
+    let source = stepping_source();
+    let line = line_of("SteppingConsoleApp", "Throws.Run();");
+    let (session, events) = started_filtering(
+        &program,
+        vec![(source, vec![SourceBreakpoint { line: line - 1, ..SourceBreakpoint::default() }])],
+        // Every exception, wherever it is thrown and whether it is handled, as Passenger's ["all"] does: the client's
+        // empty-path filter with every scenario is breakMode "always".
+        vec![rsharp_dap::ExceptionFilter {
+            scenarios: [
+                "thrownInUserCode",
+                "thrownInExternalCode",
+                "handledInUserCode",
+                "handledInExternalCode",
+                "unhandled",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+            ..rsharp_dap::ExceptionFilter::default()
+        }],
+    );
+
+    let stopped = stop(&events, "breakpoint");
+    session.resume(stopped.thread).expect("the program runs on");
+    let thrown = stop(&events, "exception");
+    let throw_line = line_of(
+        "SteppingConsoleApp",
+        "static void Fail(string reason) => throw new InvalidOperationException(reason);",
+    );
+    assert_eq!(line_at(&session, &thrown), throw_line, "the throw's own line");
+
+    let frames = session.stack_trace(thrown.thread).expect("the stack reads");
+    let top = frames.first().expect("the stop has a frame");
+    let locals = locals_of(&session, top);
+    let exception = locals
+        .iter()
+        .find(|variable| variable.name == "$exception")
+        .unwrap_or_else(|| panic!("$exception is listed: {locals:?}"));
+    assert_eq!(exception.r#type.as_deref(), Some("System.InvalidOperationException"));
+    assert_eq!(evaluate(&session, top.id, "$exception.Message"), "\"bad input\"");
     session.disconnect(true);
 }
