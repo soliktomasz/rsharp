@@ -45,10 +45,12 @@ pub enum Tool {
     Run,
     UnitTests,
     Terminal,
+    Commit,
+    Git,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 8] = [
+    pub const ALL: [Tool; 10] = [
         Tool::Solution,
         Tool::Problems,
         Tool::Find,
@@ -57,6 +59,8 @@ impl Tool {
         Tool::Run,
         Tool::UnitTests,
         Tool::Terminal,
+        Tool::Commit,
+        Tool::Git,
     ];
 
     pub fn title(self) -> &'static str {
@@ -69,6 +73,8 @@ impl Tool {
             Tool::Run => "Run",
             Tool::UnitTests => "Unit Tests",
             Tool::Terminal => "Terminal",
+            Tool::Commit => "Commit",
+            Tool::Git => "Git",
         }
     }
 
@@ -82,6 +88,8 @@ impl Tool {
             Tool::Run => "tw-run",
             Tool::UnitTests => "check",
             Tool::Terminal => "tw-terminal",
+            Tool::Commit => "check",
+            Tool::Git => "branch",
         }
     }
 
@@ -96,6 +104,8 @@ impl Tool {
             Tool::Run => Place::BottomLeft,
             Tool::UnitTests => Place::BottomLeft,
             Tool::Terminal => Place::BottomLeft,
+            Tool::Commit => Place::LeftTop,
+            Tool::Git => Place::BottomLeft,
         }
     }
 }

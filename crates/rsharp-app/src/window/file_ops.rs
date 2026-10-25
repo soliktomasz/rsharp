@@ -316,6 +316,7 @@ impl MainWindow {
                 crate::language::move_files(&[(from.clone(), to.clone())], server.as_deref(), cx)?;
             }
         }
+        self.move_git_index(all.clone(), cx);
         let projects: Vec<PathBuf> = all
             .iter()
             .filter_map(|(from, _)| self.project_of_path(from))

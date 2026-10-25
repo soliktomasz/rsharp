@@ -240,16 +240,57 @@ Done when: vim, htop and a 10 MB `cat` run without freezing the window. A 10 MB 
 (`crates/rsharp-terminal/tests/terminal.rs`) that holds scrollback at its bound and keeps the program's last
 output; vim and htop are not exercised by a test, and Windows' ConPTY and Linux are left to CI.
 
-### Phase 7: Git (M)
-- The `git` executable (porcelain v2), as Passenger uses it, never a library.
-- Gutter change bars from a line diff (`imara-diff`), and word diff.
+### Phase 7: Git (M) — in place (`codex/phase-7-git`)
+Built: `rsharp_core::git::Repository` drives the installed `git` through `process::spawn` and nothing else.
+Discovery is `rev-parse --show-toplevel` with `--absolute-git-dir`, so a linked worktree's own metadata and its
+common directory are known and an ordinary absence is told apart from a corrupt repository or a refused one;
+status is porcelain v2 with both names of a rename and index/worktree kept apart; refs, log, file history
+(`--follow`) and line history (`-L`), blobs through `cat-file --filters`, a commit's files, checkout, branch
+create/rename/delete, merge, rebase, push (its upstream, or `-u` when one remote is unambiguous), fetch and pull,
+the index's stages, whole-side acceptance, mark-resolved, continue, abort and index moves all live there.
+Arguments are arrays — `--`, `:(literal)` pathspecs and `--end-of-options` — with inherited `GIT_DIR`,
+`GIT_INDEX_FILE` and pathspec overrides cleared, `GIT_TERMINAL_PROMPT=0`, and both pipes drained concurrently
+under 64 MiB and 1 MiB bounds. Every command runs under the Lifeline, so a cancelled operation or a closed
+workspace ends its process tree, hooks and credential helpers included; a handle's cancellation is captured
+before work is queued. An ordinary commit stages into a temporary index and installs it only when the real one is
+byte for byte as it was, so it takes its chosen paths alone and leaves unrelated staged content alone, and its
+message reaches `git commit -F` through a file.
+`rsharp-text` has the line diff and word diff over `imara-diff` (byte ranges, UTF-8, a missing final newline, a
+limit on word marks in a large rewrite), the three-way merge (agreeing edits, disjoint changes applied, the rest
+explicit chunks with a choice each, simple resolution of disjoint words) and `hold_newlines`.
+In the app, `window/git.rs` is the folder's controller: Git and comparisons on the background executor, one
+mutation at a time, a refresh coalesced behind it, an epoch that drops a closed workspace's replies, baselines
+cached by HEAD and path so a keystroke runs no Git, and a watcher on `.git`'s own directories — refs, the
+operation state, no object database — which also watches a linked worktree's common directory. `git_view.rs` is
+the Commit window and the Git window (branches by full ref with favorites, the Log with lanes, a commit's files
+and diffs, scoped history tabs, Compare With, the branch menus), `git_view/diff.rs` one side-by-side view for
+every comparison, and `git_view/merge.rs` Rider's merge window: Yours, editable Result and Theirs, the base,
+synchronized scrolling, and an unresolved count that typing does not clear. The editor paints its change bars from
+the buffer's own baseline, shows both texts when a bar is clicked, rolls back one hunk as one undoable edit, and
+Next/Previous Change walks them; the toolbar's branch widget opens the Log; Commit and Git are tools in Rider's
+places; the Solution view colours a changed file and its menu shows history and Compare With HEAD; Local History
+keeps the bytes a Git operation replaces, a shared buffer is reloaded after it, and a file moved in the tree keeps
+its staged blob under its new name.
+- The `git` executable (porcelain v2), as Passenger uses it, never a library. (In.)
+- Gutter change bars from a line diff (`imara-diff`), and word diff. (In: bars, both texts, Rollback Lines as one
+  undoable edit, Next/Previous Change, and the word marks inside the comparison view.)
 - The Commit window, the Log with lanes, branches and the branch widget, Show History (file, folder, lines),
-  Compare With.
-- Rollback, push and update.
-- Conflicts, and the three-way merge.
+  Compare With. (In.)
+- Rollback, push and update. (In: a file's rollback asks first and names what an unversioned file loses; push
+  uses the upstream or sets one; Update follows Git's own pull policy; both Fetch and Cancel are there.)
+- Conflicts, and the three-way merge. (In.)
 
 Passenger: `Vcs/`, `MainWindow.Vcs.cs`, `Branches.cs`, `Conflicts.cs`, `History.cs`.
 Done when: a branch can be rebased with a conflict, resolved in the merge view and pushed, all in RSharp.
+A window test does exactly that against two local clones and a bare local remote
+(`crates/rsharp-app/tests/git.rs`), checking the remote's bytes and the cleared operation; core's
+`tests/git.rs` covers the same ground through the repository alone, and `tests/git_watch.rs` the watcher.
+macOS is where these ran; Windows and Linux are CI's. Not taken, as the design says: a Git library, hosting
+integrations, pull requests, several repositories at once, clone and init onboarding, a stash window, blame,
+interactive rebase editing, signing setup, force push, and MCP VCS tools. Limits taken on purpose: binary, symlink
+and unsupported non-text changes are refused in the merge view rather than guessed at, gutter bars stop at 4 MiB
+(a `// shortcut:` in `buffer.rs`), the Log asks for 2,000 commits, and a failed save stops a Git command rather
+than running it on stale bytes.
 
 ### Phase 8: Debugger (L)
 - A DAP client in Rust over `debugger/` (Passenger.DebugAdapter, carried as is).

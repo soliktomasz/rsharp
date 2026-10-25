@@ -115,6 +115,20 @@ impl MainWindow {
         self.selected = Some(row);
         let title = item_title(item);
         match (found.kind, title) {
+            (_, "Show Git History") => {
+                if let Some(path) = found.path {
+                    self.git_request(crate::git_view::GitRequest::History(path), window, cx);
+                }
+            }
+            (_, "Compare With HEAD") => {
+                if let Some(path) = found.path {
+                    self.git_request(
+                        crate::git_view::GitRequest::Compare { path, revision: "HEAD".into() },
+                        window,
+                        cx,
+                    );
+                }
+            }
             (NodeKind::Solution | NodeKind::SolutionFolder | NodeKind::Project, "Build" | "Rebuild" | "Clean") => {
                 let kind = match title {
                     "Rebuild" => rsharp_core::build::Kind::Rebuild,
@@ -767,6 +781,7 @@ impl MainWindow {
     /// unsaved edits kept as it is), a file not open is kept in Local History as an External change, the solution is
     /// read again when it changed, and the projects whose inputs changed are evaluated again.
     fn folder_changed(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        self.refresh_git(cx);
         self.package_sources_changed(&paths, cx);
         let solution = self.tree.as_ref().map(|t| t.solution().path.clone());
         let mut closed = Vec::new();

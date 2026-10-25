@@ -81,7 +81,15 @@ terminal and takes focus for a moment.
   does, so the bytes are dotnet's; `version` NuGet's order), `msbuild` (code help in project, .props and .targets
   files: `insight` the Host's `inspect` answer, `schema` dotnet/msbuild's XSDs carried in `assets/msbuild/` and read
   once, `context` where the caret is in the text as typed, `help` the completion, hover and declaration there),
-  `editorconfig` (the .editorconfig files over a file, its own parser and globs), `history` (Local History: each version
+  `editorconfig` (the .editorconfig files over a file, its own parser and globs), `git` (the installed `git` and
+  nothing else, as Passenger drives it: discovery with linked worktrees told apart from an ordinary absence,
+  porcelain v2 status keeping both names of a rename and the index apart from the worktree, refs, log, file and
+  line history, blobs through `cat-file --filters`, selected-path commits staged in a temporary index that is
+  installed only when the real one is byte for byte as it was, messages through `git commit -F`,
+  branch/merge/rebase/checkout/delete/push/fetch/pull, the index's stages, whole-side acceptance with
+  rebase's reversed Yours/Theirs in one place, mark-resolved, continue, abort, index moves and rollback; argument
+  arrays with `:(literal)` and `--end-of-options`, inherited `GIT_*` overrides cleared, both pipes drained under
+  bounds, and cancellation that ends the process tree), `history` (Local History: each version
   of a file under `localHistory/`, content once by hash in `blobs/`, a JSON line per version in `changes.log`), `state` (the one `StateStore`: `RSHARP_STATE` or the local app data; app documents
   at its root, each folder's under `workspaces/<name>-<hash>/`; writes debounced on its own thread, merged over
   the file key by key, read back from memory until written; an unreadable file set aside as `.bad` and said
@@ -92,7 +100,11 @@ terminal and takes focus for a moment.
   joins a run of one `EditKind` (typing a word at a time); `carets` is what changes only the carets (occurrences,
   clones, columns; the last caret is the primary, the one added last); `search` is the find bar's matching; `rows` is
   lines as shown, folded lines left out and long ones wrapped, built only while something folds or wraps, and after
-  one change only that change's lines made again.
+  one change only that change's lines made again. `diff` is the line hunks Local History and the gutter share
+  (`diff_hunks`, `rollback_hunk`) and the word marks inside changed lines, byte ranges throughout;
+  `hold_newlines` is a text held as a buffer holds it, without a copy when it is already `\n`; `merge` is the
+  three-way merge — agreeing edits, disjoint changes applied, the rest explicit chunks with a choice each, and
+  simple resolution of disjoint words.
 - `crates/rsharp-languages`: colour before any server answers: tree-sitter-c-sharp parsed incrementally (`edit`
   then `parse` with the old tree) and coloured by the grammar's own highlights query over the visible bytes
   only, its captures mapped to Rider's kinds (`Kind`); the regions that fold (`folds_in`, only those near a range,
@@ -180,7 +192,15 @@ terminal and takes focus for a moment.
   card and Go to Declaration, its buffer given the Host by `window/msbuild.rs` and inspected once typing pauses, the
   evaluation's errors its problems. `nuget_view/sources.rs` is the Sources tab: the
   files in effect and the chosen one's feeds, added, edited (a masked password field), enabled and deleted in place. `solution_view.rs` is the Solution view's tree for a folder with a solution (only open nodes walked, each kept
-  open by its key); a folder without one shows its files. `solution_menu.rs` is a row's menu (Rider's items and keys)
+  open by its key); a folder without one shows its files. `git_view.rs` is the Commit window and the Git window
+  (Branches by full ref with favorites, the Log with its lanes, a commit's files and diffs, scoped History tabs,
+  Compare With, the branch menus), `git_view/diff.rs` the one side-by-side comparison with word marks and
+  synchronized scrolling, `git_view/merge.rs` Rider's merge window (Yours, editable Result, Theirs and the base;
+  an unresolved count typing does not clear), and `window/git.rs` the folder's controller: every Git command and
+  comparison on the background executor, one mutation at a time, a refresh coalesced behind it, an epoch that
+  drops a closed workspace's replies, baselines cached by HEAD and path so a keystroke runs no Git, and
+  `watcher::watch_git` on `.git`'s own directories, a linked worktree's common one included. The toolbar's branch
+  widget opens the Log. `solution_menu.rs` is a row's menu (Rider's items and keys)
   and the name popup; `reference_dialog.rs` Add Reference; the window's side of changing the solution is in
   `window/`: `solution_actions.rs` (the menu's actions, solution folders, Add Existing, Remove, Add Reference, the
   watcher's bursts, and `write_edited`, the one way RSharp writes a solution or project file: saved first if open, the
@@ -188,12 +208,14 @@ terminal and takes focus for a moment.
   `file_moves.rs` (Cut, Copy, Paste, drags). `find_bar.rs` is find and replace over the editor, one
   per window, following the active tab. `buffer.rs` is an open file's text, undo, tree, problems and server, shared by
   every editor of it, and how it is stored (encoding, line separator, indent from .editorconfig, the file's own lines
-  or C#'s, read-only, the .editorconfig's save-time rules); `editor_area.rs` the groups of tabs, split right and down, pinned tabs and the tabs closed;
+  or C#'s, read-only, the .editorconfig's save-time rules; the committed text the gutter compares with, kept as one
+  shared string and diffed off the UI thread once typing pauses); `editor_area.rs` the groups of tabs, split right and down, pinned tabs and the tabs closed;
   `editor_window.rs` a tab dragged out into a window of its own; `history_window.rs` Local History's window and what
   it records (a file as opened, an External change seen then, each save). Every buffer in the process is found by its file
   (`buffer::find`), so a file in two windows is one text; the last editor of a file gone, the server is told. `editor.rs` is the code editor (a gpui `Element` that shapes
   only the lines on screen; the parse runs on the background executor; Roslyn told every change and asked for
-  diagnostics once typing pauses), `theme.rs` every colour, `assets.rs` the carried fonts and icons,
+  diagnostics once typing pauses; its gutter's Git bars come from the buffer's baseline, their popup shows both
+  texts and rolls back one hunk as one undoable edit), `theme.rs` every colour, `assets.rs` the carried fonts and icons,
   `keymap.rs` Rider's keys, `launch.rs` the command line, `workspace.rs` the folder and its solution, `bench.rs`
   what `--bench` measures. Roslyn's progress is followed by token, and a Restore counts only once it names a
   project: Roslyn also restores its stand-in for files no project holds (`Canonical.csproj`), which never ends
@@ -239,6 +261,14 @@ Tests say what a person would see or get, and their failure message names the co
 editing session (`rsharp-text/tests/editing_session.rs`) checks 40,000 keys, undo and redo against a plain
 string: keep it passing rather than narrowing it. The Roslyn test runs the real server on a fresh project and
 skips, saying why, when the tool is not installed.
+
+Git tests build real repositories and, when a remote is needed, a bare one beside them — never the person's and
+never a network service: `crates/rsharp-core/tests/git.rs` the repository alone (porcelain records, odd paths,
+worktrees, a rebase conflict resolved and pushed, an index changed underneath a commit, a failing hook ended with
+its process tree), `crates/rsharp-core/tests/git_watch.rs` the metadata watcher, `crates/rsharp-text/tests/diff_merge.rs`
+hunks, word marks and the three-way merge, and the window's `tests/git.rs`, `tests/git_views.rs` and
+`tests/git_gutter.rs` the Commit window, the merge window, the branch list and the gutter, waited for with a
+deadline because Git is a process of its own.
 
 Terminal tests are the one place a test runs real programs against the clock: `crates/rsharp-core/tests/pty.rs`
 a real PTY (size, final output, exit code, foreground and background jobs, the IDE killed outright),

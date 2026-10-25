@@ -76,6 +76,20 @@ struct Step {
     at: Instant,
 }
 
+/// A file's text held as a buffer holds it: its own line separator made `\n`, the others kept as they are. A text
+/// already separated by `\n` — nearly every file — is given back as it came, without a copy, so a large revision is
+/// read for the gutter or a comparison without being copied twice.
+// shortcut: a file with mixed breaks is held by its first kind found; Rider makes them one on save.
+pub fn hold_newlines(text: String) -> String {
+    if text.contains("\r\n") {
+        text.replace("\r\n", "\n")
+    } else if text.contains('\r') {
+        text.replace('\r', "\n")
+    } else {
+        text
+    }
+}
+
 pub struct Document {
     text: Rope,
     selections: Vec<Selection>,
@@ -98,15 +112,8 @@ impl Document {
         } else {
             LineEnding::Lf
         };
-        // shortcut: a file with mixed breaks is held by its first kind found, the others kept as they are; Rider
-        // makes them one on save.
-        let held = match line_ending {
-            LineEnding::CrLf => text.replace("\r\n", "\n"),
-            LineEnding::Cr => text.replace('\r', "\n"),
-            LineEnding::Lf => text.to_string(),
-        };
         Self {
-            text: Rope::from_str(&held),
+            text: Rope::from_str(&hold_newlines(text.to_string())),
             selections: vec![Selection::default()],
             undo: Vec::new(),
             redo: Vec::new(),

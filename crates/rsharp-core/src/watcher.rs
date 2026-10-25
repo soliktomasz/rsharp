@@ -76,3 +76,42 @@ pub fn watch(folder: &Path, changed: impl Fn(Vec<PathBuf>) + Send + 'static) -> 
         .map_err(|e| notify::Error::generic(&e.to_string()))?;
     Ok(Watcher { _watcher: watcher })
 }
+
+/// Watches repository metadata without subscribing to its object database. Linked worktrees also call this for
+/// their common directory, which may be outside the workspace the person opened.
+pub fn watch_git(folder: &Path, changed: impl Fn(Vec<PathBuf>) + Send + 'static) -> notify::Result<Watcher> {
+    use notify::Watcher as _;
+    let (sender, events) = mpsc::channel::<notify::Result<notify::Event>>();
+    let mut watcher = notify::recommended_watcher(sender)?;
+    watcher.watch(folder, notify::RecursiveMode::NonRecursive)?;
+    for name in ["refs", "rebase-merge", "rebase-apply", "sequencer"] {
+        let path = folder.join(name);
+        if path.is_dir() {
+            watcher.watch(&path, notify::RecursiveMode::Recursive)?;
+        }
+    }
+    std::thread::Builder::new()
+        .name("git watcher".into())
+        .spawn(move || {
+            while let Ok(first) = events.recv() {
+                let mut paths = first.map(|e| e.paths).unwrap_or_default();
+                let started = Instant::now();
+                while started.elapsed() < LONGEST {
+                    match events.recv_timeout(GATHER) {
+                        Ok(event) => paths.extend(event.map(|e| e.paths).unwrap_or_default()),
+                        Err(_) => break,
+                    }
+                }
+                paths.retain(|p| {
+                    !p.components().any(|c| c.as_os_str() == "objects") && p.extension().is_none_or(|e| e != "lock")
+                });
+                paths.sort();
+                paths.dedup();
+                if !paths.is_empty() {
+                    changed(paths);
+                }
+            }
+        })
+        .map_err(|e| notify::Error::generic(&e.to_string()))?;
+    Ok(Watcher { _watcher: watcher })
+}

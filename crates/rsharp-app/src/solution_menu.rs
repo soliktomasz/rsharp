@@ -104,6 +104,7 @@ pub fn menu_for(row: &TreeRow) -> Vec<MenuItem> {
     }
     if row.path.is_some() {
         menu.push(Submenu("Open In", vec![Action("Terminal", None)]));
+        menu.push(Submenu("Git", vec![Action("Show Git History", None), Action("Compare With HEAD", None)]));
     }
     menu
 }

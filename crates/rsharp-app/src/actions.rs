@@ -56,6 +56,20 @@ macro_rules! ide {
 }
 
 pub static ALL: &[IdeAction] = &[
+    ide!("Commit", "Git", ["commit changes", "version control"], crate::window::ToggleCommit),
+    ide!("Git", "View", ["log", "branches", "version control"], crate::window::ToggleGit),
+    ide!("Refresh Git", "Git", ["status", "changes"], crate::window::GitRefresh),
+    ide!("Push", "Git", ["push commits"], crate::window::GitPush),
+    ide!("Update Project", "Git", ["pull", "update git"], crate::window::GitUpdate),
+    ide!("Show Git History", "Git", ["file history", "folder history"], crate::window::GitHistory),
+    ide!("Show History for Selection", "Git", ["line history"], crate::window::GitSelectionHistory),
+    ide!("Compare With…", "Git", ["compare branch", "compare revision", "diff"], crate::window::GitCompare),
+    ide!("Resolve Conflicts", "Git", ["merge conflicts"], crate::window::GitResolve),
+    ide!("Continue Rebase", "Git", ["continue git operation"], crate::window::GitContinue),
+    ide!("Abort Git Operation", "Git", ["abort rebase", "abort merge"], crate::window::GitAbort),
+    ide!("Next Change", "Navigate", ["git hunk"], crate::window::NextChange),
+    ide!("Previous Change", "Navigate", ["git hunk"], crate::window::PreviousChange),
+    ide!("Rollback Lines", "Git", ["revert hunk"], crate::window::RollbackLines),
     ide!("Build Solution", "Build", ["compile", "make"], BuildSolution),
     ide!("Rebuild Solution", "Build", ["compile again"], RebuildSolution),
     ide!("Clean Solution", "Build", ["remove build output"], CleanSolution),
@@ -180,7 +194,7 @@ pub static ALL: &[IdeAction] = &[
 
 /// Rider's main menus in its order.
 pub const MENUS: &[&str] =
-    &["File", "Edit", "View", "Navigate", "Code", "Refactor", "Build", "Run", "Tools", "Window", "Help"];
+    &["File", "Edit", "View", "Navigate", "Code", "Refactor", "Build", "Run", "Git", "Tools", "Window", "Help"];
 
 /// The main menu: macOS's menu bar, the app menu first with Settings and Quit where a Mac keeps them.
 // shortcut: Windows and Linux get no in-window menu yet; Rider's is the toolbar's main menu button.

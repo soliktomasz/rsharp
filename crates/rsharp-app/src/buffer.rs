@@ -54,6 +54,9 @@ pub struct Buffer {
     pub tree: Option<Tree>,
     /// The document's version the tree was parsed from: brackets are paired only in a tree that is current.
     pub tree_version: u64,
+    pub git_base: Option<Arc<str>>,
+    pub git_hunks: Arc<Vec<rsharp_text::DiffHunk>>,
+    git_comparing: Option<Task<()>>,
     is_csharp: bool,
     parsing: Option<Task<()>>,
     server: Option<(Arc<LanguageServer>, String)>,
@@ -201,6 +204,9 @@ impl Buffer {
             diagnostics: Vec::new(),
             tree: None,
             tree_version: u64::MAX,
+            git_base: None,
+            git_hunks: Arc::new(Vec::new()),
+            git_comparing: None,
             is_csharp,
             parsing: None,
             server: None,
@@ -309,11 +315,58 @@ impl Buffer {
                 }),
             );
         }
+        self.compare_git(cx);
         self.reparse(cx);
         self.check(Duration::from_millis(400), cx);
         self.inspect(Duration::from_millis(500), cx);
         cx.emit(BufferEvent::Edited { changes, by });
         cx.notify();
+    }
+
+    pub fn set_git_base(&mut self, baseline: Option<String>, cx: &mut Context<Self>) {
+        self.set_git_baseline(baseline.map(Arc::from), cx);
+    }
+
+    pub fn set_git_baseline(&mut self, baseline: Option<Arc<str>>, cx: &mut Context<Self>) {
+        if match (&self.git_base, &baseline) {
+            (None, None) => true,
+            (Some(old), Some(new)) => Arc::ptr_eq(old, new),
+            _ => false,
+        } {
+            return;
+        }
+        self.git_base = baseline;
+        self.compare_git(cx);
+    }
+
+    fn compare_git(&mut self, cx: &mut Context<Self>) {
+        self.git_comparing = None;
+        self.git_hunks = Arc::new(Vec::new());
+        let Some(before) = self.git_base.clone() else {
+            cx.notify();
+            return;
+        };
+        // shortcut: no gutter change bars above 4 MiB, where a generated file would be copied and diffed whole on
+        // every pause in typing and its bars read by nobody; diff one by its visible lines once someone edits one.
+        if self.document.text().len_bytes() > 4 << 20 || before.len() > 4 << 20 {
+            cx.notify();
+            return;
+        }
+        let after = self.document.text().clone();
+        let version = self.document.version();
+        self.git_comparing = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(Duration::from_millis(120)).await;
+            let hunks = cx
+                .background_executor()
+                .spawn(async move { rsharp_text::diff_hunks(&before, &after.to_string()) })
+                .await;
+            let _ = this.update(cx, |b, cx| {
+                if b.document.version() == version {
+                    b.git_hunks = Arc::new(hunks);
+                    cx.notify();
+                }
+            });
+        }));
     }
 
     fn reparse(&mut self, cx: &mut Context<Self>) {

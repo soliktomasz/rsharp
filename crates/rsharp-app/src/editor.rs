@@ -13,6 +13,7 @@ use rsharp_languages::{FoldRegion, Highlight, folds, folds_in, highlights, match
 use rsharp_text::*;
 use std::ops::Range;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[path = "editor_assist.rs"]
 mod assist;
@@ -161,6 +162,7 @@ pub struct CodeEditor {
     columns: Option<usize>,
     /// The pointer is over the gutter, which shows the chevrons of what is not folded.
     gutter_hovered: bool,
+    git_popup: Option<GitPopup>,
     layout: Option<Layout>,
     /// The line height in force, from the settings, as the last frame used it.
     line_height: Pixels,
@@ -171,6 +173,15 @@ pub struct CodeEditor {
     assist: assist::Assist,
     /// A console uses the editor's selection and visible-line drawing, without a file or undo history.
     console: Option<Console>,
+}
+
+struct GitPopup {
+    at: Point<Pixels>,
+    version: u64,
+    baseline: Arc<str>,
+    edit: Edit,
+    before: Arc<Vec<String>>,
+    after: Arc<Vec<String>>,
 }
 
 struct Console {
@@ -251,6 +262,7 @@ struct Layout {
     /// The gutter's chevrons and the folded regions' placeholders, each with the fold it stands for.
     chevrons: Vec<(Bounds<Pixels>, FoldRegion)>,
     placeholders: Vec<(Bounds<Pixels>, FoldRegion)>,
+    git_changes: Vec<(Bounds<Pixels>, DiffHunk)>,
 }
 
 impl CodeEditor {
@@ -309,6 +321,7 @@ impl CodeEditor {
             fold_generation: 0,
             columns: None,
             gutter_hovered: false,
+            git_popup: None,
             layout: None,
             line_height: px(crate::settings::settings(cx).line_height()),
             _buffer_events: subscription,
@@ -346,6 +359,9 @@ impl CodeEditor {
     /// The text and its version as the buffer has them now.
     fn sync(&mut self, buffer: &Entity<Buffer>, cx: &App) {
         let read = buffer.read(cx);
+        if self.version != read.document.version() {
+            self.git_popup = None;
+        }
         self.text = read.document.text().clone();
         self.version = read.document.version();
     }
@@ -695,7 +711,9 @@ impl CodeEditor {
     /// Escape: the extra carets go, then the selection; with neither, the key is the window's.
     fn escape(&mut self, _: &Escape, _: &mut Window, cx: &mut Context<Self>) {
         let primary = self.primary();
-        if self.assist.popup.is_some() {
+        if self.git_popup.take().is_some() {
+            cx.notify();
+        } else if self.assist.popup.is_some() {
             self.close_popup(cx);
         } else if self.assist.template.take().is_some() {
             cx.notify();
@@ -774,7 +792,44 @@ impl CodeEditor {
     fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus);
         self.close_popup(cx);
+        if self.git_popup.take().is_some() {
+            cx.notify();
+        }
         self.assist.template = None;
+        if let Some(layout) = &self.layout
+            && let Some((_, hunk)) = layout.git_changes.iter().find(|(bounds, _)| bounds.contains(&event.position))
+        {
+            let hunk = hunk.clone();
+            let at = point(
+                px(10.),
+                (event.position.y - layout.viewport.origin.y + self.line_height)
+                    .min((layout.viewport.size.height - px(240.)).max(px(0.))),
+            );
+            let buffer = self.buffer.read(cx);
+            if !buffer.git_hunks.contains(&hunk) {
+                return;
+            }
+            if let Some(baseline) = &buffer.git_base {
+                let line_byte = |text: &Rope, line: usize| text.try_line_to_byte(line).unwrap_or(text.len_bytes());
+                let mut lines = baseline.split_inclusive('\n');
+                let old_from: usize = lines.by_ref().take(hunk.before.start).map(str::len).sum();
+                let old_len: usize = lines.take(hunk.before.len()).map(str::len).sum();
+                let new = line_byte(&self.text, hunk.after.start)..line_byte(&self.text, hunk.after.end);
+                let old_text = baseline[old_from..old_from + old_len].to_owned();
+                let new_text = self.text.byte_slice(new.clone()).to_string();
+                self.git_popup = Some(GitPopup {
+                    at,
+                    version: self.version,
+                    baseline: baseline.clone(),
+                    edit: Edit { range: new, text: old_text.clone() },
+                    before: Arc::new(git_preview_lines(&old_text)),
+                    after: Arc::new(git_preview_lines(&new_text)),
+                });
+                self.selecting = false;
+                cx.notify();
+                return;
+            }
+        }
         let hit = |marks: &[(Bounds<Pixels>, FoldRegion)]| {
             marks.iter().find(|(b, _)| b.contains(&event.position)).map(|(_, fold)| fold.clone())
         };
@@ -900,6 +955,7 @@ impl CodeEditor {
     }
 
     fn on_scroll(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.git_popup = None;
         let delta = event.delta.pixel_delta(self.line_height);
         self.scroll_y = (self.scroll_y - delta.y).clamp(px(0.), self.max_scroll());
         let follow = self.scroll_y >= self.max_scroll() - self.line_height * 4.;
@@ -913,6 +969,121 @@ impl CodeEditor {
         let content = self.line_height * self.rows.len(&self.text) as f32;
         let viewport = self.layout.as_ref().map_or(px(0.), |l| l.viewport.size.height);
         (content - viewport + self.line_height * 4.).max(px(0.))
+    }
+
+    pub fn scroll_offset(&self) -> Pixels {
+        self.scroll_y
+    }
+
+    pub fn set_scroll_offset(&mut self, offset: Pixels, cx: &mut Context<Self>) {
+        let offset = offset.clamp(px(0.), self.max_scroll());
+        if offset == self.scroll_y {
+            return;
+        }
+        self.scroll_y = offset;
+        self.autoscroll = false;
+        cx.notify();
+    }
+
+    fn git_popup_view(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let popup = self.git_popup.as_ref()?;
+        if popup.version != self.version
+            || !self.buffer.read(cx).git_base.as_ref().is_some_and(|base| Arc::ptr_eq(base, &popup.baseline))
+        {
+            self.git_popup = None;
+            return None;
+        }
+        let width = self.layout.as_ref().map_or(px(600.), |l| (l.viewport.size.width - px(20.)).min(px(600.)));
+        let height = px(20.) * popup.before.len().max(popup.after.len()).min(8) as f32;
+        let column = |side: &'static str, title: &'static str, lines: Arc<Vec<String>>| {
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(div().px(px(8.)).py(px(4.)).text_color(theme::text_secondary()).child(title))
+                .child(
+                    gpui::uniform_list(side, lines.len(), move |range, _, _| {
+                        range
+                            .map(|i| {
+                                let text = lines[i].clone();
+                                div()
+                                    .h(px(20.))
+                                    .px(px(8.))
+                                    .font_family(theme::CODE_FONT)
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .debug_selector(move || format!("git {side}: {text}"))
+                                    .child(lines[i].clone())
+                            })
+                            .collect()
+                    })
+                    .h(height)
+                    .w_full(),
+                )
+        };
+        Some(
+            div()
+                .id("git-change-popup")
+                .debug_selector(|| "git change popup".into())
+                .occlude()
+                .absolute()
+                .left(popup.at.x)
+                .top(popup.at.y)
+                .w(width)
+                .rounded(px(6.))
+                .bg(theme::popup())
+                .border_1()
+                .border_color(theme::popup_border())
+                .shadow_lg()
+                .text_size(px(13.))
+                .text_color(theme::text())
+                .cursor(CursorStyle::Arrow)
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .child(div().flex().child(column("before", "Before", popup.before.clone())).child(column(
+                    "after",
+                    "After",
+                    popup.after.clone(),
+                )))
+                .child(
+                    div().flex().justify_end().p(px(6.)).child(
+                        div()
+                            .id("git-rollback-lines")
+                            .debug_selector(|| "git rollback lines".into())
+                            .cursor(CursorStyle::PointingHand)
+                            .px(px(8.))
+                            .py(px(4.))
+                            .rounded(px(4.))
+                            .hover(|d| d.bg(theme::button_hover()))
+                            .child("Rollback Lines")
+                            .on_click(cx.listener(|editor, _, window, cx| {
+                                let Some(popup) = editor.git_popup.take() else {
+                                    return;
+                                };
+                                if popup.version == editor.version
+                                    && editor
+                                        .buffer
+                                        .read(cx)
+                                        .git_base
+                                        .as_ref()
+                                        .is_some_and(|base| Arc::ptr_eq(base, &popup.baseline))
+                                {
+                                    let head = popup.edit.range.start;
+                                    editor.apply(
+                                        EditPlan {
+                                            edits: vec![popup.edit],
+                                            selections: vec![Selection::caret(head)],
+                                            ..EditPlan::default()
+                                        },
+                                        cx,
+                                    );
+                                }
+                                window.focus(&editor.focus);
+                                cx.notify();
+                            })),
+                    ),
+                )
+                .into_any_element(),
+        )
     }
 
     fn utf16_to_offset(&self, utf16: usize) -> usize {
@@ -1062,8 +1233,10 @@ impl Render for CodeEditor {
             self.refresh_assist(cx);
         }
         let popup = self.popup_view(cx);
+        let git_popup = self.git_popup_view(cx);
         let element = div()
             .id("code-editor")
+            .debug_selector(|| "editor surface".into())
             .key_context("CodeEditor")
             .track_focus(&self.focus)
             .size_full()
@@ -1095,6 +1268,7 @@ impl Render for CodeEditor {
             .on_action(cx.listener(|e, _: &SafeDelete, window, cx| e.safe_delete(window, cx)))
             .child(EditorElement { editor: cx.entity() })
             .children(popup)
+            .children(git_popup)
     }
 }
 
@@ -1442,6 +1616,9 @@ impl Element for EditorElement {
         let selections = editor.carets.as_slice().to_vec();
         let diagnostics = editor.buffer.read(cx).diagnostics.clone();
         let gutter_hovered = editor.gutter_hovered;
+        let git_hunks = editor.buffer.read(cx).git_hunks.clone();
+        let git_lines = editor.buffer.read(cx).document.text().len_lines();
+        let git_visible = editor.console.is_none();
         let shown_bytes = state.rows.first().map_or(0, |r| r.start)..state.rows.last().map_or(0, |r| r.end);
         let from = editor.search_matches.partition_point(|m| m.end < shown_bytes.start);
         let to = editor.search_matches.partition_point(|m| m.start <= shown_bytes.end);
@@ -1451,6 +1628,7 @@ impl Element for EditorElement {
         let top_of = |row: usize| state.text_origin.y + line_height * row as f32;
         let mut chevrons = Vec::new();
         let mut placeholders = Vec::new();
+        let mut git_changes = Vec::new();
 
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
             let shown = state.first_row..state.first_row + state.lines.len();
@@ -1514,6 +1692,43 @@ impl Element for EditorElement {
                         _ => shaped.x_for_index(to - start),
                     };
                     band(window, x0, x1, theme::editor::selection());
+                }
+                if git_visible {
+                    let last_line = state
+                        .fold_marks
+                        .get(i)
+                        .and_then(|f| f.as_ref())
+                        .filter(|(_, folded)| *folded)
+                        .filter(|_| span.last)
+                        .map_or(span.line, |(fold, _)| text.byte_to_line(fold.range.end.min(text.len_bytes())));
+                    let from = git_hunks.partition_point(|h| {
+                        if h.after.is_empty() {
+                            h.after.start.min(git_lines.saturating_sub(1)) < span.line
+                        } else {
+                            h.after.end <= span.line
+                        }
+                    });
+                    if let Some(hunk) = git_hunks.get(from).filter(|h| {
+                        if h.after.is_empty() {
+                            h.after.start.min(git_lines.saturating_sub(1)) <= last_line
+                        } else {
+                            h.after.start <= last_line
+                        }
+                    }) {
+                        let color = if hunk.after.is_empty() {
+                            theme::editor::diff_deleted()
+                        } else if hunk.before.is_empty() {
+                            theme::editor::diff_inserted()
+                        } else {
+                            theme::modified()
+                        };
+                        window.paint_quad(fill(
+                            Bounds::new(point(bounds.origin.x + px(2.), top), size(px(3.), line_height)),
+                            color,
+                        ));
+                        git_changes
+                            .push((Bounds::new(point(bounds.origin.x, top), size(px(10.), line_height)), hunk.clone()));
+                    }
                 }
                 if let Some(Some(number)) = state.line_numbers.get(i) {
                     let _ = number.paint(
@@ -1592,10 +1807,29 @@ impl Element for EditorElement {
         let lines = std::mem::take(&mut state.lines);
         let (first_row, text_origin, char_width) = (state.first_row, state.text_origin, state.char_width);
         self.editor.update(cx, |editor, _| {
-            editor.layout =
-                Some(Layout { text_origin, char_width, viewport: bounds, first_row, lines, chevrons, placeholders })
+            editor.layout = Some(Layout {
+                text_origin,
+                char_width,
+                viewport: bounds,
+                first_row,
+                lines,
+                chevrons,
+                placeholders,
+                git_changes,
+            })
         });
     }
+}
+
+fn git_preview_lines(text: &str) -> Vec<String> {
+    let mut lines: Vec<_> =
+        text.split_inclusive('\n').map(|line| line.trim_end_matches(['\r', '\n']).to_owned()).collect();
+    if text.is_empty() {
+        lines.push("(empty)".to_owned());
+    } else if !text.ends_with('\n') {
+        lines.push("\\ No newline at end of file".to_owned());
+    }
+    lines
 }
 
 /// A row as shaped: its text with the inlay hints set in it, and where each hint went (its byte in the row and

@@ -32,6 +32,9 @@ fn main() {
     // target/<profile>/sidecars, beside the executables, whichever crate's build asked.
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let sidecars = out.ancestors().nth(3).expect("OUT_DIR is target/<profile>/build/<crate>/out").join("sidecars");
+    // What the command printed, its warnings and errors included, told apart from its answer below: MSBuild says
+    // "MSBuild server unavailable ... Falling back to an in-process build" on stderr where a server cannot start, and
+    // that line must not be read as the property asked for.
     let run = |args: &[&str], project: &Path| {
         let output = Command::new(&dotnet)
             .args(args)
@@ -39,9 +42,10 @@ fn main() {
             .args(["-nologo", "-v", "q"])
             .output()
             .unwrap_or_else(|e| panic!("dotnet {} could not run: {e}", args.join(" ")));
-        let said = String::from_utf8_lossy(&output.stdout).into_owned() + &String::from_utf8_lossy(&output.stderr);
-        assert!(output.status.success(), "dotnet {} {} failed:\n{said}", args.join(" "), project.display());
-        said
+        let said = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+        let (answer, errors) = (said(&output.stdout), said(&output.stderr));
+        assert!(output.status.success(), "dotnet {} {} failed:\n{answer}{errors}", args.join(" "), project.display());
+        answer
     };
     let host_out = sidecars.join("host");
     let extension_out = sidecars.join("roslyn-extension");
