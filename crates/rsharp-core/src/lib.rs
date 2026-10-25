@@ -20,5 +20,6 @@ pub mod solution;
 pub mod solution_edits;
 pub mod state;
 pub mod templates;
+pub mod testing;
 pub mod trash;
 pub mod watcher;

@@ -49,6 +49,10 @@ pub fn open(editor: Entity<CodeEditor>, at: Point<Pixels>, cx: &mut App) -> Opti
 }
 
 impl EditorWindow {
+    pub(crate) fn buffers(&self, cx: &App) -> Vec<Entity<crate::buffer::Buffer>> {
+        self.area.groups.iter().flat_map(|g| &g.tabs).map(|tab| tab.editor.read(cx).buffer.clone()).collect()
+    }
+
     /// Each tab's file name, as a person reads the tab strip.
     pub fn tabs(&self, cx: &App) -> Vec<String> {
         self.area

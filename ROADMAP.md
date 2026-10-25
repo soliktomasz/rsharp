@@ -191,17 +191,21 @@ added, copied, removed and edited over the window, listed before the projects' g
 are. The fourth slice, Hot Reload: Settings' Hot Reload runs a project under `dotnet watch` (no launch profile, so
 the plan's arguments, environment and browser still hold), a save applies itself or restarts the program, Apply
 Hot Reload Changes (Alt+F10) saves for it, and what watch made of a save is said in the person's words. Unit
-Tests remain the next slice. Run in the terminal waits for Phase 6.
+Tests now find test methods from tree-sitter before a build, follow unsaved shared buffers and watched files,
+and run through native Rust clients for Microsoft.Testing.Platform and VSTest. The docked tree merges runner
+rows and target frameworks, keeps Rider's Group By and outcome filters with the folder, and shows results,
+output, attachments and source links. Run All, context/selected tests and failed tests save and build first;
+Stop and leaving the workspace end the hosts. Run in the terminal waits for Phase 6.
 - Builds through `DotnetCommand` with the host's hold, read for errors, and the Build window.
 - Run configurations: from launchSettings, the folder's own, and Edit Configurations; `LaunchPlan`; Run in the
   terminal; console links; the browser opened once the port answers. (all but Run in the terminal, which waits
   for Phase 6.)
 - Hot Reload under dotnet watch. (In.)
 - **Unit tests:**
-  - `TestFinder` reads tests from code before any build, with tree-sitter, so no parse runs in .NET.
-  - Microsoft.Testing.Platform's JSON-RPC, in Rust.
-  - VSTest through its JSON protocol to `vstest.console` (or a small sidecar if the object model proves needed).
-  - The Unit Tests window, with Rider's Group By.
+  - `TestFinder` reads tests from code before any build, with tree-sitter, so no parse runs in .NET. (In.)
+  - Microsoft.Testing.Platform's JSON-RPC, in Rust. (In.)
+  - VSTest through its JSON protocol to `vstest.console`, without another sidecar. (In.)
+  - The Unit Tests window, with Rider's Group By. (In.)
 
 Passenger: `Run/`, `Testing/`, `ToolWindows/`; issues #155, #198, #203, #206.
 Done when: Run, Build, Run with Hot Reload and the test tree work on a web app, a console app and an xunit v3

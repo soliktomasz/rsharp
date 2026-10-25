@@ -37,6 +37,7 @@ use crate::window::{
 };
 use crate::window::{NewProject, NewSolution};
 use crate::window::{RecentLocations, ReplaceInFiles, SearchEverywhere};
+use crate::window::{RefreshTests, RerunFailedTests, RunAllTests, RunTests, ToggleUnitTests};
 use gpui::{Action, Menu, MenuItem};
 
 pub struct IdeAction {
@@ -68,6 +69,11 @@ pub static ALL: &[IdeAction] = &[
     ide!("Apply Hot Reload Changes", "Run", ["hot reload", "apply changes", "dotnet watch"], ApplyHotReloadChanges),
     ide!("Stop", "Run", ["stop build", "cancel build", "stop program"], Stop),
     ide!("Run Window", "View", ["run output", "console", "tool window"], ToggleRun),
+    ide!("Unit Tests", "View", ["unit tests window", "test tree", "tool window"], ToggleUnitTests),
+    ide!("Run All Tests", "Run", ["unit tests", "test solution"], RunAllTests),
+    ide!("Run Unit Tests", "Run", ["selected tests", "test context"], RunTests),
+    ide!("Rerun Failed Tests", "Run", ["failed unit tests"], RerunFailedTests),
+    ide!("Refresh Tests", "Run", ["test discovery", "find tests"], RefreshTests),
     ide!("New Solution…", "File", ["create solution"], NewSolution),
     ide!("New Project…", "File", ["add project", "create project"], NewProject),
     ide!("Open…", "File", ["open folder", "open solution", "open project"], OpenFolder),

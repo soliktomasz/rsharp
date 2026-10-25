@@ -9,6 +9,8 @@ use std::ops::Range;
 use std::sync::OnceLock;
 use tree_sitter::{InputEdit, Language, Node, Parser, Point, Query, QueryCursor, StreamingIterator, Tree};
 
+pub mod testing;
+
 /// What a piece of C# is, in Rider's colour scheme's terms.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Kind {

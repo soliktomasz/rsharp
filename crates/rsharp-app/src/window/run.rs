@@ -548,6 +548,7 @@ impl MainWindow {
 
     /// Stop, from the Run menu, Find Action or the console: whichever of a build and a run is under way ends.
     pub(super) fn stop_everything(&mut self, cx: &mut Context<Self>) {
+        self.stop_tests(cx);
         if self.is_building() {
             self.cancel_build();
         }
@@ -673,7 +674,7 @@ impl MainWindow {
                 .when(self.chosen_run_configuration().is_some(), |d| {
                     d.on_action(cx.listener(|m, _: &RerunProgram, _, cx| m.rerun(cx)))
                 })
-                .when(self.is_running() || self.is_building(), |d| {
+                .when(self.is_running() || self.is_building() || self.is_testing(), |d| {
                     d.on_action(cx.listener(|m, _: &Stop, _, cx| m.stop_everything(cx)))
                 })
         })

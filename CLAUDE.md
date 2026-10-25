@@ -94,6 +94,13 @@ terminal and takes focus for a moment.
   through a tree cursor: a node's own sibling steps find its parent from the root) and the bracket pairs come from
   the same tree. tree-sitter's incremental parse grows with the members of one class, so a file over 4 MB is parsed
   once typing pauses; `tests/budget.rs` holds the UI thread's work per key flat on a file ten times larger.
+  `testing` reads test declarations, traits and caret context from that same tree, without visiting method bodies.
+- Unit tests: `rsharp-core::testing` owns test identities, MSBuild's actual target paths, and native Rust socket
+  clients for Microsoft.Testing.Platform and VSTest. `rsharp-app::test_finder` caches closed files by stamp and
+  overlays shared-buffer syntax reads; typed updates use cached listings without disk walks. `test_view` owns
+  Rider's Group By, filters, merged source/runner tree and results; `window/tests.rs` saves and builds first,
+  crosses worker events to the UI, and cancels hosts on Stop or workspace close. Grouping/filter choices live in
+  the folder's `unitTests.json`.
 - `crates/rsharp-lsp`: the LSP client (JSON-RPC over stdio, a reader thread, `ServerFailed` the one failure; a
   server's request the client answers itself, as `passenger/projectInfo`, on a thread of its own) and `start_roslyn`,
   which runs Roslyn with `--clientProcessId`, so it ends with the IDE even after a crash. Its `build.rs` publishes
