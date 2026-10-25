@@ -146,6 +146,15 @@ fn started_filtering(
     (session, events)
 }
 
+/// Passenger's `LoopingConsoleApp`, built once per test as its case asks.
+fn looping_program() -> Option<PathBuf> {
+    if adapter().is_none() || rsharp_core::programs::dotnet().is_none() || debuggees().is_none() {
+        eprintln!("skipped: dotnet, the adapter or Passenger's debuggees are not there");
+        return None;
+    }
+    build("LoopingConsoleApp")
+}
+
 fn launched(program: &Path, arguments: &[&str]) -> (Session, Receiver<Event>) {
     started(program, arguments, Vec::new(), true)
 }
@@ -660,5 +669,67 @@ fn a_lambda_on_the_line_is_stepped_into_when_what_it_is_handed_to_runs_it() {
     assert!(top.name.contains(">b__"), "the frame is the lambda's own method: {top:?}");
     let locals = locals_of(&session, top);
     assert_eq!(locals.iter().find(|variable| variable.name == "n").map(|variable| variable.value.as_str()), Some("1"));
+    session.disconnect(true);
+}
+
+#[test]
+fn an_evaluation_that_waits_on_another_thread_is_stopped_and_says_why() {
+    let _serial = one_at_a_time();
+    let Some(program) = looping_program() else { return };
+    let source = rsharp_core::paths::canonical(
+        &debuggees().expect("the debuggees are there").join("LoopingConsoleApp/Program.cs"),
+    );
+    let line = line_of("LoopingConsoleApp", "stop while counting");
+    let (session, events) = started(
+        &program,
+        &["count"],
+        vec![(source, vec![SourceBreakpoint { line: line - 1, ..SourceBreakpoint::default() }])],
+        false,
+    );
+
+    let stopped = stop(&events, "breakpoint");
+    let frames = session.stack_trace(stopped.thread).expect("the stack reads");
+    let top = frames.first().expect("the stop has a frame");
+    let waited = session.evaluate("Counter.Next", top.id).expect("the evaluation answers");
+    assert!(
+        waited.result.contains("another thread"),
+        "the evaluation that waits on the paused program's other thread is stopped and says why: {}",
+        waited.result
+    );
+    let after = session.evaluate("1 + 1", top.id).expect("the next evaluation answers");
+    assert_eq!(after.result, "2", "the session goes on answering after it");
+    session.disconnect(true);
+}
+
+#[test]
+fn a_condition_that_calls_a_method_stops_a_parallel_loop_on_its_matching_iteration() {
+    let _serial = one_at_a_time();
+    let Some(program) = looping_program() else { return };
+    let source = rsharp_core::paths::canonical(
+        &debuggees().expect("the debuggees are there").join("LoopingConsoleApp/Program.cs"),
+    );
+    let line = line_of("LoopingConsoleApp", "each iteration");
+    let (session, events) = started(
+        &program,
+        &["parallel"],
+        vec![(
+            source,
+            vec![SourceBreakpoint {
+                line: line - 1,
+                condition: Some("i.ToString() == \"377\"".into()),
+                ..SourceBreakpoint::default()
+            }],
+        )],
+        false,
+    );
+
+    let stopped = stop(&events, "breakpoint");
+    let frames = session.stack_trace(stopped.thread).expect("the stack reads");
+    let locals = locals_of(&session, frames.first().expect("the stop has a frame"));
+    assert_eq!(
+        locals.iter().find(|variable| variable.name == "i").map(|variable| variable.value.as_str()),
+        Some("377"),
+        "the parallel loop stopped on the iteration its condition asked for: {locals:?}"
+    );
     session.disconnect(true);
 }

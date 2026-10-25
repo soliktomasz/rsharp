@@ -343,7 +343,8 @@ Passenger: `Debugging/`, `MainWindow.Attach.cs`, the Debugger notes in its CLAUD
 Done when: Passenger's debugger window tests, translated, pass on macOS, Windows x64 and Linux, against the same
 `tests/Debuggees`. The translation has begun: `crates/rsharp-dap/tests/passenger.rs` runs `PauseTests`' three through
 the client against `LoopingConsoleApp` (a pause in its loop and a second after continuing, a step from a pause in its
-sleep back to the loop, and a TimeSpan's fields where its ToString cannot run), and `SteppingConsoleApp`'s stepping,
+sleep back to the loop, a TimeSpan's fields where its ToString cannot run, an evaluation that waits on the paused
+program's other thread being stopped with its reason, and a parallel loop's condition stopping it on its iteration), and `SteppingConsoleApp`'s stepping,
 await and returned-value cases (into `Inner()` and out, over to the next statement, over an await, and the values
 `Describe(Count())` returned), its Smart Step Into cases (the calls of `Outer(Inner())` in the order they run, the one
 chosen stepped into, and the second of two `Add` calls), and its synthetic variables (what each call a step ran

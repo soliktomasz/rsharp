@@ -285,7 +285,9 @@ skips, saying why, when the tool is not installed.
 Debug tests use real dotnet programs: `crates/rsharp-dap/tests/passenger.rs` translates Passenger's own debugger
 tests against the same `tests/Debuggees` — `PauseTests`' three first, with `LoopingConsoleApp`: a pause stops its loop
 and a second pause after continuing does too, a step from a pause inside its sleep comes back to the loop, and a
-TimeSpan paused there shows its fields where its ToString cannot run; then `SteppingConsoleApp`'s cases: a step into
+TimeSpan paused there shows its fields where its ToString cannot run, an evaluation that waits on the paused program's
+other thread is stopped and says why, and a breakpoint condition calling a method stops a parallel loop on the
+iteration it names; then `SteppingConsoleApp`'s cases: a step into
 `Inner()` and out of it comes back to `Outer(Inner())`, a step over goes to the next statement, a step over the await
 goes on after it, and the values `Describe(Count())` returned are among the locals; and Smart Step Into's two: the
 calls of `Outer(Inner())` listed in the order they run and placed on their names, the one chosen stepped into past
