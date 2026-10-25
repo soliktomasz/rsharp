@@ -303,7 +303,8 @@ locals with their types, a struct's `Id` and `Name`, the object's properties and
 `Static members`, an exception thrown in a parallel loop stops where it was thrown, its `exceptionInfo` giving the
 message, a stack lists the program's frames and the library's between them (the selector's line and column, the
 library's frames with no source and a subtle hint, the call's frame and `Main`), and a stop inside a lambda lists the
-ten values it closes over and `this`; `crates/rsharp-dap/tests/session.rs` stops one
+ten values it closes over and `this`, and a step through an async method goes over its sync statements and awaits,
+into the awaited method and out again; `crates/rsharp-dap/tests/session.rs` stops one
 at a breakpoint through the client alone (frames, locals, evaluate, a step, its output) and `crates/rsharp-app/tests/debugger.rs` the same
 through the window (F9, F5, the Debug window's buttons and lists, the marked line, resume to the end), along with
 the Breakpoints dialog's condition and mute, a false condition and a logpoint as the adapter runs them, Any

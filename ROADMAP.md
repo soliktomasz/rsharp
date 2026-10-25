@@ -336,8 +336,14 @@ saying why, when dotnet or the adapter is not there. macOS is where they ran; Wi
   them under a `decompiled/…` path that no file on disk has; the client would have to read the embedded source out of
   the PDB, or a decompiler of its own would. The client's side — `isResolved` on a frame and `resolveStackFrame` —
   was written and taken back out until then.)
-- Hot Reload while debugging. (Not yet.)
-- Attach to Process on Windows. (Not yet: its named pipes are not read.)
+- Hot Reload while debugging. (Not yet. The adapter's side is there — launch's `hotReload` flag, `hotReloadState` and
+  `applyChanges` with the changed files — so what is missing is the IDE's: a save while a session runs sends the
+  changed text and shows the adapter's answer, as Rider's Apply changes on save does. It needs the debug console to
+  report each module's result, and a test that edits a line, saves, resumes and sees the program print the new value.)
+- Attach to Process on Windows. (Not yet: the Windows listing reads the process's `dotnet-diagnostic-<pid>` named pipe,
+  which is not read; macOS's `clr-debug-pipe` and Linux's `/proc` are.)
+- Data breakpoints (Windows x64's to offer). (Not yet: the adapter answers `dataBreakpointInfo` and
+  `setDataBreakpoints`, and ICorDebug offers them only for Windows x64, so no macOS test can say they work.)
 
 Passenger: `Debugging/`, `MainWindow.Attach.cs`, the Debugger notes in its CLAUDE.md; issues #145–#157, #214, #219.
 Done when: Passenger's debugger window tests, translated, pass on macOS, Windows x64 and Linux, against the same
@@ -354,7 +360,8 @@ from a breakpoint on its statement's column), an evaluation in a paused frame an
 members and calls, a paused frame's locals and their members (a struct's, the object's, an enum's values) on
 `DebuggableConsoleApp`, an exception thrown in a parallel loop stopping where it was thrown, its message read
 through `exceptionInfo`, a stack naming the program's frames and the library's between them, each placed or subtle as
-Passenger's test expects, and a stop inside a lambda listing the values it closes over.
+Passenger's test expects, a stop inside a lambda listing the values it closes over, and a step through an async method
+and the method it awaits, each stop on the line Passenger's AsyncStepTests names.
 
 ### Phase 9: Avalonia and WPF (L)
 - A XAML host: `Passenger.Xaml` behind a thin JSON-lines (or LSP) process, giving completion, diagnostics,

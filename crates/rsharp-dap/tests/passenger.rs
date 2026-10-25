@@ -1008,3 +1008,53 @@ fn a_stop_inside_a_lambda_lists_the_values_it_closes_over() {
     assert_eq!(this.value, "{DebuggableConsoleApp.Lambdas.MyLambdaClass}");
     session.disconnect(true);
 }
+
+/// The stop's top frame: the file it is in (empty when none) and its line, counted from 1.
+fn top_of(session: &Session, stop: &rsharp_dap::Stop) -> (String, usize) {
+    let frames = session.stack_trace(stop.thread).expect("the stack reads");
+    let top = frames.first().expect("the stop has a frame");
+    (top.path().map(|path| path.to_string_lossy().into_owned()).unwrap_or_default(), top.line + 1)
+}
+
+#[test]
+fn stepping_through_an_async_method_and_the_method_it_awaits() {
+    let _serial = one_at_a_time();
+    let Some(program) = debuggee_program("DebuggableConsoleApp") else { return };
+    let debuggees = debuggees().expect("the debuggees are there");
+    let async_class = rsharp_core::paths::canonical(&debuggees.join("DebuggableConsoleApp/MyAsyncClass.cs"));
+    let (session, events) = started(
+        &program,
+        &[],
+        vec![(async_class, vec![SourceBreakpoint { line: 8, ..SourceBreakpoint::default() }])],
+        false,
+    );
+
+    let mut stopped = stop(&events, "breakpoint");
+    assert_eq!(top_of(&session, &stopped).1, 9, "the first statement");
+
+    // Passenger's AsyncStepTests: over the sync statement, to the await, over the await, to the next
+    // await. The thread may change after an await, so each step names the stop's own.
+    for expected in [10, 11, 12, 13] {
+        session.step_over(stopped.thread).expect("a step over is asked");
+        stopped = stop(&events, "step");
+        let (file, line) = top_of(&session, &stopped);
+        assert!(file.ends_with("MyAsyncClass.cs"), "still in the async method: {file}");
+        assert_eq!(line, expected);
+    }
+
+    // Into the awaited method, then into its statement, then out to where the await was.
+    session.step_into(stopped.thread).expect("a step into is asked");
+    let into = stop(&events, "step");
+    let (file, line) = top_of(&session, &into);
+    assert!(file.ends_with("AnotherClass.cs"), "in the awaited method: {file}");
+    assert_eq!(line, 18, "its own line");
+    session.step_into(into.thread).expect("a step into is asked again");
+    let inside = stop(&events, "step");
+    assert_eq!(top_of(&session, &inside), (top_of(&session, &into).0, 19), "its first statement");
+    session.step_out(inside.thread).expect("a step out is asked");
+    let out = stop(&events, "step");
+    let (file, line) = top_of(&session, &out);
+    assert!(file.ends_with("MyAsyncClass.cs"), "back in the async method: {file}");
+    assert_eq!(line, 14, "where the await was");
+    session.disconnect(true);
+}
