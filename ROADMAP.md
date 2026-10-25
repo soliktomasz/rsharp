@@ -332,6 +332,8 @@ the program in that method wherever it is, as does a line breakpoint. The window
 buttons and its frame list, and checks the marked line and the program's output; both debugger suites skip,
 saying why, when dotnet or the adapter is not there. macOS is where they ran; Windows and Linux are CI's.
 - Data breakpoints (Windows x64's to offer). (Not yet.)
+- A breakpoint's column: Passenger's lambda case puts one on the statement's column so the breakpoint binds the
+  lambda's body, and this client sends only the line. (Not yet.)
 - Decompiled symbols. (Not yet: the adapter's `resolveStackFrame` writes a PDB whose sources are embedded, and names
   them under a `decompiled/…` path that no file on disk has; the client would have to read the embedded source out of
   the PDB, or a decompiler of its own would. The client's side — `isResolved` on a frame and `resolveStackFrame` —
