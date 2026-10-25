@@ -286,7 +286,8 @@ the Breakpoints dialog's condition and mute, a false condition and a logpoint as
 exception turned off before an unhandled exception, attaching to a program the test started (its breakpoint is
 hit, then Stop detaches and the program runs on), and Evaluate Expression answering in the paused frame before
 Set Next Statement moves the thread back to the caret's line, and a local set with Set Value making the program
-print its new total; both skip, saying why, when dotnet or the adapter is not there.
+print its new total, and a program's Main and worker threads listed before the other is chosen and its frames read;
+both skip, saying why, when dotnet or the adapter is not there.
 
 Git tests build real repositories and, when a remote is needed, a bare one beside them — never the person's and
 never a network service: `crates/rsharp-core/tests/git.rs` the repository alone (porcelain records, odd paths,

@@ -24,6 +24,8 @@ pub(super) struct DebugState {
     thread: Option<i64>,
     /// The frames of the stopped thread, innermost first.
     frames: Vec<rsharp_dap::protocol::Frame>,
+    /// The paused program's threads, as last read.
+    threads: Vec<rsharp_dap::protocol::Thread>,
     /// The file the program is stopped in, whose buffer shows the execution line.
     shown_at: Option<PathBuf>,
     /// What the debugger made of each breakpoint: whether it will be hit, and why not.
@@ -48,6 +50,7 @@ impl DebugState {
             after_build: None,
             thread: None,
             frames: Vec::new(),
+            threads: Vec::new(),
             shown_at: None,
             verification: BTreeMap::new(),
             attached: None,
@@ -346,8 +349,16 @@ impl MainWindow {
                 session.set_next_statement(thread, target.id)?;
                 read_stop(&session, thread)
             },
-            |m, (frames, variables), window, cx| {
-                m.show_stopped("Paused where Set Next Statement put it".into(), None, frames, variables, window, cx);
+            |m, (threads, frames, variables), window, cx| {
+                m.show_stopped(
+                    "Paused where Set Next Statement put it".into(),
+                    None,
+                    threads,
+                    frames,
+                    variables,
+                    window,
+                    cx,
+                );
             },
         );
     }
@@ -674,7 +685,9 @@ impl MainWindow {
                     return;
                 }
                 match read {
-                    Ok((frames, variables)) => m.show_stopped(status, at, frames, variables, window, cx),
+                    Ok((threads, frames, variables)) => {
+                        m.show_stopped(status, at, threads, frames, variables, window, cx)
+                    }
                     Err(why) => m.fail_debug(&why, cx),
                 }
             });
@@ -687,6 +700,7 @@ impl MainWindow {
         &mut self,
         status: String,
         at: Option<(PathBuf, usize)>,
+        threads: Vec<rsharp_dap::protocol::Thread>,
         frames: Vec<rsharp_dap::protocol::Frame>,
         variables: Vec<VariableRow>,
         window: &mut Window,
@@ -708,9 +722,21 @@ impl MainWindow {
             .collect();
         let at = at.or_else(|| frames.first().and_then(|frame| frame.path().map(|path| (path, frame.line))));
         self.debug.frames = frames;
+        self.debug.threads = threads;
         self.debug.phase = Phase::Paused;
+        let threads: Vec<crate::debug_view::ThreadRow> = self
+            .debug
+            .threads
+            .iter()
+            .map(|thread| crate::debug_view::ThreadRow {
+                id: thread.id,
+                name: if thread.name.is_empty() { format!("Thread {}", thread.id) } else { thread.name.clone() },
+            })
+            .collect();
+        let chosen = self.debug.thread;
         self.debug_view.update(cx, |view, cx| {
             view.stopped(&status, rows, cx);
+            view.set_threads(threads, chosen, cx);
             view.set_variables(variables, cx);
         });
         if let Some((path, line)) = at {
@@ -802,6 +828,7 @@ impl MainWindow {
 
     /// Resume: the paused program goes on from where it stopped.
     pub(super) fn resume_debug(&mut self, cx: &mut Context<Self>) {
+        self.debug.threads.clear();
         if self.debug.phase != Phase::Paused {
             return;
         }
@@ -824,6 +851,7 @@ impl MainWindow {
 
     /// Step Over, Step Into or Step Out, as Rider's keys do them.
     pub(super) fn step_debug(&mut self, how: Step, cx: &mut Context<Self>) {
+        self.debug.threads.clear();
         if self.debug.phase != Phase::Paused {
             return;
         }
@@ -892,6 +920,7 @@ impl MainWindow {
 
     /// The session ended or was stopped: the lists go, and the status bar says how.
     fn finish_debug(&mut self, message: &str, cx: &mut Context<Self>) {
+        self.debug.threads.clear();
         self.evaluate_dialog = None;
         self.debug.session = None;
         self.debug.attached = None;
@@ -911,6 +940,7 @@ impl MainWindow {
 
     /// Leaving the folder: the session ends and everything it started with it.
     pub(super) fn leave_debug(&mut self, cx: &mut Context<Self>) {
+        self.debug.threads.clear();
         self.evaluate_dialog = None;
         self.debug.generation += 1;
         self.debug._task = None;
@@ -932,6 +962,7 @@ impl MainWindow {
     }
 
     fn refuse_debug(&mut self, message: &str, cx: &mut Context<Self>) {
+        self.debug.threads.clear();
         self.evaluate_dialog = None;
         self.debug.generation += 1;
         self.debug._task = None;
@@ -1195,6 +1226,7 @@ impl MainWindow {
             DebugAction::Evaluate(expression) => self.evaluate_watch(expression, cx),
             DebugAction::ToggleMute => self.set_breakpoints_muted(!self.debug.breakpoints.muted(), cx),
             DebugAction::SetValue { expression, value } => self.set_value(expression, value, cx),
+            DebugAction::SelectThread(id) => self.select_debug_thread(id, window, cx),
         }
     }
 
@@ -1295,6 +1327,26 @@ impl MainWindow {
         self.evaluate_dialog.clone()
     }
 
+    /// The paused program's threads as last read, for a test.
+    pub fn debug_threads(&self) -> &[rsharp_dap::protocol::Thread] {
+        &self.debug.threads
+    }
+
+    /// The thread whose frames the Debug window shows.
+    pub fn debug_thread(&self) -> Option<i64> {
+        self.debug.thread
+    }
+
+    /// A thread chosen: its frames and values are read and shown, the debugger's steps going to it from now on.
+    pub(super) fn select_debug_thread(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        if self.debug.phase != Phase::Paused {
+            return;
+        }
+        self.debug.thread = Some(id);
+        self.debug_view.update(cx, |view, cx| view.choose_thread(id, cx));
+        self.fetch_stopped("Paused".into(), None, id, window, cx);
+    }
+
     /// The Attach to Process dialog while it is open, for a test to drive.
     pub fn attach_dialog(&self) -> Option<Entity<crate::attach_dialog::AttachDialog>> {
         self.attach_dialog.clone()
@@ -1390,13 +1442,18 @@ fn variable_row(variable: rsharp_dap::protocol::Variable) -> VariableRow {
 }
 
 /// A stop's frames and the innermost frame's values, read on a thread that may wait.
-fn read_stop(session: &Session, thread: i64) -> Result<(Vec<rsharp_dap::protocol::Frame>, Vec<VariableRow>), String> {
+fn read_stop(
+    session: &Session,
+    thread: i64,
+) -> Result<(Vec<rsharp_dap::protocol::Thread>, Vec<rsharp_dap::protocol::Frame>, Vec<VariableRow>), String> {
+    let threads = session.threads().unwrap_or_default();
     let frames = session.stack_trace(thread)?;
     let variables = match frames.first() {
-        Some(frame) => read_variables(session, frame.id)?,
+        // A thread stopped outside the person's code has no locals to show, not a failure.
+        Some(frame) => read_variables(session, frame.id).unwrap_or_default(),
         None => Vec::new(),
     };
-    Ok((frames, variables))
+    Ok((threads, frames, variables))
 }
 
 fn read_variables(session: &Session, frame: i64) -> Result<Vec<VariableRow>, String> {

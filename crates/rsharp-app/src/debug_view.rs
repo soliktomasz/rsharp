@@ -38,6 +38,8 @@ pub enum DebugAction {
         expression: String,
         value: String,
     },
+    /// A thread of the paused program chosen: its frames and values are shown.
+    SelectThread(i64),
 }
 
 impl EventEmitter<DebugAction> for DebugView {}
@@ -48,6 +50,13 @@ pub enum Phase {
     Starting,
     Running,
     Paused,
+}
+
+/// A thread of the paused program, as the Threads list shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ThreadRow {
+    pub id: i64,
+    pub name: String,
 }
 
 /// A frame as the Frames list shows it.
@@ -84,6 +93,9 @@ pub struct DebugView {
     phase: Phase,
     /// What the window says of the session: starting, paused on what, why it ended.
     status: SharedString,
+    /// The paused program's threads, shown above the frames when there is more than one.
+    threads: Vec<ThreadRow>,
+    chosen_thread: Option<i64>,
     frames: Vec<FrameRow>,
     selected: usize,
     variables: Vec<Node>,
@@ -122,6 +134,8 @@ impl DebugView {
         Self {
             phase: Phase::Idle,
             status: "Not debugging".into(),
+            threads: Vec::new(),
+            chosen_thread: None,
             frames: Vec::new(),
             selected: 0,
             variables: Vec::new(),
@@ -156,6 +170,28 @@ impl DebugView {
         &self.status
     }
 
+    /// The paused program's threads, as the Threads list shows them.
+    pub fn threads(&self) -> &[ThreadRow] {
+        &self.threads
+    }
+
+    /// The thread chosen, whose frames the list shows.
+    pub fn chosen_thread(&self) -> Option<i64> {
+        self.chosen_thread
+    }
+
+    /// The program's threads and the one chosen, as a stop or a choice gives them.
+    pub fn set_threads(&mut self, threads: Vec<ThreadRow>, chosen: Option<i64>, cx: &mut Context<Self>) {
+        self.threads = threads;
+        self.chosen_thread = chosen;
+        cx.notify();
+    }
+
+    pub fn choose_thread(&mut self, id: i64, cx: &mut Context<Self>) {
+        self.chosen_thread = Some(id);
+        cx.notify();
+    }
+
     /// The frame chosen, if the program is paused.
     pub fn frame(&self) -> Option<&FrameRow> {
         self.frames.get(self.selected)
@@ -178,6 +214,8 @@ impl DebugView {
     pub fn running(&mut self, cx: &mut Context<Self>) {
         self.phase = Phase::Running;
         self.status = "Running".into();
+        self.threads.clear();
+        self.chosen_thread = None;
         self.frames.clear();
         self.variables.clear();
         cx.notify();
@@ -285,6 +323,8 @@ impl DebugView {
     pub fn finished(&mut self, status: &str, cx: &mut Context<Self>) {
         self.phase = Phase::Idle;
         self.status = status.to_string().into();
+        self.threads.clear();
+        self.chosen_thread = None;
         self.frames.clear();
         self.variables.clear();
         cx.notify();
@@ -419,6 +459,34 @@ impl Render for DebugView {
                             .flex_col()
                             .border_r_1()
                             .border_color(theme::separator())
+                            .children((self.threads.len() > 1).then(|| {
+                                let rows: Vec<gpui::AnyElement> = self
+                                    .threads
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(index, thread)| {
+                                        let chosen = self.chosen_thread == Some(thread.id);
+                                        let id = thread.id;
+                                        div()
+                                            .id(("debug thread", index))
+                                            .debug_selector(move || format!("debug thread {index}"))
+                                            .h(px(24.))
+                                            .px(px(6.))
+                                            .rounded(px(4.))
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(6.))
+                                            .when(chosen, |d| d.bg(theme::selection()))
+                                            .when(!chosen, |d| d.hover(|d| d.bg(theme::row_hover())))
+                                            .child(div().flex_1().min_w_0().truncate().child(thread.name.clone()))
+                                            .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                                                cx.emit(DebugAction::SelectThread(id))
+                                            }))
+                                            .into_any_element()
+                                    })
+                                    .collect();
+                                div().flex().flex_col().child(label("Threads")).children(rows)
+                            }))
                             .child(label("Frames"))
                             .child(
                                 div()

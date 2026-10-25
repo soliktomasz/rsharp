@@ -251,7 +251,8 @@ Soft rounded rectangles at four radii: 10px for islands, 6px for tabs, toolbar w
 ### Debug Window
 - The toolbar is 32px: 28px square buttons with 16px icons (Resume, Pause, Step Over, Step Into, Step Out, Stop),
   dimmed to 35% while they cannot act, and the session's state at the right in text-secondary.
-- Frames and Variables share the body: Frames is a 300px column of 24px rows (the chosen frame in selection) and
+- Frames and Variables share the body: Frames is a 300px column of 24px rows (a paused program's threads above it
+  when there is more than one, the chosen thread in selection; the chosen frame in selection) and
   Variables takes the rest, its rows indented 18px a level with a 12px chevron (the chosen variable in selection,
   with a 28px Set value row — a field and a Set button — under the tree while one is chosen); Watches sit under it
   around a 28px search-field-styled row. The console is a bordered-off share of the bottom under a 24px "Console" label.

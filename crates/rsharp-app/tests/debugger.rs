@@ -536,3 +536,44 @@ fn set_value_changes_a_local_and_the_program_goes_on_with_it() {
     let output = main.read_with(cx, |main, cx| main.debug_console().read(cx).text());
     assert!(output.contains("answer 11"), "the program went on with a = 10: {output:?}");
 }
+
+const THREADS_PROGRAM: &str = "using System;\nusing System.Threading;\n\nclass Program\n{\n    static void Main()\n    {\n        var worker = new Thread(Work) { Name = \"worker\" };\n        worker.Start();\n        worker.Join();\n    }\n\n    static void Work()\n    {\n        var total = 0;\n        for (var i = 0; i < 100; i++)\n        {\n            total += i;\n            Thread.Sleep(50);\n        }\n    }\n}\n";
+
+#[test]
+fn the_debug_window_lists_a_paused_programs_threads_and_choosing_one_shows_its_frames() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-threads", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(&run.folder, "App/Program.cs", THREADS_PROGRAM);
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((17, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    cx.simulate_keystrokes("f5");
+    let paused = pump(cx, |cx| main.read_with(cx, |main, _| main.debug_phase() == Phase::Paused));
+    assert!(paused, "the worker thread did not reach the breakpoint");
+
+    let threads: Vec<i64> = main.read_with(cx, |main, _| main.debug_threads().iter().map(|thread| thread.id).collect());
+    assert!(threads.len() >= 2, "the paused program's Main and worker threads are listed: {threads:?}");
+    assert!(cx.debug_bounds("debug thread 0").is_some(), "the Debug window shows the Threads list");
+    let chosen = main.read_with(cx, |main, _| main.debug_thread());
+    let other = threads.iter().position(|id| Some(*id) != chosen).expect("a thread other than the stopped one");
+    click(cx, if other == 0 { "debug thread 0" } else { "debug thread 1" });
+    let picked = pump(cx, |cx| main.read_with(cx, |main, _| main.debug_thread() == Some(threads[other])));
+    assert!(picked, "choosing a thread did not make it the one shown");
+    assert!(!main.read_with(cx, |main, _| main.debug_frames().is_empty()), "the chosen thread's frames are listed");
+    assert_eq!(
+        main.read_with(cx, |main, cx| main.debug_view().read(cx).chosen_thread()),
+        Some(threads[other]),
+        "the Threads list shows the chosen thread"
+    );
+    cx.simulate_keystrokes("shift-f5");
+}
