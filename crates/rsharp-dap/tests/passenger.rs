@@ -105,6 +105,7 @@ fn started(
             working_directory,
             environment: BTreeMap::new(),
             stop_at_entry: at_entry,
+            hot_reload: true,
         }),
         &std::env::temp_dir().join("rsharp-passenger-symbols"),
         breakpoints,
@@ -135,6 +136,7 @@ fn started_filtering(
             working_directory,
             environment: BTreeMap::new(),
             stop_at_entry: false,
+            hot_reload: true,
         }),
         &std::env::temp_dir().join("rsharp-passenger-symbols"),
         breakpoints,
@@ -1056,5 +1058,36 @@ fn stepping_through_an_async_method_and_the_method_it_awaits() {
     let (file, line) = top_of(&session, &out);
     assert!(file.ends_with("MyAsyncClass.cs"), "back in the async method: {file}");
     assert_eq!(line, 14, "where the await was");
+    session.disconnect(true);
+}
+
+#[test]
+fn a_launched_program_says_what_hot_reload_can_change() {
+    let _serial = one_at_a_time();
+    let Some(program) = debuggee_program("DebuggableConsoleApp") else { return };
+    let source = rsharp_core::paths::canonical(
+        &debuggees().expect("the debuggees are there").join("DebuggableConsoleApp/MyClass.cs"),
+    );
+    let (session, events) = started(
+        &program,
+        &[],
+        vec![(source, vec![SourceBreakpoint { line: 21, ..SourceBreakpoint::default() }])],
+        false,
+    );
+    let _stopped = stop(&events, "breakpoint");
+
+    let state = session.hot_reload_state().expect("the program says what it can take");
+    assert!(
+        state.capabilities.as_ref().is_some_and(|capabilities| !capabilities.is_empty()),
+        "the runtime's Edit and Continue capabilities: {state:?}"
+    );
+    assert!(state.capabilities_unknown.is_none(), "the runtime said them: {state:?}");
+    let module = state
+        .modules
+        .iter()
+        .find(|module| module.name.eq_ignore_ascii_case("DebuggableConsoleApp.dll"))
+        .unwrap_or_else(|| panic!("the program's own module is listed: {state:?}"));
+    assert!(module.editable, "its code can be edited as it runs: {module:?}");
+    assert!(module.path.is_some(), "and its file named: {module:?}");
     session.disconnect(true);
 }

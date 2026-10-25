@@ -133,6 +133,26 @@ pub struct Breakpoints {
     pub breakpoints: Vec<Breakpoint>,
 }
 
+/// What a debugged program can take of Hot Reload, as the adapter describes it: the runtime's capabilities and each
+/// loaded module, editable or why not.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct HotReloadState {
+    pub capabilities: Option<Vec<String>>,
+    pub capabilities_unknown: Option<String>,
+    pub modules: Vec<HotReloadModule>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct HotReloadModule {
+    pub mvid: String,
+    pub name: String,
+    pub path: Option<PathBuf>,
+    pub editable: bool,
+    pub why_not: Option<String>,
+}
+
 /// A stop at an exception, as the adapter describes it: what was thrown and where.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]

@@ -145,7 +145,8 @@ terminal and takes focus for a moment.
   expression (Evaluate and a watch), continue/next/stepIn/stepOut/pause, and disconnect/terminate are typed
   requests, as are Set Next Statement's `gotoTargets` and `goto`, Set Value's `setExpression`, Smart Step Into's
   `stepInTargets` (a step into one call of a statement), the function breakpoints' `setFunctionBreakpoints` and the
-  exception a stop is at (`exceptionInfo`). A
+  exception a stop is at (`exceptionInfo`), and Hot Reload's ground: a launch's `hotReload` flag (the runtime's Edit and
+  Continue on) and `hotReloadState`, the runtime's capabilities and each loaded module's editability. A
   source breakpoint carries its line or its column too, which binds one call of a line several share (a lambda's body). What the adapter says unasked (stops, output, exit,
   termination) comes as `Event`s on its own threads; its own request, a program started in the client's terminal,
   is answered when the app gives it a terminal runner (announced as `supportsRunInTerminalRequest`) and refused
@@ -303,8 +304,9 @@ locals with their types, a struct's `Id` and `Name`, the object's properties and
 `Static members`, an exception thrown in a parallel loop stops where it was thrown, its `exceptionInfo` giving the
 message, a stack lists the program's frames and the library's between them (the selector's line and column, the
 library's frames with no source and a subtle hint, the call's frame and `Main`), and a stop inside a lambda lists the
-ten values it closes over and `this`, and a step through an async method goes over its sync statements and awaits,
-into the awaited method and out again; `crates/rsharp-dap/tests/session.rs` stops one
+ten values it closes over and `this`, a step through an async method goes over its sync statements and awaits,
+into the awaited method and out again, and a launched program says what Hot Reload can change (the runtime's
+capabilities and its own module editable); `crates/rsharp-dap/tests/session.rs` stops one
 at a breakpoint through the client alone (frames, locals, evaluate, a step, its output) and `crates/rsharp-app/tests/debugger.rs` the same
 through the window (F9, F5, the Debug window's buttons and lists, the marked line, resume to the end), along with
 the Breakpoints dialog's condition and mute, a false condition and a logpoint as the adapter runs them, Any

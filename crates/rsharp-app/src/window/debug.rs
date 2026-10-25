@@ -507,6 +507,7 @@ impl MainWindow {
             working_directory: plan.working_directory.clone(),
             environment: plan.environment.clone(),
             stop_at_entry: false,
+            hot_reload: true,
         };
         let breakpoints = self.session_breakpoints(&folder);
         let functions = self.session_function_breakpoints();

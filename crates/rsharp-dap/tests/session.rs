@@ -56,6 +56,7 @@ fn a_breakpoint_stops_the_program_and_its_values_are_read() {
             working_directory: built,
             environment: BTreeMap::new(),
             stop_at_entry: false,
+            hot_reload: true,
         }),
         &symbols,
         vec![(

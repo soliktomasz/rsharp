@@ -136,6 +136,8 @@ pub struct Launch {
     pub working_directory: PathBuf,
     pub environment: BTreeMap<String, String>,
     pub stop_at_entry: bool,
+    /// The program's code may be changed as it runs (Hot Reload): the adapter turns the runtime's Edit and Continue on.
+    pub hot_reload: bool,
 }
 
 /// What the client's terminal answers the adapter with: the program's process, once it runs.
@@ -316,6 +318,7 @@ impl Session {
                     "console": if runs_in_terminal { "integratedTerminal" } else { "internalConsole" },
                     "stopAtEntry": launch.stop_at_entry,
                     "justMyCode": true,
+                    "hotReload": launch.hot_reload,
                 }),
                 LAUNCH,
             )?,
@@ -457,6 +460,12 @@ impl Session {
             .into_iter()
             .map(|frame| Frame { line: frame.line.saturating_sub(1), column: frame.column.saturating_sub(1), ..frame })
             .collect())
+    }
+
+    /// What the program can take of Hot Reload: the runtime's capabilities and each loaded module, editable or why not.
+    pub fn hot_reload_state(&self) -> Result<protocol::HotReloadState, String> {
+        let body = self.connection.request("hotReloadState", json!({}), REQUEST)?;
+        serde_json::from_value(body).map_err(|error| format!("The debugger's hot reload state did not read: {error}"))
     }
 
     /// The exception a stopped thread is at, as the adapter describes it: its type, message and place.
