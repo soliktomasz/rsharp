@@ -223,6 +223,12 @@ fn msbuild_assembly_resolution_keeps_imported_framework_order_and_custom_target_
         ["custom-b", "custom-a"]
     );
     assert_eq!(assemblies[0].project, project);
-    assert_eq!(assemblies[1].path, folder.0.join("unusual-output/custom-a/RealName.dll"));
+    // The target's own path, whatever spelling of the folder MSBuild was given: on macOS /tmp for /private/tmp, on
+    // Windows an 8.3 temp folder's name or its long one.
+    let found = &assemblies[1].path;
+    let tail = Path::new("unusual-output").join("custom-a").join("RealName.dll");
+    assert!(found.ends_with(&tail), "the custom target path was not kept: {}", found.display());
+    let base = found.ancestors().nth(3).expect("the target's folder");
+    assert_eq!(rsharp_core::paths::canonical(base), rsharp_core::paths::canonical(&folder.0));
     assert!(resolve_assemblies(&dotnet, &folder.0, &projects, &AtomicBool::new(true)).unwrap_err().contains("stopped"));
 }

@@ -138,11 +138,10 @@ pub struct ExceptionFilter {
 }
 
 impl ExceptionFilter {
-    /// The path the protocol takes: CLR, then the types; CLR alone is every exception.
-    fn path(&self) -> Vec<String> {
-        let mut path = vec!["CLR".to_string()];
-        path.extend(self.types.iter().filter(|kind| !kind.trim().is_empty()).cloned());
-        path
+    /// The path the protocol takes: a segment for CLR, then one naming the types; CLR alone is every exception.
+    fn path(&self) -> Value {
+        let types: Vec<&String> = self.types.iter().filter(|kind| !kind.trim().is_empty()).collect();
+        if types.is_empty() { json!([{ "names": ["CLR"] }]) } else { json!([{ "names": ["CLR"] }, { "names": types }]) }
     }
 }
 
@@ -208,6 +207,16 @@ impl Starting {
     pub fn stop(&self) -> Result<(), String> {
         self.connection.request("disconnect", json!({ "terminateDebuggee": true }), REQUEST).map(drop)
     }
+
+    /// Lets an attach that has not finished go: the adapter answers configurationDone saying the session ended.
+    pub fn let_go(&self) -> Result<(), String> {
+        self.connection.request("disconnect", json!({ "terminateDebuggee": false }), REQUEST).map(drop)
+    }
+
+    /// The adapter's own process.
+    pub fn adapter_process_id(&self) -> Option<u32> {
+        self.connection.process_id()
+    }
 }
 
 impl Session {
@@ -256,6 +265,12 @@ impl Session {
             .ok_or_else(|| "No .NET command line found: install the .NET SDK, or set DOTNET_ROOT".to_string())?;
         let mut command = Command::new(&dotnet);
         command.arg(adapter).args(["--interpreter=vscode"]).arg(format!("--symbolCache={}", symbols.display()));
+        // RSHARP_ENGINE_LOG=FILE keeps the engine's own log of every session, as Passenger's PASSENGER_ENGINE_LOG does.
+        if let Some(engine_log) = std::env::var_os("RSHARP_ENGINE_LOG").filter(|log| !log.is_empty()) {
+            let mut argument = std::ffi::OsString::from("--engineLogging=");
+            argument.push(engine_log);
+            command.arg(argument);
+        }
         let initialized = Arc::new((Mutex::new(false), Condvar::new()));
         let process_id = Arc::new(AtomicI64::new(0));
         let ids = process_id.clone();
@@ -309,7 +324,10 @@ impl Session {
                 }
             }
             Incoming::Stderr(line) => {
-                reporting(Event::Output { text: format!("{}\n", rsharp_core::build::strip_ansi(&line)), error: true })
+                let line = rsharp_core::build::strip_ansi(&line);
+                // The adapter's own words, a crash's stack trace among them, are the IDE's to keep as well as show.
+                log::warn!("Passenger's debugger said: {line}");
+                reporting(Event::Output { text: format!("{line}\n"), error: true })
             }
             Incoming::Ended => reporting(Event::Ended),
         });
@@ -588,7 +606,7 @@ impl Session {
             .iter()
             .map(|exception| {
                 let mut option = json!({
-                    "path": [{ "names": exception.path() }],
+                    "path": exception.path(),
                     // As Passenger maps Rider's "Suspend if": handling the exception in the user's code needs "always",
                     // external code's handling "userUnhandled", and neither "unhandled".
                     "breakMode": if exception.scenarios.is_empty() {

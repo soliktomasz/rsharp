@@ -14,6 +14,9 @@ impl Fixture {
         f.git(&["config", "user.email", "test@example.invalid"]);
         f.git(&["config", "commit.gpgsign", "false"]);
         f.git(&["config", "core.hooksPath", "disabled-hooks"]);
+        // The repository's own line endings, whatever the machine's Git says (Windows' installs autocrlf): the tests
+        // compare the bytes written with the bytes Git keeps.
+        f.git(&["config", "core.autocrlf", "false"]);
         f
     }
     fn git(&self, args: &[&str]) -> String {

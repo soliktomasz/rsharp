@@ -105,3 +105,13 @@ fn ending_debugging_keeps_hot_reload_alive_until_its_worker_finishes() {
     let written = requests.wait_for("Passenger.Roslyn.Extension.EndHotReload");
     assert!(written.contains("\\\"session\\\":23"), "the last owner failed to end its session: {written}");
 }
+
+#[test]
+fn a_line_written_since_the_build_has_no_place_in_it_and_the_lines_below_keep_theirs() {
+    let built = "a\nb\nc\n";
+    let now = "\na\nb\nnew\nc\n";
+    let hunks = rsharp_text::diff_hunks(built, now);
+    let places: Vec<Option<usize>> = (0..5).map(|line| built_line(&hunks, line)).collect();
+    assert_eq!(places, [None, Some(0), Some(1), None, Some(2)], "{hunks:?}");
+    assert_eq!(built_line(&[], 7), Some(7), "with no edits every line is the build's");
+}

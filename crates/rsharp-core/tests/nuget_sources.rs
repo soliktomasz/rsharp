@@ -24,7 +24,7 @@ impl Fixture {
         Self { root: rsharp_core::paths::canonical(&root), places }
     }
     fn solution(&self) -> PathBuf {
-        self.root.join("repo/solution")
+        self.root.join("repo").join("solution")
     }
     fn write(&self, path: &Path, text: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -65,7 +65,7 @@ fn closer_files_win_and_a_missing_user_file_means_nuget_org() {
     );
     let set = f.load();
     let local = f.solution().join("packages");
-    let repo = f.root.join("repo/repo-feed");
+    let repo = f.root.join("repo").join("repo-feed");
     assert_eq!(
         names(&set),
         [

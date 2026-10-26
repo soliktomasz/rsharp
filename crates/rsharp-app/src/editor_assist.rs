@@ -22,8 +22,8 @@ pub enum Popup {
     /// Parameter info over the caret.
     Signature(Signature),
     /// The hover card or Quick Documentation, for the word at the anchor; a card the pointer opened goes when it
-    /// leaves the word.
-    Card { text: String, from_mouse: bool, word: Range<usize> },
+    /// leaves the word, and one that shows the debugger's value goes when the program leaves its stop.
+    Card { text: String, from_mouse: bool, word: Range<usize>, value: bool },
     /// Context actions (Alt+Enter), the chosen one.
     Actions { actions: Vec<CodeAction>, selected: usize },
     /// Rename's field over the word being renamed.
@@ -41,6 +41,15 @@ pub struct Navigate {
 
 /// Something the editor says in the status bar: nothing found, or a change refused.
 pub struct Said(pub String);
+
+/// The pointer rests on a word while the program may be paused: the window answers with its value, as Rider's
+/// debugger hover does.
+pub struct ValueAsked {
+    pub expression: String,
+    pub at: usize,
+}
+
+impl gpui::EventEmitter<ValueAsked> for CodeEditor {}
 
 impl gpui::EventEmitter<Navigate> for CodeEditor {}
 impl gpui::EventEmitter<Said> for CodeEditor {}
@@ -452,7 +461,11 @@ impl CodeEditor {
                     }
                     return;
                 }
-                e.show(Popup::Card { text: text.join("\n\n"), from_mouse, word: word.clone() }, word.start, cx);
+                e.show(
+                    Popup::Card { text: text.join("\n\n"), from_mouse, word: word.clone(), value: false },
+                    word.start,
+                    cx,
+                );
             });
         });
         if from_mouse {
@@ -480,6 +493,28 @@ impl CodeEditor {
         );
         if let Some(at) = at.filter(|_| !busy) {
             self.request_hover(at, true, cx);
+            let word = word_at(&self.text, at).range();
+            let expression = self.text.byte_slice(word).to_string();
+            if expression.chars().next().is_some_and(|first| first.is_alphabetic() || first == '_') {
+                cx.emit(ValueAsked { expression, at });
+            }
+        }
+    }
+
+    /// The debugger's answer for the word the pointer rests on: its card, while the pointer is still there.
+    pub fn show_value(&mut self, at: usize, text: String, cx: &mut Context<Self>) {
+        if self.assist.hover_at != Some(at) {
+            return;
+        }
+        let word = word_at(&self.text, at).range();
+        self.assist.hover_task = None;
+        self.show(Popup::Card { text, from_mouse: true, word: word.clone(), value: true }, word.start, cx);
+    }
+
+    /// The program left the stop a value card was read at: the card goes, as its value may no longer be the program's.
+    pub fn clear_value(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.assist.popup, Some(Popup::Card { value: true, .. })) {
+            self.close_popup(cx);
         }
     }
 

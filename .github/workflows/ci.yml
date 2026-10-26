@@ -52,6 +52,9 @@ jobs:
           components: rustfmt
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # The build is kept when a later step fails: a failing test should not cost the next run a cold build.
+          cache-on-failure: true
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -74,4 +77,5 @@ jobs:
         run: cargo build --workspace --all-targets
 
       - name: Tests
-        run: cargo test --workspace
+        # Every suite runs even after one fails, so a run shows all that failed, not only the first binary's.
+        run: cargo test --workspace --no-fail-fast

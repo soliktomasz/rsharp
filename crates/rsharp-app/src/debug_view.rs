@@ -24,10 +24,12 @@ pub enum DebugAction {
     StepOut,
     /// A frame of the stopped thread chosen, from 0.
     SelectFrame(usize),
-    /// A variable with members opened: where it is in the tree, and the debugger's reference to them.
+    /// A variable with members opened: where it is in the tree, the debugger's reference to them, and which tree it
+    /// was (a stop, a frame chosen, values read again each make a new one, whose references are the debugger's anew).
     OpenVariable {
         path: Vec<usize>,
         reference: i64,
+        tree: u64,
     },
     /// A watch asked as it is typed.
     Evaluate(String),
@@ -112,6 +114,8 @@ pub struct DebugView {
     frames: Vec<FrameRow>,
     selected: usize,
     variables: Vec<Node>,
+    /// Counted each time the values shown are made anew, so a request from a tree since replaced is told apart.
+    tree: u64,
     watch: Entity<TextField>,
     watches: Vec<(String, String)>,
     /// The values a step over left at the top of the frame, as Rider's Return values group shows them.
@@ -128,6 +132,8 @@ pub struct DebugView {
     data_breakpoints: Vec<(String, String)>,
     /// The Variables or Frames menu open, and what it acts on.
     menu: Option<Menu>,
+    /// Where the menu was opened, in the window, so it stands at the pointer over the lists rather than in their flow.
+    menu_at: gpui::Point<gpui::Pixels>,
     focus: FocusHandle,
     _watch_subscription: Subscription,
 }
@@ -165,6 +171,7 @@ impl DebugView {
             frames: Vec::new(),
             selected: 0,
             variables: Vec::new(),
+            tree: 0,
             watch,
             watches: Vec::new(),
             return_values: Vec::new(),
@@ -175,6 +182,7 @@ impl DebugView {
             muted: false,
             data_breakpoints: Vec::new(),
             menu: None,
+            menu_at: gpui::Point::default(),
             focus: cx.focus_handle(),
             _watch_subscription: subscription,
         }
@@ -236,6 +244,7 @@ impl DebugView {
         self.status = format!("Starting {name}…").into();
         self.frames.clear();
         self.variables.clear();
+        self.tree += 1;
         self.selected = 0;
         cx.notify();
     }
@@ -248,6 +257,7 @@ impl DebugView {
         self.chosen_thread = None;
         self.frames.clear();
         self.variables.clear();
+        self.tree += 1;
         cx.notify();
     }
 
@@ -258,6 +268,7 @@ impl DebugView {
         self.frames = frames;
         self.selected = 0;
         self.variables.clear();
+        self.tree += 1;
         cx.notify();
     }
 
@@ -272,6 +283,7 @@ impl DebugView {
     pub fn select(&mut self, index: usize, cx: &mut Context<Self>) {
         self.selected = index;
         self.variables.clear();
+        self.tree += 1;
         cx.notify();
     }
 
@@ -283,12 +295,13 @@ impl DebugView {
             .partition(|row| row.evaluate_name.as_deref().is_some_and(|name| name.starts_with("$ReturnValue")));
         self.return_values = returned;
         self.variables = locals.into_iter().map(|row| Node { row, open: false, children: None }).collect();
+        self.tree += 1;
         // The chosen variable stays chosen if its place still holds one, its value read again.
         if let Some(path) = self.selected_variable.clone() {
             match find(&mut self.variables, &path) {
                 Some(node) => {
                     let value = node.row.value.clone();
-                    self.set_expression = node.row.evaluate_name.clone().filter(|name| !name.is_empty());
+                    self.set_expression = self.expression_of(&path);
                     self.set_value.update(cx, |field, cx| field.set_text(&value, cx));
                 }
                 None => {
@@ -365,16 +378,23 @@ impl DebugView {
         walk(&self.variables, name)
     }
 
+    /// The C# that reaches a row's value from the frame, as Passenger's Set Value writes it: a local's name, a member
+    /// after its object's expression, an element's index after its array's; none for a row no expression reaches.
+    fn expression_of(&self, path: &[usize]) -> Option<String> {
+        let mut rows = Vec::new();
+        let mut nodes = self.variables.as_slice();
+        for index in path {
+            let node = nodes.get(*index)?;
+            rows.push(&node.row);
+            nodes = node.children.as_deref().unwrap_or_default();
+        }
+        expression(&rows)
+    }
+
     /// A variable chosen in the tree: the field starts at its value, and Set Value asks the debugger for the rest.
-    fn select_variable(
-        &mut self,
-        path: Vec<usize>,
-        value: String,
-        evaluate_name: Option<String>,
-        cx: &mut Context<Self>,
-    ) {
+    fn select_variable(&mut self, path: Vec<usize>, value: String, cx: &mut Context<Self>) {
+        self.set_expression = self.expression_of(&path);
         self.selected_variable = Some(path);
-        self.set_expression = evaluate_name.filter(|name| !name.is_empty());
         self.set_value.update(cx, |field, cx| field.set_text(&value, cx));
         cx.notify();
     }
@@ -389,8 +409,29 @@ impl DebugView {
         cx.emit(DebugAction::SetValue { expression, value });
     }
 
-    /// The debugger's answer for a value's members: the rows of its children, shown at once.
-    pub fn set_children(&mut self, path: &[usize], variables: Vec<VariableRow>, cx: &mut Context<Self>) {
+    /// The frame chosen in the Frames list, from 0, whose values are shown.
+    pub fn selected_frame(&self) -> usize {
+        self.selected
+    }
+
+    /// The tree the values shown are, which a request for members names.
+    pub fn tree(&self) -> u64 {
+        self.tree
+    }
+
+    /// What opening a top-level row asks the window, as a click on it does, for a test that holds it past a stop.
+    pub fn open_request(&self, name: &str) -> Option<DebugAction> {
+        let index = self.variables.iter().position(|node| node.row.name == name && node.row.reference != 0)?;
+        let reference = self.variables[index].row.reference;
+        Some(DebugAction::OpenVariable { path: vec![index], reference, tree: self.tree })
+    }
+
+    /// The debugger's answer for a value's members: the rows of its children, shown at once. An answer for a tree
+    /// since replaced is another value's members, and is dropped.
+    pub fn set_children(&mut self, path: &[usize], tree: u64, variables: Vec<VariableRow>, cx: &mut Context<Self>) {
+        if tree != self.tree {
+            return;
+        }
         if let Some(node) = find(&mut self.variables, path) {
             node.children = Some(variables.into_iter().map(|row| Node { row, open: false, children: None }).collect());
             node.open = true;
@@ -421,6 +462,7 @@ impl DebugView {
         self.chosen_thread = None;
         self.frames.clear();
         self.variables.clear();
+        self.tree += 1;
         cx.notify();
     }
 
@@ -470,11 +512,11 @@ impl DebugView {
         let mut panel = div()
             .id("debug menu")
             .debug_selector(|| "debug menu".into())
-            .mx(px(4.))
-            .mb(px(4.))
+            .min_w(px(180.))
             .flex()
             .flex_col()
             .py(px(4.))
+            .shadow_lg()
             .rounded(px(4.))
             .bg(theme::popup())
             .border_1()
@@ -544,6 +586,54 @@ impl DebugView {
     }
 }
 
+/// Whether a row only groups an array's elements: a hundred at a time ("[100..199]") or a multi-dimensional array's
+/// row ("[1, ...]"), as the debugger names them.
+fn is_range(name: &str) -> bool {
+    let Some(inner) = name.strip_prefix('[').and_then(|name| name.strip_suffix(']')) else { return false };
+    let last = inner.rsplit(", ").next().unwrap_or(inner);
+    let leading = inner.split(", ").take(inner.split(", ").count() - 1).all(|part| part.parse::<u64>().is_ok());
+    let ranged = last == "..."
+        || last.split_once("..").is_some_and(|(from, to)| from.parse::<u64>().is_ok() && to.parse::<u64>().is_ok());
+    leading && ranged
+}
+
+/// The expression of the last of a chain of rows, from the frame's down.
+fn expression(rows: &[&VariableRow]) -> Option<String> {
+    let (row, above) = rows.split_last()?;
+    if above.is_empty() {
+        return row.evaluate_name.clone().filter(|name| !name.is_empty()).or_else(|| Some(row.name.clone()));
+    }
+    if is_range(&row.name) {
+        return None;
+    }
+    let owner = reach(above)?;
+    Some(if row.name.starts_with('[') { format!("{owner}{}", row.name) } else { format!("{owner}.{}", row.name) })
+}
+
+/// What the rows under the last of a chain reach their values from: its own expression, or for a row that only groups
+/// others (a range, the raw view) the one above it's.
+fn reach(rows: &[&VariableRow]) -> Option<String> {
+    let (row, above) = rows.split_last()?;
+    match row.name.as_str() {
+        "Static members" | "Results" => None,
+        "Raw View" => reach(above),
+        name if !above.is_empty() && is_range(name) => reach(above),
+        _ => expression(rows),
+    }
+}
+
+/// The characters of a value a row draws: a string of megabytes is shaped only as far as a row shows, its whole text
+/// kept for Copy Value.
+const SHOWN: usize = 1000;
+
+/// A value as a row or a card draws it, cut short past what any of them shows.
+pub fn shown(value: &str) -> std::borrow::Cow<'_, str> {
+    match value.char_indices().nth(SHOWN) {
+        Some((end, _)) => format!("{}…", &value[..end]).into(),
+        None => value.into(),
+    }
+}
+
 fn find<'a>(nodes: &'a mut Vec<Node>, path: &[usize]) -> Option<&'a mut Node> {
     let (first, rest) = path.split_first()?;
     let node = nodes.get_mut(*first)?;
@@ -565,6 +655,18 @@ impl Render for DebugView {
             .debug_selector(|| "debug window".into())
             .key_context("DebugWindow")
             .on_action(cx.listener(|view, _: &ApplySetValue, _, cx| view.apply_set_value(cx)))
+            .children(self.menu.clone().map(|menu| {
+                gpui::deferred(
+                    gpui::anchored().position(self.menu_at).snap_to_window_with_margin(px(8.)).child(
+                        div()
+                            .on_mouse_down_out(cx.listener(|view, _, _, cx| {
+                                view.menu = None;
+                                cx.notify();
+                            }))
+                            .child(self.menu_panel(menu, cx)),
+                    ),
+                )
+            }))
             .relative()
             .size_full()
             .flex()
@@ -637,10 +739,6 @@ impl Render for DebugView {
                                 div().flex().flex_col().child(label("Threads")).children(rows)
                             }))
                             .child(label("Frames"))
-                            .children(match &self.menu {
-                                Some(menu @ Menu::Frames) => Some(self.menu_panel(menu.clone(), cx)),
-                                _ => None,
-                            })
                             .child(
                                 div()
                                     .id("debug frames")
@@ -650,7 +748,8 @@ impl Render for DebugView {
                                     .px(px(4.))
                                     .on_mouse_down(
                                         gpui::MouseButton::Right,
-                                        cx.listener(|view, _: &gpui::MouseDownEvent, _, cx| {
+                                        cx.listener(|view, event: &gpui::MouseDownEvent, _, cx| {
+                                            view.menu_at = event.position;
                                             view.menu = Some(Menu::Frames);
                                             cx.notify();
                                         }),
@@ -690,10 +789,15 @@ impl Render for DebugView {
                             ),
                     )
                     .child(
+                        // One column scrolls whole: the Debug island is 220 px high by default, too little for the
+                        // values, Set value and the watches each to scroll on their own.
                         div()
+                            .id("debug values")
+                            .debug_selector(|| "debug variables".into())
                             .flex_1()
                             .min_w_0()
                             .min_h_0()
+                            .overflow_y_scroll()
                             .flex()
                             .flex_col()
                             // shortcut: a returned value's members are not opened here; Evaluate Expression can, until
@@ -721,7 +825,7 @@ impl Render for DebugView {
                                                     .min_w_0()
                                                     .truncate()
                                                     .text_color(theme::text_muted())
-                                                    .child(format!("= {}", row.value)),
+                                                    .child(format!("= {}", shown(&row.value))),
                                             )
                                             .children(row.r#type.clone().map(|kind| {
                                                 div()
@@ -736,16 +840,9 @@ impl Render for DebugView {
                                 div().flex().flex_col().child(label("Return values")).children(rows)
                             }))
                             .child(label("Variables"))
-                            .children(match &self.menu {
-                                Some(menu @ Menu::Variable { .. }) => Some(self.menu_panel(menu.clone(), cx)),
-                                _ => None,
-                            })
                             .child(
                                 div()
-                                    .id("debug variables")
-                                    .flex_1()
-                                    .min_h_0()
-                                    .overflow_y_scroll()
+                                    .flex_none()
                                     .px(px(4.))
                                     .children(rows.is_empty().then(|| {
                                         div()
@@ -785,7 +882,7 @@ impl Render for DebugView {
                                                     .min_w_0()
                                                     .truncate()
                                                     .text_color(theme::text_muted())
-                                                    .child(format!("= {}", row.value)),
+                                                    .child(format!("= {}", shown(&row.value))),
                                             )
                                             .children(row.r#type.clone().map(|kind| {
                                                 div()
@@ -804,7 +901,8 @@ impl Render for DebugView {
                                                     let value = row.value.clone();
                                                     let evaluate = row.evaluate_name.clone();
                                                     let path = path.clone();
-                                                    move |view, _: &gpui::MouseDownEvent, _, cx| {
+                                                    move |view, event: &gpui::MouseDownEvent, _, cx| {
+                                                        view.menu_at = event.position;
                                                         let parent = path
                                                             .split_last()
                                                             .and_then(|(_, parent)| find(&mut view.variables, parent))
@@ -824,18 +922,14 @@ impl Render for DebugView {
                                                 let path = path.clone();
                                                 let row = row.clone();
                                                 move |view, _: &ClickEvent, _, cx| {
-                                                    view.select_variable(
-                                                        path.clone(),
-                                                        row.value.clone(),
-                                                        row.evaluate_name.clone(),
-                                                        cx,
-                                                    );
+                                                    view.select_variable(path.clone(), row.value.clone(), cx);
                                                     if expandable {
                                                         let opened = toggle(&mut view.variables, &path);
                                                         if opened {
                                                             cx.emit(DebugAction::OpenVariable {
                                                                 path: path.clone(),
                                                                 reference,
+                                                                tree: view.tree,
                                                             });
                                                         }
                                                     }
@@ -952,8 +1046,8 @@ impl Render for DebugView {
                                     })
                                     .child(self.watch.clone()),
                             )
-                            .child(div().id("debug watches").max_h(px(110.)).overflow_y_scroll().px(px(4.)).children(
-                                self.watches.iter().enumerate().map(|(index, (expression, result))| {
+                            .child(div().flex_none().px(px(4.)).children(self.watches.iter().enumerate().map(
+                                |(index, (expression, result))| {
                                     div()
                                         .id(("debug watch", index))
                                         .debug_selector(move || format!("debug watch {index}"))
@@ -969,10 +1063,10 @@ impl Render for DebugView {
                                                 .min_w_0()
                                                 .truncate()
                                                 .text_color(theme::text_muted())
-                                                .child(format!("= {result}")),
+                                                .child(format!("= {}", shown(result))),
                                         )
-                                }),
-                            )),
+                                },
+                            ))),
                     ),
             )
             .child(
@@ -1008,4 +1102,31 @@ fn toggle(nodes: &mut Vec<Node>, path: &[usize]) -> bool {
     let Some(node) = find(nodes, path) else { return false };
     node.open = !node.open;
     node.open && node.children.is_none()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(name: &str, evaluate: Option<&str>) -> VariableRow {
+        VariableRow {
+            name: name.into(),
+            value: String::new(),
+            r#type: None,
+            evaluate_name: evaluate.map(str::to_string),
+            reference: 0,
+        }
+    }
+
+    #[test]
+    fn an_element_under_a_range_is_reached_through_its_array() {
+        let (numbers, range, element) = (row("numbers", Some("numbers")), row("[100..199]", None), row("[150]", None));
+        assert_eq!(expression(&[&numbers, &range, &element]).as_deref(), Some("numbers[150]"));
+        assert_eq!(expression(&[&numbers, &range]), None, "a range is no value to set");
+        let (grid, line, cell) = (row("grid", None), row("[1, ...]", None), row("[1, 0]", None));
+        assert_eq!(expression(&[&grid, &line, &cell]).as_deref(), Some("grid[1, 0]"));
+        let (this, field) = (row("this", Some("this")), row("Count", Some("whatever")));
+        assert_eq!(expression(&[&this, &field]).as_deref(), Some("this.Count"));
+        assert!(!is_range("[150]") && !is_range("[1, 0]") && is_range("[0..99]") && is_range("[1, 2, ...]"));
+    }
 }

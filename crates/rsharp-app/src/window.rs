@@ -41,6 +41,7 @@ actions!(
         ToggleRun,
         ToggleDebug,
         ShowBreakpoints,
+        EditBreakpoint,
         AttachToProcess,
         ReattachToProcess,
         DetachDebug,
@@ -327,6 +328,8 @@ pub struct MainWindow {
     run_dialog: Option<Entity<crate::run_dialog::RunDialog>>,
     /// Rider's Breakpoints dialog while it is open.
     breakpoints_dialog: Option<Entity<crate::breakpoints_dialog::BreakpointsDialog>>,
+    /// Rider's breakpoint popup over the editor, and the line it edits.
+    breakpoint_popup: Option<(Entity<crate::breakpoint_popup::BreakpointPopup>, PathBuf, usize)>,
     /// Rider's Attach to Process dialog while it is open.
     attach_dialog: Option<Entity<crate::attach_dialog::AttachDialog>>,
     /// Rider's Evaluate Expression dialog while it is open.
@@ -485,6 +488,7 @@ impl MainWindow {
             run_outcome: None,
             run_dialog: None,
             breakpoints_dialog: None,
+            breakpoint_popup: None,
             attach_dialog: None,
             evaluate_dialog: None,
             step_dialog: None,
@@ -1580,7 +1584,27 @@ impl MainWindow {
         .detach();
         cx.subscribe_in(&editor, window, |w, editor, toggle: &editor::ToggleBreakpoint, _, cx| {
             let path = editor.read(cx).path.clone();
-            w.toggle_breakpoint_at(&path, toggle.line, cx);
+            if toggle.tracepoint {
+                w.toggle_tracepoint_at(&path, toggle.line, cx);
+            } else {
+                w.toggle_breakpoint_at(&path, toggle.line, cx);
+            }
+        })
+        .detach();
+        cx.subscribe_in(&editor, window, |w, editor, edit: &editor::EditBreakpointAt, window, cx| {
+            let path = editor.read(cx).path.clone();
+            if w.breakpoints().has(&path, edit.line) {
+                w.open_breakpoint_popup(&path, edit.line, crate::breakpoint_popup::Field::Condition, window, cx);
+            }
+        })
+        .detach();
+        cx.subscribe_in(&editor, window, |w, editor, asked: &editor::ValueAsked, _, cx| {
+            w.hover_value(editor.clone(), asked.expression.clone(), asked.at, cx);
+        })
+        .detach();
+        cx.subscribe_in(&editor, window, |w, editor, moved: &editor::MoveExecution, _, cx| {
+            let path = editor.read(cx).path.clone();
+            w.set_next_statement_at(path, moved.line, cx);
         })
         .detach();
         cx.subscribe_in(&editor, window, |w, _, go: &editor::Navigate, window, cx| w.navigate(go, window, cx)).detach();
@@ -2272,6 +2296,9 @@ impl Render for MainWindow {
             }))
             .children(self.run_dialog.clone().map(|dialog| {
                 div().absolute().top(px(TOOLBAR_HEIGHT + 40.)).left_0().right_0().flex().justify_center().child(dialog)
+            }))
+            .children(self.breakpoint_popup.clone().map(|(popup, _, _)| {
+                div().absolute().top(px(TOOLBAR_HEIGHT + 80.)).left_0().right_0().flex().justify_center().child(popup)
             }))
             .children(self.breakpoints_dialog.clone().map(|dialog| {
                 div().absolute().top(px(TOOLBAR_HEIGHT + 20.)).left_0().right_0().flex().justify_center().child(dialog)

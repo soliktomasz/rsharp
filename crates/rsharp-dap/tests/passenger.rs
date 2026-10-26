@@ -3849,7 +3849,9 @@ impl StartHold {
     }
 
     fn environment(&self) -> BTreeMap<String, String> {
-        BTreeMap::from([("DOTNET_DiagnosticPorts".to_string(), format!("{},connect,suspend", self.name))])
+        // The runtime takes a pipe's bare name and puts it in the pipe namespace itself, as Passenger's StartHold gives it.
+        let bare = self.name.trim_start_matches(r"\\.\pipe\");
+        BTreeMap::from([("DOTNET_DiagnosticPorts".to_string(), format!("{bare},connect,suspend"))])
     }
 
     /// The runtime's connection and its process id, once it has come and waits.

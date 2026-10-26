@@ -6,8 +6,9 @@ use crate::theme;
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, FocusHandle, Focusable, GlobalElementId, Hsla, InspectorElementId, IntoElement, LayoutId,
-    MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, Point, ScrollWheelEvent, ShapedLine, Style, Subscription,
-    TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill, font, point, prelude::*, px, relative, size,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, ShapedLine, Style,
+    Subscription, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill, font, point, prelude::*, px,
+    relative, size,
 };
 use rsharp_languages::{FoldRegion, Highlight, folds, folds_in, highlights, matching_bracket};
 use rsharp_text::*;
@@ -23,7 +24,7 @@ mod msbuild_help;
 mod refactor;
 #[path = "editor_templates.rs"]
 mod templates;
-pub use assist::{Navigate, Said};
+pub use assist::{Navigate, Said, ValueAsked};
 
 actions!(
     editor,
@@ -162,6 +163,8 @@ pub struct CodeEditor {
     columns: Option<usize>,
     /// The pointer is over the gutter, which shows the chevrons of what is not folded.
     gutter_hovered: bool,
+    /// The line the execution arrow was taken from, while it is dragged to where the program should go on.
+    arrow_drag: Option<usize>,
     git_popup: Option<GitPopup>,
     layout: Option<Layout>,
     /// The line height in force, from the settings, as the last frame used it.
@@ -204,12 +207,28 @@ pub struct ConsoleLink(pub ConsoleTarget);
 
 impl gpui::EventEmitter<ConsoleLink> for CodeEditor {}
 
-/// A click in the gutter's breakpoint column, on a line from 0: set one there or clear the one there.
+/// A click in the gutter's breakpoint column, on a line from 0: set one there or clear the one there. A Shift+click
+/// sets a tracepoint, which logs and goes on, as Rider's does.
 pub struct ToggleBreakpoint {
     pub line: usize,
+    pub tracepoint: bool,
 }
 
 impl gpui::EventEmitter<ToggleBreakpoint> for CodeEditor {}
+
+/// A right-click on a line's breakpoint: its properties, as Rider's popup shows them.
+pub struct EditBreakpointAt {
+    pub line: usize,
+}
+
+impl gpui::EventEmitter<EditBreakpointAt> for CodeEditor {}
+
+/// The execution arrow dragged to another line: the paused program goes on from there, as Rider's Set Next Statement.
+pub struct MoveExecution {
+    pub line: usize,
+}
+
+impl gpui::EventEmitter<MoveExecution> for CodeEditor {}
 
 /// Text typed into a console whose program reads its input: the program's own, not the console's text.
 pub struct ConsoleInput(pub String);
@@ -335,6 +354,7 @@ impl CodeEditor {
             fold_generation: 0,
             columns: None,
             gutter_hovered: false,
+            arrow_drag: None,
             git_popup: None,
             layout: None,
             line_height: px(crate::settings::settings(cx).line_height()),
@@ -809,6 +829,64 @@ impl CodeEditor {
         (span.line, column_of(text, span.start) + column)
     }
 
+    /// Where a byte of the text is drawn, the middle of its line, in the window's coordinates as last laid out; none
+    /// while its line is off screen.
+    pub fn text_point(&self, offset: usize) -> Option<Point<Pixels>> {
+        let layout = self.layout.as_ref()?;
+        let row = self.rows.row_of(&self.text, offset);
+        let shaped = layout.lines.get(row.checked_sub(layout.first_row)?)?;
+        let span = self.rows.row(&self.text, row);
+        let x = shaped.x_for_index(offset - span.start) + layout.char_width * span.indent as f32;
+        Some(point(layout.text_origin.x + x, layout.text_origin.y + self.line_height * (row as f32 + 0.5)))
+    }
+
+    /// The hover card's text, while one is shown, for a test.
+    pub fn card_text(&self) -> Option<&str> {
+        match &self.assist.popup {
+            Some(assist::Popup::Card { text, .. }) => Some(text),
+            _ => None,
+        }
+    }
+
+    /// The middle of a line's breakpoint column, where its dot and the execution arrow are drawn, in the window's
+    /// coordinates as last laid out; none while the line is off screen.
+    pub fn gutter_point(&self, line: usize) -> Option<Point<Pixels>> {
+        let layout = self.layout.as_ref()?;
+        let offset = self.text.try_line_to_byte(line).ok()?;
+        let row = self.rows.row_of(&self.text, offset);
+        let y = self.line_height * (row as f32 + 0.5) - self.scroll_y;
+        (y >= px(0.) && y < layout.viewport.size.height)
+            .then(|| point(layout.viewport.origin.x + px(10.), layout.viewport.origin.y + y))
+    }
+
+    /// The line whose breakpoint column the pointer is in, if it is in it.
+    fn gutter_line(&self, position: Point<Pixels>) -> Option<usize> {
+        let layout = self.layout.as_ref().filter(|_| self.console.is_none())?;
+        if !layout.viewport.contains(&position) || position.x >= layout.viewport.origin.x + px(20.) {
+            return None;
+        }
+        let rows = self.rows.len(&self.text);
+        let y = position.y - layout.viewport.origin.y + self.scroll_y;
+        let row = (f32::from(y) / f32::from(self.line_height)).floor().max(0.) as usize;
+        Some(self.rows.row(&self.text, row.min(rows.saturating_sub(1))).line)
+    }
+
+    /// The arrow's drag let go: on another line the program goes on from there; on its own line it was a click.
+    fn on_mouse_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.selecting = false;
+        self.column_drag = None;
+        let Some(from) = self.arrow_drag.take() else { return };
+        match self
+            .gutter_line(event.position)
+            .or_else(|| self.row_for_point(event.position).map(|row| self.rows.row(&self.text, row).line))
+        {
+            Some(line) if line != from => cx.emit(MoveExecution { line }),
+            Some(line) => cx.emit(ToggleBreakpoint { line, tracepoint: false }),
+            None => {}
+        }
+        cx.notify();
+    }
+
     fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus);
         self.close_popup(cx);
@@ -859,18 +937,17 @@ impl CodeEditor {
             self.toggle_fold(fold, cx);
             return;
         }
-        // Rider's gutter: a click in the breakpoint column sets or clears one on its line.
-        if self.console.is_none()
-            && let Some(layout) = &self.layout
-            && layout.viewport.contains(&event.position)
-            && event.position.x < layout.viewport.origin.x + px(20.)
-        {
-            let rows = self.rows.len(&self.text);
-            let y = event.position.y - layout.viewport.origin.y + self.scroll_y;
-            let row = (f32::from(y) / f32::from(self.line_height)).floor().max(0.) as usize;
-            let line = self.rows.row(&self.text, row.min(rows.saturating_sub(1))).line;
+        // Rider's gutter: a click in the breakpoint column sets or clears one on its line, a Shift+click a tracepoint;
+        // pressed on the execution arrow, it starts the arrow's drag, which the release ends.
+        if let Some(line) = self.gutter_line(event.position) {
             self.selecting = false;
-            cx.emit(ToggleBreakpoint { line });
+            if event.modifiers.shift {
+                cx.emit(ToggleBreakpoint { line, tracepoint: true });
+            } else if self.buffer.read(cx).execution_line == Some(line) {
+                self.arrow_drag = Some(line);
+            } else {
+                cx.emit(ToggleBreakpoint { line, tracepoint: false });
+            }
             cx.notify();
             return;
         }
@@ -1283,11 +1360,13 @@ impl Render for CodeEditor {
             .cursor(CursorStyle::IBeam)
             .bg(theme::island())
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|e, _, _, _| {
-                    e.selecting = false;
-                    e.column_drag = None;
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|e, event: &MouseDownEvent, _, cx| {
+                    if let Some(line) = e.gutter_line(event.position) {
+                        cx.emit(EditBreakpointAt { line });
+                    }
                 }),
             )
             .on_mouse_move(cx.listener(Self::on_mouse_move))

@@ -189,7 +189,8 @@ terminal and takes focus for a moment.
   opens its file with the statement marked. `debug_view.rs` is Rider's Debug window: its step and run keys, Frames,
   Variables (members opened a level at a time), Watches and the debug console. The editor's gutter shows a
   breakpoint dot per line and toggles one on a click in its column, and the buffer carries the stopped line's band.
-  `run_dialog.rs` is Rider's Run/Debug
+  `breakpoint_popup.rs` is Rider's breakpoint popup over the editor (Alt+F9, a right-click on a breakpoint): its
+  condition, hit count and log message, each change applied at once. `run_dialog.rs` is Rider's Run/Debug
   Configurations dialog over the window: Add, Copy and Remove of the folder's own, the chosen one's fields, OK,
   Cancel and Apply, a generated one changing only by copying it.
   New Solution builds once after opening. `dock.rs` is the frame's layout: IntelliJ's six places, which window is where and open, the islands' sizes,
@@ -320,8 +321,10 @@ Smart Step Into choosing Sum of a statement's two calls and stopping in its body
 console starting its program in a Terminal tab whose text carries what it wrote, a step over showing what Double(21)
 returned, Evaluate Expression showing a paused List's members, a step over an await stopping after it, a stop
 setting its frame's values in at the end of its line (cleared when the program runs on), and a function breakpoint
-added as Program.Double in the dialog stopping the program in that method; both skip, saying why, when dotnet or the
-adapter is not there.
+added as Program.Double in the dialog stopping the program in that method, and the rest of Passenger's
+`DebuggerTests` (ROADMAP's Phase 8 lists them and the few gated); `tests/debugger_crash.rs` is a binary of its own,
+since the `RSHARP_ENGINE_LOG` it sets to crash the adapter would reach every session beside it. All skip, saying why,
+when dotnet or the adapter is not there.
 
 Git tests build real repositories and, when a remote is needed, a bare one beside them — never the person's and
 never a network service: `crates/rsharp-core/tests/git.rs` the repository alone (porcelain records, odd paths,
