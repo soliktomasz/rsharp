@@ -1752,9 +1752,11 @@ fn what_is_typed_into_the_debug_console_is_the_programs_input() {
     });
     cx.run_until_parked();
     cx.simulate_input("Ada");
+    cx.update(|_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(" Lovelace".into())));
+    cx.dispatch_action(rsharp_app::editor::Paste);
     cx.simulate_keystrokes("enter");
-    let read = pump(cx, |cx| output(&main, cx).contains("read: Ada"));
-    assert!(read, "what was typed did not reach the program: {:?}", output(&main, cx));
+    let read = pump(cx, |cx| output(&main, cx).contains("read: Ada Lovelace"));
+    assert!(read, "what was typed and pasted did not reach the program: {:?}", output(&main, cx));
     assert_eq!(main.read_with(cx, |main, _| !main.is_debugging()), true, "the program read the line and ended");
 }
 

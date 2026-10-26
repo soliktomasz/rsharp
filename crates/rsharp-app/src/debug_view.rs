@@ -47,7 +47,10 @@ pub enum DebugAction {
     /// Copy the stopped thread's stack, as the Frames menu does.
     CopyStack,
     /// Watch a value for a write that changes it, as Rider's Set Data Breakpoint does.
-    SetDataBreakpoint(String),
+    SetDataBreakpoint {
+        reference: i64,
+        name: String,
+    },
     /// Remove the data breakpoint with this id.
     RemoveDataBreakpoint(String),
 }
@@ -132,7 +135,7 @@ pub struct DebugView {
 /// A menu a row of the Debug window opens: a value's, or the frames'.
 #[derive(Clone)]
 enum Menu {
-    Variable { name: String, value: String, evaluate: Option<String> },
+    Variable { name: String, value: String, evaluate: Option<String>, parent: Option<i64> },
     Frames,
 }
 
@@ -477,14 +480,20 @@ impl DebugView {
             .border_1()
             .border_color(theme::popup_border());
         match menu {
-            Menu::Variable { name, value, evaluate } => {
+            Menu::Variable { name, value, evaluate, parent } => {
                 // A local the debugger names nothing to evaluate is watched by the name its row shows.
                 let expression = evaluate.filter(|expression| !expression.is_empty()).unwrap_or_else(|| name.clone());
                 panel = panel
                     .child(self.menu_item("Copy Value", DebugAction::CopyValue(value), cx))
-                    .child(self.menu_item("Copy Name", DebugAction::CopyValue(name), cx))
-                    .child(self.menu_item("Add to Watches", DebugAction::AddWatch(expression.clone()), cx))
-                    .child(self.menu_item("Set Data Breakpoint", DebugAction::SetDataBreakpoint(expression), cx));
+                    .child(self.menu_item("Copy Name", DebugAction::CopyValue(name.clone()), cx))
+                    .child(self.menu_item("Add to Watches", DebugAction::AddWatch(expression), cx));
+                if let Some(reference) = parent {
+                    panel = panel.child(self.menu_item(
+                        "Set Data Breakpoint",
+                        DebugAction::SetDataBreakpoint { reference, name },
+                        cx,
+                    ));
+                }
             }
             Menu::Frames => {
                 panel = panel.child(self.menu_item("Copy Stack", DebugAction::CopyStack, cx));
@@ -794,11 +803,18 @@ impl Render for DebugView {
                                                     let name = row.name.clone();
                                                     let value = row.value.clone();
                                                     let evaluate = row.evaluate_name.clone();
+                                                    let path = path.clone();
                                                     move |view, _: &gpui::MouseDownEvent, _, cx| {
+                                                        let parent = path
+                                                            .split_last()
+                                                            .and_then(|(_, parent)| find(&mut view.variables, parent))
+                                                            .map(|node| node.row.reference)
+                                                            .filter(|reference| *reference > 0);
                                                         view.menu = Some(Menu::Variable {
                                                             name: name.clone(),
                                                             value: value.clone(),
                                                             evaluate: evaluate.clone(),
+                                                            parent,
                                                         });
                                                         cx.notify();
                                                     }

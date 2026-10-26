@@ -675,13 +675,10 @@ impl Session {
         Ok(answered.modules)
     }
 
-    /// What a data breakpoint on a value would watch: `dataBreakpointInfo`. Its id is none when none can, and its
-    /// description says why.
-    pub fn data_breakpoint_info(&self, frame: Option<i64>, name: &str) -> Result<protocol::DataBreakpointInfo, String> {
-        let mut arguments = json!({ "name": name });
-        if let Some(frame) = frame {
-            arguments["frameId"] = json!(frame);
-        }
+    /// What a data breakpoint on a member would watch, by its parent's variables reference and its name there.
+    /// `dataBreakpointInfo` returns no id when it cannot be watched, and its description says why.
+    pub fn data_breakpoint_info(&self, reference: i64, name: &str) -> Result<protocol::DataBreakpointInfo, String> {
+        let arguments = json!({ "variablesReference": reference, "name": name });
         let body = self.connection.request("dataBreakpointInfo", arguments, REQUEST)?;
         serde_json::from_value(body).map_err(|error| format!("The debugger's data breakpoint did not read: {error}"))
     }

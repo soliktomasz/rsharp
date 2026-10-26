@@ -55,6 +55,8 @@ pub(super) struct DebugState {
     /// The session's data breakpoints, watched for a write that changes the value: never kept with the folder, as
     /// the objects they watch live in the program alone.
     data_breakpoints: Vec<rsharp_dap::DataBreakpoint>,
+    /// Console input reaches the adapter in the order it was entered.
+    input_task: Option<Task<()>>,
     _task: Option<Task<()>>,
 }
 
@@ -199,6 +201,7 @@ impl DebugState {
             hot_reload: None,
             after_apply: None,
             data_breakpoints: Vec::new(),
+            input_task: None,
             _task: None,
         }
     }
@@ -1589,8 +1592,24 @@ impl MainWindow {
 
     /// What is typed into the Debug console, sent to the program reading its input, as Rider's internal console does.
     pub fn debug_input(&mut self, text: &str, cx: &mut Context<Self>) {
+        let Some(session) = self.debug.session.clone() else { return };
+        let previous = self.debug.input_task.take();
         let text = text.to_string();
-        self.ask_session(cx, move |session| session.input_with(&text, false), |_, (), _, _| {});
+        let generation = self.debug.generation;
+        let handle = self.handle;
+        self.debug.input_task = Some(cx.spawn(async move |_, cx| {
+            if let Some(previous) = previous {
+                previous.await;
+            }
+            let answer = cx.background_executor().spawn(async move { session.input_with(&text, false) }).await;
+            if let Err(why) = answer {
+                let _ = handle.update(cx, |m, _, cx| {
+                    if m.debug.generation == generation {
+                        m.fail_debug(&why, cx);
+                    }
+                });
+            }
+        }));
     }
 
     /// Step Over, Step Into or Step Out, as Rider's keys do them: the edits made while paused are applied first, as
@@ -1672,6 +1691,7 @@ impl MainWindow {
 
     /// The session ended or was stopped: the lists go, and the status bar says how.
     fn finish_debug(&mut self, message: &str, cx: &mut Context<Self>) {
+        self.debug.input_task = None;
         self.end_hot_reload();
         self.debug.after_apply = None;
         self.debug.never_restart = false;
@@ -1702,6 +1722,7 @@ impl MainWindow {
 
     /// Leaving the folder: the session ends and everything it started with it.
     pub(super) fn leave_debug(&mut self, cx: &mut Context<Self>) {
+        self.debug.input_task = None;
         self.end_hot_reload();
         self.debug.after_apply = None;
         self.debug.never_restart = false;
@@ -2059,7 +2080,7 @@ impl MainWindow {
             DebugAction::CopyValue(value) => {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(value));
             }
-            DebugAction::SetDataBreakpoint(name) => self.set_data_breakpoint(name, cx),
+            DebugAction::SetDataBreakpoint { reference, name } => self.set_data_breakpoint(reference, name, cx),
             DebugAction::RemoveDataBreakpoint(data_id) => self.remove_data_breakpoint(&data_id, cx),
             DebugAction::AddWatch(expression) => {
                 self.debug_view.update(cx, |view, cx| view.add_watch(&expression, cx));
@@ -2086,12 +2107,12 @@ impl MainWindow {
         }
     }
 
-    /// Set Value: the debugger changes an expression in the frame the program is stopped in, and the frame's values are
-    /// read again.
     /// Rider's Set Data Breakpoint on a value: the debugger names what a write to it would watch, and the session
     /// watches it until it ends.
-    fn set_data_breakpoint(&mut self, name: String, cx: &mut Context<Self>) {
-        let Some(frame) = self.debug.frames.first().map(|frame| frame.id) else { return };
+    fn set_data_breakpoint(&mut self, reference: i64, name: String, cx: &mut Context<Self>) {
+        if self.debug.phase != Phase::Paused {
+            return;
+        }
         let Some(session) = self.debug.session.clone() else { return };
         let generation = self.debug.generation;
         let handle = self.handle;
@@ -2100,7 +2121,7 @@ impl MainWindow {
         cx.spawn(async move |_, cx| {
             let asked = name.clone();
             let info =
-                cx.background_executor().spawn(async move { session.data_breakpoint_info(Some(frame), &asked) }).await;
+                cx.background_executor().spawn(async move { session.data_breakpoint_info(reference, &asked) }).await;
             let _ = handle.update(cx, |m, _, cx| {
                 if m.debug.generation != generation {
                     return;
@@ -2170,6 +2191,7 @@ impl MainWindow {
         self.debug_view.update(cx, |view, cx| view.set_data_breakpoints(list, cx));
     }
 
+    /// Set Value changes an expression in the stopped frame and reads its values again.
     fn set_value(&mut self, expression: String, value: String, cx: &mut Context<Self>) {
         let Some(frame) = self.debug.frames.first().cloned() else { return };
         let Some(session) = self.debug.session.clone() else { return };

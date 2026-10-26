@@ -1187,6 +1187,10 @@ moves! {
     Paste => |e, cx| {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
             let text = text.replace("\r\n", "\n");
+            if e.console_input {
+                cx.emit(ConsoleInput(text));
+                return;
+            }
             let lines: Vec<&str> = text.split('\n').collect();
             let carets = e.carets.as_slice();
             let plan = if carets.len() > 1 && lines.len() == carets.len() {
@@ -1601,7 +1605,6 @@ impl Element for EditorElement {
                 if let Some((line, values)) = &inline_values
                     && *line == row.line
                     && row.last
-                    && !hints.iter().any(|(at, _)| *at == row.end - row.start)
                 {
                     hints.push((row.end - row.start, values.as_str()));
                 }
@@ -2050,6 +2053,60 @@ fn runs_for(content: &str, line_start: usize, colours: &[(Range<usize>, Hsla)], 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn open<'a>(
+        name: &str,
+        text: &'static [u8],
+        cx: &'a mut gpui::TestAppContext,
+    ) -> (Entity<CodeEditor>, &'a mut gpui::VisualTestContext) {
+        cx.update(|cx| {
+            crate::init(std::env::temp_dir().join(format!("rsharp-editor-{name}-{}", std::process::id())), cx);
+            cx.global_mut::<crate::state::Ide>().servers = false;
+            cx.global_mut::<crate::templates::Templates>().enabled = false;
+        });
+        let (editor, cx) = cx.add_window_view(|_, cx| {
+            let buffer = cx.new(|cx| Buffer::new(PathBuf::from("Program.cs"), text, cx));
+            CodeEditor::new(buffer, cx)
+        });
+        editor.update_in(cx, |editor, window, _| window.focus(&editor.focus));
+        (editor, cx)
+    }
+
+    #[gpui::test]
+    fn pasting_into_a_console_sends_the_clipboard_to_the_program(cx: &mut gpui::TestAppContext) {
+        let (editor, cx) = open("paste-input", b"", cx);
+        editor.update(cx, |editor, _| {
+            editor.console(PathBuf::new());
+            editor.console_input(true);
+        });
+        let inputs = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received = inputs.clone();
+        cx.update(|_, cx| {
+            cx.subscribe(&editor, move |_, input: &ConsoleInput, _| received.lock().unwrap().push(input.0.clone()))
+                .detach();
+            cx.write_to_clipboard(ClipboardItem::new_string("Ada\r\nLovelace".into()));
+        });
+        cx.dispatch_action(Paste);
+        cx.dispatch_action(Newline);
+        cx.run_until_parked();
+        assert_eq!(*inputs.lock().unwrap(), ["Ada\nLovelace", "\n"], "Paste lost the program's input");
+        assert_eq!(editor.read_with(cx, |editor, _| editor.text.to_string()), "", "input changed the console's output");
+    }
+
+    #[gpui::test]
+    fn an_exception_and_its_local_values_are_both_drawn_on_the_stopped_line(cx: &mut gpui::TestAppContext) {
+        let (editor, cx) = open("exception-values", b"values[index];", cx);
+        editor.update(cx, |editor, cx| {
+            editor.buffer.update(cx, |buffer, cx| {
+                buffer.set_exception(Some((0, "  IndexOutOfRangeException".into())), cx);
+                buffer.set_inline_values(Some((0, "  index = 5".into())), cx);
+            });
+        });
+        cx.run_until_parked();
+        let shown = editor.read_with(cx, |editor, _| editor.layout.as_ref().unwrap().lines[0].line.text.to_string());
+        assert!(shown.contains("IndexOutOfRangeException"), "the exception is missing from the drawn line: {shown}");
+        assert!(shown.contains("index = 5"), "the exception hid the stopped frame's values: {shown}");
+    }
 
     #[test]
     fn a_place_on_a_hinted_line_is_its_byte_past_the_hints_before_it() {
