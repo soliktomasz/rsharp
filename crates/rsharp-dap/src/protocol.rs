@@ -167,6 +167,16 @@ pub struct Breakpoints {
     pub breakpoints: Vec<Breakpoint>,
 }
 
+/// What a data breakpoint on a value would watch, as `dataBreakpointInfo` answers: its id, what it is, and why not.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DataBreakpointInfo {
+    pub data_id: Option<String>,
+    pub description: String,
+    pub access_types: Option<Vec<String>>,
+    pub can_persist: Option<bool>,
+}
+
 /// What a debugged program can take of Hot Reload, as the adapter describes it: the runtime's capabilities and each
 /// loaded module, editable or why not.
 #[derive(Clone, Debug, Default, Deserialize)]

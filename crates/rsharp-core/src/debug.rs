@@ -61,7 +61,13 @@ impl Default for ExceptionBreakpoint {
         Self {
             types: Vec::new(),
             enabled: true,
-            scenarios: vec!["unhandled".into()],
+            // Rider's Any exception: thrown anywhere, and handled outside the user's code or not at all.
+            scenarios: vec![
+                "thrownInUserCode".into(),
+                "thrownInExternalCode".into(),
+                "handledInExternalCode".into(),
+                "unhandled".into(),
+            ],
             condition: String::new(),
             hit_count: String::new(),
             log_message: String::new(),
@@ -321,7 +327,14 @@ impl Breakpoints {
     pub fn add_exception(&mut self) {
         self.exceptions.push(ExceptionBreakpoint {
             types: vec!["System.Exception".into()],
-            scenarios: vec!["thrownInUserCode".into(), "unhandled".into()],
+            // Rider's new breakpoint on a type stops wherever that type is thrown, however it is handled.
+            scenarios: vec![
+                "thrownInUserCode".into(),
+                "thrownInExternalCode".into(),
+                "handledInUserCode".into(),
+                "handledInExternalCode".into(),
+                "unhandled".into(),
+            ],
             ..ExceptionBreakpoint::default()
         });
     }
@@ -469,6 +482,9 @@ mod tests {
         assert_eq!(transport_pid("clr-debug-pipe-123-456789-in"), Some(123));
         assert_eq!(transport_pid("clr-debug-pipe-123-456789-out"), None);
         assert_eq!(transport_pid("dotnet-diagnostic-123"), None);
+        assert_eq!(diagnostic_pid("dotnet-diagnostic-123"), Some(123));
+        assert_eq!(diagnostic_pid("dotnet-diagnostic-123-in"), None);
+        assert_eq!(diagnostic_pid("clr-debug-pipe-123-456-in"), None);
 
         let kept = DebugSessions { recent_attached: Some(hosted) };
         let json = serde_json::to_string(&kept).unwrap();
@@ -621,21 +637,14 @@ impl DotnetProcess {
 }
 
 /// The .NET programs on this machine a debugger can attach to, as Rider's Attach to Process lists them: CoreCLR's alone,
-/// found by the debugger transport its runtime opened (a `clr-debug-pipe-<pid>-<started>-in` in the temporary folder).
-/// RSharp's own process is left out. Each one's user and command line are read with `ps`, off the UI thread.
-// shortcut: Windows lists no programs yet, its named pipes not being read; list them from `\\.\pipe\` when a Windows
-// attach is wanted.
-#[cfg(not(windows))]
+/// found by what its runtime opened for a debugger (macOS and Linux's `clr-debug-pipe-<pid>-<started>-in` in the temporary
+/// folder, Windows's `dotnet-diagnostic-<pid>` pipe). RSharp's own process is left out. Each one's name, user and command
+/// line is a call into the system, so this is read off the UI thread.
 pub fn processes() -> Vec<DotnetProcess> {
     let mut found: Vec<DotnetProcess> = candidate_ids().into_iter().filter_map(read_process).collect();
     found.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()).then(a.id.cmp(&b.id)));
     found.dedup_by_key(|process| process.id);
     found
-}
-
-#[cfg(windows)]
-pub fn processes() -> Vec<DotnetProcess> {
-    Vec::new()
 }
 
 /// One program by its process id, when it is one a debugger can attach to.
@@ -663,6 +672,162 @@ fn transport_pid(name: &str) -> Option<u32> {
     let rest = name.strip_prefix("clr-debug-pipe-")?.strip_suffix("-in")?;
     // <pid>-<started at>
     rest.split('-').next()?.parse().ok()
+}
+
+/// The process each of the runtime's diagnostic pipes names, RSharp's own left out: Windows's named pipes live in
+/// `\\.\pipe\`, each .NET program's a `dotnet-diagnostic-<pid>`.
+#[cfg(windows)]
+fn candidate_ids() -> Vec<u32> {
+    let Ok(entries) = std::fs::read_dir(r"\\.\pipe\") else { return Vec::new() };
+    let mut ids: Vec<u32> = entries
+        .flatten()
+        .filter_map(|entry| diagnostic_pid(&entry.file_name().to_string_lossy()))
+        .filter(|id| *id != std::process::id())
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// The process id a runtime's diagnostic port names, or none for another pipe.
+#[cfg(any(windows, test))]
+fn diagnostic_pid(name: &str) -> Option<u32> {
+    name.strip_prefix("dotnet-diagnostic-")?.parse().ok()
+}
+
+/// A process as Windows describes it: its executable's name and its command line through its process, its user through
+/// its token. A process the system will not open is listed by its id alone, as the debugger may still be let in.
+#[cfg(windows)]
+fn read_process(id: u32) -> Option<DotnetProcess> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, id) };
+    if process.is_null() {
+        return Some(DotnetProcess {
+            id,
+            name: id.to_string(),
+            command_line: String::new(),
+            user: String::new(),
+            is_mine: false,
+        });
+    }
+    let name = windows_image(process)
+        .and_then(|path| std::path::Path::new(&path).file_name().map(|name| name.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| id.to_string());
+    let (user, is_mine) = windows_owner(process);
+    let command_line = windows_command_line(process).unwrap_or_default();
+    unsafe { CloseHandle(process) };
+    Some(DotnetProcess { id, name, command_line, user, is_mine })
+}
+
+/// The process's executable as its full path.
+#[cfg(windows)]
+fn windows_image(process: windows_sys::Win32::Foundation::HANDLE) -> Option<String> {
+    use windows_sys::Win32::System::Threading::{PROCESS_NAME_WIN32, QueryFullProcessImageNameW};
+    let mut buffer = vec![0u16; 32768];
+    let mut length = buffer.len() as u32;
+    let ok = unsafe { QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, buffer.as_mut_ptr(), &mut length) };
+    (ok != 0).then(|| String::from_utf16_lossy(&buffer[..length as usize]))
+}
+
+/// The command line as the program was given it, through NtQueryInformationProcess's `UNICODE_STRING`.
+#[cfg(windows)]
+fn windows_command_line(process: windows_sys::Win32::Foundation::HANDLE) -> Option<String> {
+    use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessCommandLineInformation};
+    let mut needed = 0u32;
+    unsafe {
+        NtQueryInformationProcess(process, ProcessCommandLineInformation, std::ptr::null_mut(), 0, &mut needed);
+    }
+    if needed == 0 {
+        return None;
+    }
+    let mut buffer = vec![0u8; needed as usize];
+    let status = unsafe {
+        NtQueryInformationProcess(
+            process,
+            ProcessCommandLineInformation,
+            buffer.as_mut_ptr() as *mut _,
+            needed,
+            &mut needed,
+        )
+    };
+    if status != 0 || buffer.len() < std::mem::size_of::<usize>() * 2 {
+        return None;
+    }
+    // UNICODE_STRING: Length, MaximumLength, then the pointer to the text.
+    let length = u16::from_ne_bytes([buffer[0], buffer[1]]) as usize;
+    let pointer =
+        usize::from_ne_bytes(buffer[std::mem::size_of::<usize>()..std::mem::size_of::<usize>() * 2].try_into().ok()?);
+    if pointer == 0 {
+        return None;
+    }
+    let text = unsafe { std::slice::from_raw_parts(pointer as *const u16, length / 2) };
+    Some(String::from_utf16_lossy(text))
+}
+
+/// The process's user and whether it is the person running RSharp, by the SID of each one's token.
+#[cfg(windows)]
+fn windows_owner(process: windows_sys::Win32::Foundation::HANDLE) -> (String, bool) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::TOKEN_QUERY;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    let mut token: windows_sys::Win32::Foundation::HANDLE = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+        return (String::new(), false);
+    }
+    let read = windows_token_user(token);
+    unsafe { CloseHandle(token) };
+    let Some((name, process_sid)) = read else { return (String::new(), false) };
+    let mut mine: windows_sys::Win32::Foundation::HANDLE = std::ptr::null_mut();
+    let is_mine = if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut mine) } != 0 {
+        let same = windows_token_user(mine).is_some_and(|(_, sid)| sid == process_sid);
+        unsafe { CloseHandle(mine) };
+        same
+    } else {
+        false
+    };
+    (name, is_mine)
+}
+
+/// A token's user: the name Windows gives it, and its SID's bytes.
+#[cfg(windows)]
+fn windows_token_user(token: windows_sys::Win32::Foundation::HANDLE) -> Option<(String, Vec<u8>)> {
+    use windows_sys::Win32::Security::{GetLengthSid, GetTokenInformation, LookupAccountSidW, TOKEN_USER, TokenUser};
+    let mut needed = 0u32;
+    unsafe { GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed) };
+    if needed == 0 {
+        return None;
+    }
+    // In words, so the token's structures in it are aligned as they are given.
+    let mut buffer = vec![0usize; (needed as usize).div_ceil(std::mem::size_of::<usize>())];
+    let length = (buffer.len() * std::mem::size_of::<usize>()) as u32;
+    if unsafe { GetTokenInformation(token, TokenUser, buffer.as_mut_ptr() as *mut _, length, &mut needed) } == 0 {
+        return None;
+    }
+    let user = unsafe { &*(buffer.as_ptr() as *const TOKEN_USER) };
+    let sid = user.User.Sid;
+    if sid.is_null() {
+        return None;
+    }
+    let length = unsafe { GetLengthSid(sid) } as usize;
+    let bytes = unsafe { std::slice::from_raw_parts(sid as *const u8, length) }.to_vec();
+    let mut name = vec![0u16; 256];
+    let mut domain = vec![0u16; 256];
+    let (mut name_length, mut domain_length) = (name.len() as u32, domain.len() as u32);
+    let mut kind = 0;
+    let ok = unsafe {
+        LookupAccountSidW(
+            std::ptr::null(),
+            sid,
+            name.as_mut_ptr(),
+            &mut name_length,
+            domain.as_mut_ptr(),
+            &mut domain_length,
+            &mut kind,
+        )
+    };
+    let name = if ok != 0 { String::from_utf16_lossy(&name[..name_length as usize]) } else { String::new() };
+    Some((name, bytes))
 }
 
 /// A process as the system describes it, or none when it has gone or is not one the pipes named: macOS asks

@@ -3768,6 +3768,7 @@ fn an_unsupported_request_answers_an_error_without_stopping_the_dispatcher() {
 }
 
 /// Passenger's StartHold: a runtime held at its start by a diagnostic port the test owns, so a launch waits for it.
+/// The port is a Unix socket on macOS and Linux, and a named pipe on Windows.
 #[cfg(unix)]
 struct StartHold {
     path: PathBuf,
@@ -3792,12 +3793,12 @@ impl StartHold {
     }
 
     /// The runtime's connection and its process id, once it has come and waits.
-    fn accept(&self) -> (std::os::unix::net::UnixStream, i64) {
-        use std::io::Read;
-        let (mut stream, _) = self.listener.accept().expect("the runtime connects to the hold");
+    fn accept(&self) -> (Held, i64) {
+        let (stream, _) = self.listener.accept().expect("the runtime connects to the hold");
+        let mut stream = Held(stream);
         // "ADVR_V1\0", the cookie, its process's id and two bytes kept for later.
         let mut advertised = [0u8; 34];
-        stream.read_exact(&mut advertised).expect("the runtime says who it is");
+        stream.read_exact(&mut advertised);
         let pid = u64::from_le_bytes(advertised[24..32].try_into().expect("the id is 8 bytes")) as i64;
         (stream, pid)
     }
@@ -3810,18 +3811,139 @@ impl Drop for StartHold {
     }
 }
 
-/// Lets the held runtime go: the diagnostic protocol's header and its ResumeRuntime command, then its answer.
-#[cfg(unix)]
-fn let_go(stream: &mut std::os::unix::net::UnixStream) {
-    use std::io::{Read, Write};
-    let mut resume = b"DOTNET_IPC_V1\0".to_vec();
-    resume.extend_from_slice(&[20, 0, 0x04, 0x01, 0, 0]);
-    stream.write_all(&resume).expect("the resume is sent");
-    let mut answer = [0u8; 24];
-    stream.read_exact(&mut answer).expect("the runtime answers the resume");
+/// The hold's named pipe on Windows, in the pipe namespace a runtime's diagnostic port understands.
+#[cfg(windows)]
+struct StartHold {
+    name: String,
+    handle: windows_sys::Win32::Foundation::HANDLE,
 }
 
+#[cfg(windows)]
+unsafe impl Send for StartHold {}
+
+#[cfg(windows)]
+impl StartHold {
+    fn new() -> Option<Self> {
+        use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+        use windows_sys::Win32::System::Pipes::{
+            CreateNamedPipeW, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+        };
+        let name = format!(r"\\.\pipe\rsharp-hold-{}", std::process::id());
+        let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+        let handle = unsafe {
+            CreateNamedPipeW(
+                wide.as_ptr(),
+                PIPE_ACCESS_DUPLEX,
+                PIPE_TYPE_BYTE | PIPE_WAIT,
+                PIPE_UNLIMITED_INSTANCES,
+                4096,
+                4096,
+                0,
+                std::ptr::null(),
+            )
+        };
+        if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+            return None;
+        }
+        Some(Self { name, handle })
+    }
+
+    fn environment(&self) -> BTreeMap<String, String> {
+        BTreeMap::from([("DOTNET_DiagnosticPorts".to_string(), format!("{},connect,suspend", self.name))])
+    }
+
+    /// The runtime's connection and its process id, once it has come and waits.
+    fn accept(&self) -> (Held, i64) {
+        use windows_sys::Win32::System::Pipes::ConnectNamedPipe;
+        unsafe {
+            ConnectNamedPipe(self.handle, std::ptr::null_mut());
+        }
+        let mut held = Held { handle: self.handle };
+        let mut advertised = [0u8; 34];
+        held.read_exact(&mut advertised);
+        let pid = u64::from_le_bytes(advertised[24..32].try_into().expect("the id is 8 bytes")) as i64;
+        (held, pid)
+    }
+}
+
+#[cfg(windows)]
+impl Drop for StartHold {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.handle);
+        }
+    }
+}
+
+/// The held runtime's connection, read and written as a stream on either system.
 #[cfg(unix)]
+struct Held(std::os::unix::net::UnixStream);
+
+#[cfg(unix)]
+impl Held {
+    fn read_exact(&mut self, into: &mut [u8]) {
+        use std::io::Read;
+        self.0.read_exact(into).expect("the runtime says what it is told");
+    }
+
+    fn read_one(&mut self) {
+        use std::io::Read;
+        let mut byte = [0u8; 1];
+        let _ = self.0.read(&mut byte);
+    }
+
+    fn write_all(&mut self, from: &[u8]) {
+        use std::io::Write;
+        self.0.write_all(from).expect("the runtime is told");
+    }
+}
+
+#[cfg(windows)]
+struct Held {
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+unsafe impl Send for Held {}
+
+#[cfg(windows)]
+impl Held {
+    fn read_exact(&mut self, into: &mut [u8]) {
+        use windows_sys::Win32::Storage::FileSystem::ReadFile;
+        let mut read = 0u32;
+        let ok =
+            unsafe { ReadFile(self.handle, into.as_mut_ptr(), into.len() as u32, &mut read, std::ptr::null_mut()) };
+        assert!(ok != 0 && read as usize == into.len(), "the runtime says what it is told");
+    }
+
+    fn read_one(&mut self) {
+        // A closed pipe is the read's end, not a failure: the session ended as it should.
+        use windows_sys::Win32::Storage::FileSystem::ReadFile;
+        let mut byte = [0u8; 1];
+        let mut read = 0u32;
+        unsafe {
+            ReadFile(self.handle, byte.as_mut_ptr(), 1, &mut read, std::ptr::null_mut());
+        }
+    }
+
+    fn write_all(&mut self, from: &[u8]) {
+        use windows_sys::Win32::Storage::FileSystem::WriteFile;
+        let mut written = 0u32;
+        let ok =
+            unsafe { WriteFile(self.handle, from.as_ptr(), from.len() as u32, &mut written, std::ptr::null_mut()) };
+        assert!(ok != 0 && written as usize == from.len(), "the runtime is told");
+    }
+}
+
+/// Lets the held runtime go: the diagnostic protocol's header and its ResumeRuntime command, then its answer.
+fn let_go(held: &mut Held) {
+    let mut resume = b"DOTNET_IPC_V1\0".to_vec();
+    resume.extend_from_slice(&[20, 0, 0x04, 0x01, 0, 0]);
+    held.write_all(&resume);
+    let mut answer = [0u8; 24];
+    held.read_exact(&mut answer);
+}
+
 #[test]
 fn a_program_whose_runtime_starts_late_is_still_debugged() {
     let _serial = one_at_a_time();
@@ -3852,7 +3974,6 @@ fn a_program_whose_runtime_starts_late_is_still_debugged() {
     session.disconnect(true);
 }
 
-#[cfg(unix)]
 #[test]
 fn a_launch_stopped_while_its_runtime_starts_ends_at_once_with_its_program() {
     let _serial = one_at_a_time();
@@ -3867,10 +3988,8 @@ fn a_launch_stopped_while_its_runtime_starts_ends_at_once_with_its_program() {
     let held = std::thread::spawn(move || {
         let (mut stream, pid) = hold.accept();
         let _ = pid_tx.send(pid);
-        // The runtime is never let go: the session's end closes the socket instead.
-        use std::io::Read;
-        let mut byte = [0u8; 1];
-        let _ = stream.read(&mut byte);
+        // The runtime is never let go: the session's end closes the connection instead.
+        stream.read_one();
     });
     let (control_tx, control_rx) = mpsc::channel();
     let starting = std::thread::spawn(move || {

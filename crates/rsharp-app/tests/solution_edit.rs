@@ -84,7 +84,11 @@ fn the_solution_view_menus_offer_riders_items_with_their_keys(cx: &mut TestAppCo
     let (cut, copy, paste) = (key("⌘X", "Ctrl+X"), key("⌘C", "Ctrl+C"), key("⌘V", "Ctrl+V"));
     let menu = |cx: &mut VisualTestContext, name: &str| {
         let at = row(&main, cx, name);
-        main.read_with(cx, |main, _| main.solution_menu(at))
+        // Whether the test's own folder sits in a worktree is the system's; the Git submenu is not what this test
+        // is about, so it is left out of the comparison.
+        main.read_with(cx, |main, _| {
+            main.solution_menu(at).into_iter().filter(|item| !item.starts_with("Git >")).collect::<Vec<_>>()
+        })
     };
     assert_eq!(
         menu(cx, "Shop"),
@@ -96,7 +100,7 @@ fn the_solution_view_menus_offer_riders_items_with_their_keys(cx: &mut TestAppCo
             "Add > New Solution Folder...".into(),
             "Add > Existing Project...".into(),
             "Copy Path".into(),
-            "Open In > Terminal".into()
+            "Open In > Terminal".into(),
         ]
     );
     assert_eq!(

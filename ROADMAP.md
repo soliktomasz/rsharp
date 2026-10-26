@@ -314,9 +314,11 @@ with the statement marked and shows the thread's frames, the chosen frame's loca
 click), watches answered as they are typed, and the program's output in the Debug window's console. Rider's Debug
 window is `debug_view.rs` (its keys, Frames, Variables, Watches and Console) at Bottom Left, and `window/debug.rs`
 is its controller. Attach to Process lists the machine's .NET programs as CoreCLR's own debugger transports name
-them — executable, process id, user and command line, read natively on macOS and Linux — with a search, Refresh and
-"Recently attached" first; the chosen one is attached to with the folder's breakpoints, Stop lets it go on (Detach
-does the same), and Reattach finds the last one in the folder by id, then by program. Windows lists no programs yet. Evaluate Expression (Alt+F8) answers an
+them — executable, process id, user and command line, read natively on macOS and Linux from the runtime's debugger
+transport, and on Windows from its `dotnet-diagnostic-<pid>` named pipes, with the executable, command line and token
+user read through the process — with a search, Refresh and "Recently attached" first; the chosen one is attached to
+with the folder's breakpoints, Stop lets it go on (Detach does the same), and Reattach finds the last one in the folder
+by id, then by program. Evaluate Expression (Alt+F8) answers an
 expression in the frame the program is stopped in, Set Next Statement (Ctrl+Shift+F10) moves the paused thread to
 the caret's line where the debugger allows it, the frames and the marked line following, and a variable chosen in
 Variables takes a new value through Set Value, the tree read again and the program going on with it. The Debug
@@ -331,7 +333,10 @@ Function breakpoints (Add Function Breakpoint in the Breakpoints dialog, a metho
 the program in that method wherever it is, as does a line breakpoint. The window test takes a breakpoint through F9, F5, the Debug window's own Step Over and Resume
 buttons and its frame list, and checks the marked line and the program's output; both debugger suites skip,
 saying why, when dotnet or the adapter is not there. macOS is where they ran; Windows and Linux are CI's.
-- Data breakpoints (Windows x64's to offer). (Not yet.)
+- Data breakpoints (Windows x64's to offer). (Built: a value's Variables menu sets one through `dataBreakpointInfo`,
+  the session's data breakpoints are sent with `setDataBreakpoints` and listed in the Debug window, where a row removes
+  its own. They last for their session, as Passenger's do: the object they watch lives in that program alone, so no
+  folder keeps them. ICorDebug offers them only on Windows x64, which is where the live window test runs.)
 - Decompiled symbols. (Built: a frame the adapter has no source for (`isResolved` false) is resolved with
   `resolveStackFrame`, which decompiles its assembly into the adapter's symbol cache off the engine's lock; RSharp reads
   the text the decompiled PDB embeds (`symbolic-ppdb`, read once per PDB), writes it under the cache's `decompiled/…`
@@ -356,11 +361,14 @@ saying why, when dotnet or the adapter is not there. macOS is where they ran; Wi
   the session. Stop (Shift+F5 as well), leaving the folder, a refused launch and Attach end the session with the program.
   `tests/debugger.rs` pauses in the edited method, saves, sees its breakpoint verified again and the program print the
   edit; applies an unsaved edit by Alt+F10 and another by resuming; saves a field's type change and watches the program
-  restart, and answers the question when the setting is off; and moves a breakpoint with the line inserted above it.)
-- Attach to Process on Windows. (Not yet: the Windows listing reads the process's `dotnet-diagnostic-<pid>` named pipe,
-  which is not read; macOS's `clr-debug-pipe` and Linux's `/proc` are.)
-- Data breakpoints (Windows x64's to offer). (Not yet: the adapter answers `dataBreakpointInfo` and
-  `setDataBreakpoints`, and ICorDebug offers them only for Windows x64, so no macOS test can say they work.)
+  restart, and answers the question when the setting is off; and moves a breakpoint with the line inserted above it.
+  A known limit, taken on purpose: Hot Reload is for a program this window launches. One attached to was built
+  elsewhere, so its edits have no build for Roslyn's Edit and Continue session to describe; attaching leaves the save
+  path as it was, and the Debug console says so rather than applying an update to the wrong program.)
+- Attach to Process on Windows. (Built: the listing reads `\\.\pipe\` for each runtime's
+  `dotnet-diagnostic-<pid>` pipe, and the executable by `QueryFullProcessImageNameW`, the command line by
+  `NtQueryInformationProcess`, and the user and whether it is this person's by the process token's SID. The attach
+  tests wait for that pipe on Windows instead of skipping, and the process-naming test covers the pipe parser.)
 
 Passenger: `Debugging/`, `MainWindow.Attach.cs`, the Debugger notes in its CLAUDE.md; issues #145–#157, #214, #219.
 Done when: Passenger's debugger window tests, translated, pass on macOS, Windows x64 and Linux, against the same
@@ -403,8 +411,22 @@ their members; `StuckEvaluationTests`' stuck evaluation on a continue and at an 
 requests; `LaunchTests`' two late-runtime cases (a held runtime and a launch stopped while it starts); `StepTests`' step
 into a module without symbols; and `DecompiledSymbolsTests`' resolved frame.
 The client now sends Just My Code as a choice (`Launch::just_my_code`, `Start::Attach::just_my_code`), though the window
-still always starts with it on. Remaining: none — every case in `vendor/passenger/tests/Passenger.Tests/Debugging/` is
-translated; the window-level cases it shares with `DebuggerTests` are `crates/rsharp-app/tests/debugger.rs`.
+still always starts with it on. Every case in `vendor/passenger/tests/Passenger.Tests/Debugging/` is translated.
+The window-level `DebuggerTests` cases translated in `crates/rsharp-app/tests/debugger.rs` include: F9/F5 with the
+locals, the Variables and Frames menus (copy a value and the stack, add a watch), the Breakpoints dialog's list and a
+breakpoint turned off, an unreadable hit count refused by the debugger,
+Mute Breakpoints passing a line and an exception breakpoint, `$exception` and a watch of its message, an exception named
+at the throwing line and in the status bar, the typed Debug console as the program's input, 100,000 coloured lines with
+no colour codes, Pause in a loop, Attach to Process's .NET-only listing, closing the window and a debugger killed while
+paused leaving no program, and the session-only data-breakpoint menu and list.
+Still to translate in the window suite, each needing the UI it names first: exception breakpoints by type with a
+condition (the dialog stores both and the client sends them, but the window case is unproven), the execution arrow
+dragged past the loop
+(run to cursor), the breakpoint's inline Alt+F9 popup and a shift-click tracepoint, the exception handler options, a
+value from the previous stop opening to an error, megabyte strings in Variables and a hover, Set Value under a range,
+an evaluation that could not be stopped, a debugger that dies with an exception, Stop of a program the debugger cannot
+end, a test host the debugger cannot attach to, and the terminal's own debug cases. These are the remaining work of
+this phase, not behaviour taken as done.
 
 ### Phase 9: Avalonia and WPF (L)
 - A XAML host: `Passenger.Xaml` behind a thin JSON-lines (or LSP) process, giving completion, diagnostics,

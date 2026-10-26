@@ -52,6 +52,9 @@ pub(super) struct DebugState {
     hot_reload: Option<HotReload>,
     /// The step or resume waiting for the edits made while paused to reach the program.
     after_apply: Option<AfterApply>,
+    /// The session's data breakpoints, watched for a write that changes the value: never kept with the folder, as
+    /// the objects they watch live in the program alone.
+    data_breakpoints: Vec<rsharp_dap::DataBreakpoint>,
     _task: Option<Task<()>>,
 }
 
@@ -163,6 +166,16 @@ impl HotReloadOutcome {
     }
 }
 
+impl Drop for DebugState {
+    fn drop(&mut self) {
+        // The window is going: a program it launched ends with it, one it attached to is let go, as Stop does.
+        if let Some(session) = self.session.take() {
+            let terminate = self.attached.is_none();
+            std::thread::spawn(move || session.disconnect(terminate));
+        }
+    }
+}
+
 impl DebugState {
     pub(super) fn new() -> Self {
         Self {
@@ -185,6 +198,7 @@ impl DebugState {
             pending: Vec::new(),
             hot_reload: None,
             after_apply: None,
+            data_breakpoints: Vec::new(),
             _task: None,
         }
     }
@@ -229,6 +243,11 @@ impl MainWindow {
     /// Whether a session is starting, running or paused.
     pub fn is_debugging(&self) -> bool {
         !matches!(self.debug.phase, Phase::Idle)
+    }
+
+    /// The adapter's own process, for a test that ends it as a crash would.
+    pub fn debug_adapter_process(&self) -> Option<u32> {
+        self.debug.session.as_ref().and_then(|session| session.adapter_process_id())
     }
 
     /// Debug: the chosen configuration's program is built, its plan worked out, and it is started under the debugger with
@@ -359,6 +378,9 @@ impl MainWindow {
                 }
                 self.debug.phase = Phase::Running;
                 self.debug_view.update(cx, |view, cx| view.running(cx));
+                self.debug_console.update(cx, |view, cx| view.set_input(true, cx));
+                self.push_data_breakpoints(cx);
+                self.show_data_breakpoints(cx);
                 self.said = Some(
                     match &self.debug.attached {
                         Some(process) => format!("Attached to {}…", process.program()),
@@ -611,6 +633,7 @@ impl MainWindow {
             |m, (threads, frames, variables), window, cx| {
                 m.show_stopped(
                     "Paused where Set Next Statement put it".into(),
+                    None,
                     None,
                     threads,
                     frames,
@@ -1038,7 +1061,7 @@ impl MainWindow {
             && let Some((threads, frames, variables)) = refreshed
             && self.debug.phase == Phase::Paused
         {
-            self.show_stopped("Paused".into(), None, threads, frames, variables, window, cx);
+            self.show_stopped("Paused".into(), None, None, threads, frames, variables, window, cx);
         }
         // An edit the runtime cannot take runs only in a new program: restart it when Settings says so, else ask as
         // dotnet watch asks, unless this session was told Never.
@@ -1231,7 +1254,9 @@ impl MainWindow {
                 let at = stop.path.clone().zip(stop.line);
                 self.debug.thread = Some(stop.thread);
                 self.said = Some(stop.said().into());
-                self.fetch_stopped(stop.said(), at, stop.thread, window, cx);
+                let exception = (stop.reason == "exception").then(|| stop.description.clone()).flatten();
+                let described = stop.reason == "exception";
+                self.fetch_stopped(stop.said(), at, exception, described, stop.thread, window, cx);
             }
             Said::Continued => {
                 if self.debug.session.is_none() {
@@ -1280,6 +1305,8 @@ impl MainWindow {
         &mut self,
         status: String,
         at: Option<(PathBuf, usize)>,
+        exception: Option<String>,
+        described: bool,
         thread: i64,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1287,15 +1314,25 @@ impl MainWindow {
         let Some(session) = self.debug.session.clone() else { return };
         let generation = self.debug.generation;
         let handle = self.handle;
+        // A stop at an exception is told of it by the exception's own request, the stop naming only its reason.
+        let fallback = exception.clone();
         cx.spawn(async move |_, cx| {
-            let read = cx.background_executor().spawn(async move { read_stop(&session, thread) }).await;
+            let read = cx
+                .background_executor()
+                .spawn(async move {
+                    let stop = read_stop(&session, thread);
+                    let description =
+                        described.then(|| session.exception_info(thread).ok().map(|info| describe_exception(&info)));
+                    stop.map(|(threads, frames, variables)| (threads, frames, variables, description.flatten()))
+                })
+                .await;
             let _ = handle.update(cx, |m, window, cx| {
                 if m.debug.generation != generation {
                     return;
                 }
                 match read {
-                    Ok((threads, frames, variables)) => {
-                        m.show_stopped(status, at, threads, frames, variables, window, cx)
+                    Ok((threads, frames, variables, description)) => {
+                        m.show_stopped(status, at, description.or(fallback), threads, frames, variables, window, cx)
                     }
                     Err(why) => m.fail_debug(&why, cx),
                 }
@@ -1309,22 +1346,28 @@ impl MainWindow {
         &mut self,
         status: String,
         at: Option<(PathBuf, usize)>,
+        exception: Option<String>,
         threads: Vec<rsharp_dap::protocol::Thread>,
         frames: Vec<rsharp_dap::protocol::Frame>,
         variables: Vec<VariableRow>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // An exception's stop names it once the exception's own request answers, as Rider's status bar does.
+        let status = match (&exception, status.as_str()) {
+            (Some(said), "Paused on an exception") => format!("Paused on an exception: {said}"),
+            _ => status,
+        };
         let rows: Vec<FrameRow> = frames.iter().map(frame_row).collect();
-        let at = at.or_else(|| frames.first().and_then(|frame| frame.path().map(|path| (path, frame.line))));
+        // An exception stop names no place of its own: the frames' first with source is where the program stopped.
+        let at = at.or_else(|| frames.iter().find_map(|frame| frame.path().map(|path| (path, frame.line))));
         // A stop with no source to show: the top frame's assembly is decompiled so its code shows where it stopped.
         let resolve_top = frames.first().is_some_and(|frame| {
             frame.decompiled_source_info.is_some() || (at.is_none() && frame.is_resolved == Some(false))
         });
         // The stopped frame's values, set in at the end of its line as Rider's inline values are: simple ones only,
         // four at most, each cut short.
-        let inline = frames.first().and_then(|frame| {
-            frame.path()?;
+        let inline = frames.iter().find(|frame| frame.path().is_some()).and_then(|_frame| {
             let parts: Vec<String> = variables
                 .iter()
                 .filter(|row| {
@@ -1364,7 +1407,7 @@ impl MainWindow {
         });
         self.clear_execution_line(cx);
         if let Some((path, line)) = at.filter(|_| !resolve_top) {
-            self.show_stop_marks(&path, line, inline, cx);
+            self.show_stop_marks(&path, line, inline, exception, cx);
             self.open_file(&path, Some((line, 0)), window, cx);
         }
         self.said = Some(status.into());
@@ -1417,7 +1460,7 @@ impl MainWindow {
                         }
                         m.debug_view.update(cx, |view, cx| view.resolved(index, row, cx));
                         if index == 0 {
-                            m.show_stop_marks(&path, line, None, cx);
+                            m.show_stop_marks(&path, line, None, None, cx);
                         }
                         m.open_file(&path, Some((line, 0)), window, cx);
                         m.said = Some(
@@ -1544,6 +1587,12 @@ impl MainWindow {
         self.ask_session(cx, move |session| session.pause(thread), |_, (), _, _| {});
     }
 
+    /// What is typed into the Debug console, sent to the program reading its input, as Rider's internal console does.
+    pub fn debug_input(&mut self, text: &str, cx: &mut Context<Self>) {
+        let text = text.to_string();
+        self.ask_session(cx, move |session| session.input_with(&text, false), |_, (), _, _| {});
+    }
+
     /// Step Over, Step Into or Step Out, as Rider's keys do them: the edits made while paused are applied first, as
     /// Rider's "Changes will be applied on the next step or resume".
     pub(super) fn step_debug(&mut self, how: Step, cx: &mut Context<Self>) {
@@ -1634,14 +1683,17 @@ impl MainWindow {
         self.evaluate_dialog = None;
         self.debug.session = None;
         self.debug.attached = None;
+        self.debug.data_breakpoints.clear();
         self.debug.phase = Phase::Idle;
         self.debug.frames.clear();
         self.debug.thread = None;
         self.debug.pending.clear();
         self.clear_execution_line(cx);
         self.debug_view.update(cx, |view, cx| view.finished(message, cx));
+        self.show_data_breakpoints(cx);
         self.debug_console.update(cx, |view, cx| {
             view.running = false;
+            view.set_input(false, cx);
             cx.notify();
         });
         self.said = Some(message.to_string().into());
@@ -1668,6 +1720,7 @@ impl MainWindow {
         }
         self.debug.phase = Phase::Idle;
         self.debug.attached = None;
+        self.debug.data_breakpoints.clear();
         self.debug.frames.clear();
         self.debug.thread = None;
         self.debug.pending.clear();
@@ -1675,7 +1728,9 @@ impl MainWindow {
         self.debug.shown_at = None;
         self.debug.verification.clear();
         self.debug_view.update(cx, |view, cx| view.finished("Not debugging", cx));
+        self.show_data_breakpoints(cx);
         self.debug_console.update(cx, |view, cx| view.clear(cx));
+        self.debug_console.update(cx, |view, cx| view.set_input(false, cx));
     }
 
     fn refuse_debug(&mut self, message: &str, cx: &mut Context<Self>) {
@@ -1896,7 +1951,7 @@ impl MainWindow {
     }
 
     /// Mute Breakpoints: every breakpoint stays where it is, and the debugger is told of none.
-    pub(super) fn set_breakpoints_muted(&mut self, muted: bool, cx: &mut Context<Self>) {
+    pub fn set_breakpoints_muted(&mut self, muted: bool, cx: &mut Context<Self>) {
         self.debug.breakpoints.set_muted(muted);
         self.save_breakpoints(cx);
         self.refresh_breakpoint_marks(cx);
@@ -1956,11 +2011,19 @@ impl MainWindow {
 
     /// Marks the line the program is stopped at, with the frame's values set in at its end, clearing the line it was
     /// at before.
-    fn show_stop_marks(&mut self, path: &Path, line: usize, inline: Option<String>, cx: &mut App) {
+    fn show_stop_marks(
+        &mut self,
+        path: &Path,
+        line: usize,
+        inline: Option<String>,
+        exception: Option<String>,
+        cx: &mut App,
+    ) {
         if let Some(buffer) = crate::buffer::find(&path.to_path_buf(), cx) {
             buffer.update(cx, |buffer, cx| {
                 buffer.set_execution_line(Some(line), cx);
                 buffer.set_inline_values(inline.map(|values| (line, values)), cx);
+                buffer.set_exception(exception.map(|said| (line, said)), cx);
             });
             self.debug.shown_at = Some(path.to_path_buf());
         }
@@ -1973,6 +2036,7 @@ impl MainWindow {
             buffer.update(cx, |buffer, cx| {
                 buffer.set_execution_line(None, cx);
                 buffer.set_inline_values(None, cx);
+                buffer.set_exception(None, cx);
             });
         }
     }
@@ -1992,11 +2056,120 @@ impl MainWindow {
             DebugAction::ToggleMute => self.set_breakpoints_muted(!self.debug.breakpoints.muted(), cx),
             DebugAction::SetValue { expression, value } => self.set_value(expression, value, cx),
             DebugAction::SelectThread(id) => self.select_debug_thread(id, window, cx),
+            DebugAction::CopyValue(value) => {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(value));
+            }
+            DebugAction::SetDataBreakpoint(name) => self.set_data_breakpoint(name, cx),
+            DebugAction::RemoveDataBreakpoint(data_id) => self.remove_data_breakpoint(&data_id, cx),
+            DebugAction::AddWatch(expression) => {
+                self.debug_view.update(cx, |view, cx| view.add_watch(&expression, cx));
+                self.evaluate_watch(expression, cx);
+            }
+            DebugAction::CopyStack => {
+                let stack = self
+                    .debug
+                    .frames
+                    .iter()
+                    .map(|frame| {
+                        let place = frame.path().map(|path| {
+                            format!("{}:{}", path.file_name().unwrap_or_default().to_string_lossy(), frame.line + 1)
+                        });
+                        match place {
+                            Some(place) => format!("{} at {place}", frame.name),
+                            None => frame.name.clone(),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(stack));
+            }
         }
     }
 
     /// Set Value: the debugger changes an expression in the frame the program is stopped in, and the frame's values are
     /// read again.
+    /// Rider's Set Data Breakpoint on a value: the debugger names what a write to it would watch, and the session
+    /// watches it until it ends.
+    fn set_data_breakpoint(&mut self, name: String, cx: &mut Context<Self>) {
+        let Some(frame) = self.debug.frames.first().map(|frame| frame.id) else { return };
+        let Some(session) = self.debug.session.clone() else { return };
+        let generation = self.debug.generation;
+        let handle = self.handle;
+        self.said = Some(format!("Asking the debugger about {name}…").into());
+        cx.notify();
+        cx.spawn(async move |_, cx| {
+            let asked = name.clone();
+            let info =
+                cx.background_executor().spawn(async move { session.data_breakpoint_info(Some(frame), &asked) }).await;
+            let _ = handle.update(cx, |m, _, cx| {
+                if m.debug.generation != generation {
+                    return;
+                }
+                match info {
+                    Ok(info) => match info.data_id {
+                        Some(data_id) => {
+                            m.debug.data_breakpoints.push(rsharp_dap::DataBreakpoint {
+                                data_id,
+                                location: info.description,
+                                condition: None,
+                                hit_condition: None,
+                                log_message: None,
+                            });
+                            m.said = Some(format!("Watching {name} for a write").into());
+                            m.push_data_breakpoints(cx);
+                            m.show_data_breakpoints(cx);
+                        }
+                        None => {
+                            m.said = Some(format!("No data breakpoint on {name}: {}", info.description).into());
+                        }
+                    },
+                    Err(why) => m.said = Some(why.into()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn remove_data_breakpoint(&mut self, data_id: &str, cx: &mut Context<Self>) {
+        self.debug.data_breakpoints.retain(|breakpoint| breakpoint.data_id != data_id);
+        self.push_data_breakpoints(cx);
+        self.show_data_breakpoints(cx);
+        cx.notify();
+    }
+
+    /// The session is told of the data breakpoints that are on, off the UI thread.
+    fn push_data_breakpoints(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.debug.session.clone() else { return };
+        let list = self.debug.data_breakpoints.clone();
+        let generation = self.debug.generation;
+        let handle = self.handle;
+        cx.spawn(async move |_, cx| {
+            let sent = cx.background_executor().spawn(async move { session.set_data_breakpoints(&list) }).await;
+            let _ = handle.update(cx, |m, _, cx| {
+                if m.debug.generation != generation {
+                    return;
+                }
+                if let Err(why) = sent {
+                    m.said = Some(why.into());
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The Debug window's list of the session's data breakpoints.
+    fn show_data_breakpoints(&mut self, cx: &mut Context<Self>) {
+        let list = self
+            .debug
+            .data_breakpoints
+            .iter()
+            .map(|breakpoint| (breakpoint.data_id.clone(), breakpoint.location.clone()))
+            .collect();
+        self.debug_view.update(cx, |view, cx| view.set_data_breakpoints(list, cx));
+    }
+
     fn set_value(&mut self, expression: String, value: String, cx: &mut Context<Self>) {
         let Some(frame) = self.debug.frames.first().cloned() else { return };
         let Some(session) = self.debug.session.clone() else { return };
@@ -2178,7 +2351,7 @@ impl MainWindow {
         }
         self.debug.thread = Some(id);
         self.debug_view.update(cx, |view, cx| view.choose_thread(id, cx));
-        self.fetch_stopped("Paused".into(), None, id, window, cx);
+        self.fetch_stopped("Paused".into(), None, None, false, id, window, cx);
     }
 
     /// The Attach to Process dialog while it is open, for a test to drive.
@@ -2205,6 +2378,7 @@ impl MainWindow {
             crate::breakpoints_dialog::Ended::Dismissed => {
                 m.breakpoints_dialog = None;
                 m.focus_editor(window, cx);
+                cx.notify();
             }
         })
         .detach();
@@ -2319,6 +2493,20 @@ fn variable_row(variable: rsharp_dap::protocol::Variable) -> VariableRow {
     }
 }
 
+/// An exception as Rider's stop names it: its type without its namespace, and its message.
+fn describe_exception(info: &rsharp_dap::protocol::ExceptionInfo) -> String {
+    let type_name = info
+        .details
+        .as_ref()
+        .and_then(|details| details.type_name.clone())
+        .unwrap_or_else(|| info.exception_id.trim_start_matches("CLR/").to_string());
+    let short = type_name.rsplit('.').next().unwrap_or(&type_name).to_string();
+    match info.details.as_ref().and_then(|details| details.message.clone()).or_else(|| info.description.clone()) {
+        Some(message) if !message.is_empty() => format!("{short}: {message}"),
+        _ => short,
+    }
+}
+
 /// A stop's frames and the innermost frame's values, read on a thread that may wait.
 fn read_stop(
     session: &Session,
@@ -2326,7 +2514,9 @@ fn read_stop(
 ) -> Result<(Vec<rsharp_dap::protocol::Thread>, Vec<rsharp_dap::protocol::Frame>, Vec<VariableRow>), String> {
     let threads = session.threads().unwrap_or_default();
     let frames = session.stack_trace(thread)?;
-    let variables = match frames.first() {
+    // The values are the first frame with source's, as an exception stop's top frame may be the runtime's.
+    let sourceful = frames.iter().find(|frame| frame.path().is_some()).or_else(|| frames.first());
+    let variables = match sourceful {
         // A thread stopped outside the person's code has no locals to show, not a failure.
         Some(frame) => read_variables(session, frame.id).unwrap_or_default(),
         None => Vec::new(),

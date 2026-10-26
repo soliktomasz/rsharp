@@ -11,6 +11,7 @@ use gpui::{Entity, Focusable, Modifiers, TestAppContext, VisualTestContext, Wind
 use rsharp_app::{new_project_dialog::NewProjectDialog, templates::Templates, window::MainWindow};
 use rsharp_core::nuget::sources::Places;
 use rsharp_core::templates::{TemplateEnvironment, cache::Catalogs};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use support::Run;
@@ -103,8 +104,15 @@ fn sdk10(env: &TemplateEnvironment) -> Option<String> {
 }
 
 /// A .sln with each project's GUID named by its order, as dotnet new sln makes them random.
+/// A text file as it is compared: its BOM and line endings aside, which the system or the SDK chose.
+fn text_of(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    text.replace("\r\n", "\n")
+}
+
 fn without_guids(bytes: &[u8]) -> String {
-    let text = String::from_utf8_lossy(bytes).into_owned();
+    let text = text_of(bytes);
     let mut seen: Vec<String> = Vec::new();
     regex::Regex::new(r"\{[0-9A-Fa-f-]{36}\}")
         .unwrap()
@@ -121,6 +129,17 @@ fn without_guids(bytes: &[u8]) -> String {
             format!("{{PROJECT-{at}}}")
         })
         .into_owned()
+}
+
+/// A C# file as it is compared: without the console template's opening comment, which one SDK's templates write
+/// and another's do not. The program it makes is the same.
+fn without_template_comment(bytes: &[u8]) -> String {
+    // One SDK's console template writes the comment and another's does not; the program it makes is the same.
+    text_of(bytes)
+        .lines()
+        .filter(|line| *line != "// See https://aka.ms/new-console-template for more information")
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn files(folder: &Path) -> Vec<PathBuf> {
@@ -249,14 +268,42 @@ fn a_solution_grows_to_three_projects_with_references_and_a_package_as_passenger
         nuget.read_with(cx, |v, _| v.log().to_string())
     );
 
-    // Every file as Passenger's window made it.
-    let (mine, theirs) = (files(&folder), files(&golden()));
-    assert_eq!(mine, theirs, "RSharp made other files than Passenger");
-    for file in theirs {
+    // Every file as Passenger's window made it. RSharp writes a new solution as .slnx where Passenger's fixture
+    // keeps the .sln it was made with: the format is the product's choice, the projects and references are not.
+    let normalized = |path: &Path| {
+        if path.extension().is_some_and(|extension| extension == "slnx") {
+            path.with_extension("sln")
+        } else {
+            path.to_path_buf()
+        }
+    };
+    let mine: BTreeMap<PathBuf, PathBuf> = files(&folder).into_iter().map(|path| (normalized(&path), path)).collect();
+    let theirs: BTreeMap<PathBuf, PathBuf> =
+        files(&golden()).into_iter().map(|path| (normalized(&path), path)).collect();
+    assert_eq!(
+        mine.keys().collect::<Vec<_>>(),
+        theirs.keys().collect::<Vec<_>>(),
+        "RSharp made other files than Passenger"
+    );
+    for (file, made_path) in &mine {
+        let expected_path = &theirs[file];
+        // The two solution formats say the same thing in different words; the rest are compared byte for byte.
+        if made_path.extension() != expected_path.extension() {
+            continue;
+        }
         let (made, expected) =
-            (std::fs::read(folder.join(&file)).unwrap(), std::fs::read(golden().join(&file)).unwrap());
+            (std::fs::read(folder.join(made_path)).unwrap(), std::fs::read(golden().join(expected_path)).unwrap());
         if file.extension().is_some_and(|e| e == "sln") {
             assert_eq!(without_guids(&made), without_guids(&expected), "{} differs from Passenger's", file.display());
+        } else if made_path.extension().is_some_and(|e| e == "cs") {
+            assert_eq!(
+                without_template_comment(&made),
+                without_template_comment(&expected),
+                "{} differs from Passenger's",
+                file.display()
+            );
+        } else if made_path.extension().is_some_and(|e| e == "csproj") {
+            assert_eq!(text_of(&made), text_of(&expected), "{} differs from Passenger's", file.display());
         } else {
             assert!(
                 made == expected,

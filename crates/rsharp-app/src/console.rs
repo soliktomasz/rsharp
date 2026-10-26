@@ -13,6 +13,8 @@ use std::path::PathBuf;
 pub enum ConsoleAction {
     Rerun,
     Stop,
+    /// What the person typed for the program reading the console's input.
+    Input(String),
 }
 
 impl EventEmitter<ConsoleAction> for ConsoleView {}
@@ -27,6 +29,7 @@ pub struct ConsoleView {
     errors: Vec<Range<usize>>,
     pub running: bool,
     pub can_rerun: bool,
+    _typed: gpui::Subscription,
 }
 
 impl ConsoleView {
@@ -37,7 +40,15 @@ impl ConsoleView {
             editor.console(PathBuf::new());
             editor
         });
-        Self { name, editor, text: Rope::new(), errors: Vec::new(), running: false, can_rerun: false }
+        let typed = cx.subscribe(&editor, |_, _, input: &crate::editor::ConsoleInput, cx| {
+            cx.emit(ConsoleAction::Input(input.0.clone()));
+        });
+        Self { name, editor, text: Rope::new(), errors: Vec::new(), running: false, can_rerun: false, _typed: typed }
+    }
+
+    /// Whether what is typed goes to the program reading this console's input, as a debugged program's does.
+    pub fn set_input(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, _| editor.console_input(on));
     }
 
     pub fn editor(&self) -> &Entity<CodeEditor> {

@@ -65,6 +65,8 @@ pub struct Stop {
     pub path: Option<PathBuf>,
     /// From 0.
     pub line: Option<usize>,
+    /// What the adapter says of the stop, as an exception's type and message.
+    pub description: Option<String>,
 }
 
 impl Stop {
@@ -73,7 +75,10 @@ impl Stop {
         match self.reason.as_str() {
             "breakpoint" => "Paused on a breakpoint".into(),
             "step" => "Paused after a step".into(),
-            "exception" => "Paused on an exception".into(),
+            "exception" => match &self.description {
+                Some(description) => format!("Paused on an exception: {description}"),
+                None => "Paused on an exception".into(),
+            },
             "pause" => "Paused".into(),
             "entry" => "Paused at the program's entry".into(),
             "data breakpoint" => "Paused on a data breakpoint".into(),
@@ -101,6 +106,19 @@ pub struct SourceBreakpoint {
 pub struct FunctionBreakpoint {
     /// `Namespace.Type.Method`, with `*` at its end for a suffix that matches any.
     pub name: String,
+    pub condition: Option<String>,
+    pub hit_condition: Option<String>,
+    pub log_message: Option<String>,
+}
+
+/// A data breakpoint: a value of the paused program watched for a write that changes it. Passenger keeps these for
+/// their session alone, the object being that run's, so no folder keeps them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DataBreakpoint {
+    /// What the debugger named the value by, from `dataBreakpointInfo`.
+    pub data_id: String,
+    /// The member and the object it is of, as Rider's words name it: "count on counter (Counter)".
+    pub location: String,
     pub condition: Option<String>,
     pub hit_condition: Option<String>,
     pub log_message: Option<String>,
@@ -244,6 +262,8 @@ impl Session {
         let ready = initialized.clone();
         let said = Arc::new(events);
         let reporting = said.clone();
+        // A program's codes may be split across the chunks its writes arrive in, so one reader carries them.
+        let ansi = Arc::new(Mutex::new(rsharp_core::build::Ansi::default()));
         let notify = Arc::new(move |incoming: Incoming| match incoming {
             Incoming::Event { name, body } => {
                 let event = match name.as_str() {
@@ -258,12 +278,15 @@ impl Session {
                         thread: number(&body, "threadId").unwrap_or_default(),
                         path: body["source"]["path"].as_str().map(PathBuf::from),
                         line: number(&body, "line").map(|line| line.saturating_sub(1) as usize),
+                        description: text(&body, "description")
+                            .or_else(|| text(&body, "text"))
+                            .filter(|said| !said.is_empty()),
                     })),
                     "continued" => Some(Event::Continued),
                     "exited" => Some(Event::Exited(number(&body, "exitCode"))),
                     "terminated" => Some(Event::Terminated),
                     "output" => Some(Event::Output {
-                        text: body["output"].as_str().unwrap_or_default().to_string(),
+                        text: ansi.lock().unwrap().feed(body["output"].as_str().unwrap_or_default()),
                         error: body["category"].as_str() == Some("stderr"),
                     }),
                     "breakpoint" => {
@@ -285,7 +308,9 @@ impl Session {
                     reporting(event);
                 }
             }
-            Incoming::Stderr(line) => reporting(Event::Output { text: format!("{line}\n"), error: true }),
+            Incoming::Stderr(line) => {
+                reporting(Event::Output { text: format!("{}\n", rsharp_core::build::strip_ansi(&line)), error: true })
+            }
             Incoming::Ended => reporting(Event::Ended),
         });
         // The adapter's own request, a program in the terminal: it is answered by the client's terminal when one is
@@ -564,7 +589,17 @@ impl Session {
             .map(|exception| {
                 let mut option = json!({
                     "path": [{ "names": exception.path() }],
-                    "breakMode": if exception.scenarios.is_empty() { "never" } else { "always" },
+                    // As Passenger maps Rider's "Suspend if": handling the exception in the user's code needs "always",
+                    // external code's handling "userUnhandled", and neither "unhandled".
+                    "breakMode": if exception.scenarios.is_empty() {
+                        "never"
+                    } else if exception.scenarios.iter().any(|scenario| scenario == "handledInUserCode") {
+                        "always"
+                    } else if exception.scenarios.iter().any(|scenario| scenario == "handledInExternalCode") {
+                        "userUnhandled"
+                    } else {
+                        "unhandled"
+                    },
                     "scenarios": exception.scenarios,
                 });
                 if let Some(condition) = &exception.condition {
@@ -638,6 +673,41 @@ impl Session {
         let answered: protocol::ApplyChanges = serde_json::from_value(body)
             .map_err(|error| format!("The debugger's applied changes did not read: {error}"))?;
         Ok(answered.modules)
+    }
+
+    /// What a data breakpoint on a value would watch: `dataBreakpointInfo`. Its id is none when none can, and its
+    /// description says why.
+    pub fn data_breakpoint_info(&self, frame: Option<i64>, name: &str) -> Result<protocol::DataBreakpointInfo, String> {
+        let mut arguments = json!({ "name": name });
+        if let Some(frame) = frame {
+            arguments["frameId"] = json!(frame);
+        }
+        let body = self.connection.request("dataBreakpointInfo", arguments, REQUEST)?;
+        serde_json::from_value(body).map_err(|error| format!("The debugger's data breakpoint did not read: {error}"))
+    }
+
+    /// Sends the data breakpoints that are on, replacing what the debugger had.
+    pub fn set_data_breakpoints(&self, breakpoints: &[DataBreakpoint]) -> Result<Vec<Breakpoint>, String> {
+        let list: Vec<Value> = breakpoints
+            .iter()
+            .map(|breakpoint| {
+                let mut sent = json!({ "dataId": breakpoint.data_id, "accessType": "write" });
+                if let Some(condition) = &breakpoint.condition {
+                    sent["condition"] = json!(condition);
+                }
+                if let Some(hit_condition) = &breakpoint.hit_condition {
+                    sent["hitCondition"] = json!(hit_condition);
+                }
+                if let Some(log_message) = &breakpoint.log_message {
+                    sent["logMessage"] = json!(log_message);
+                }
+                sent
+            })
+            .collect();
+        let body = self.connection.request("setDataBreakpoints", json!({ "breakpoints": list }), REQUEST)?;
+        let answered: protocol::Breakpoints = serde_json::from_value(body)
+            .map_err(|error| format!("The debugger's data breakpoints did not read: {error}"))?;
+        Ok(answered.breakpoints)
     }
 
     /// The exception a stopped thread is at, as the adapter describes it: its type, message and place.
@@ -776,6 +846,11 @@ impl Session {
     /// Whether the adapter's process has ended, without ending it.
     pub fn ended(&self) -> bool {
         self.connection.ended()
+    }
+
+    /// The adapter's own process, for a test that ends it as a crash would.
+    pub fn adapter_process_id(&self) -> Option<u32> {
+        self.connection.process_id()
     }
 }
 

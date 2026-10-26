@@ -104,6 +104,11 @@ impl Connection {
         }
     }
 
+    /// The adapter's own process, for a test that ends it as a crash would.
+    pub fn process_id(&self) -> Option<u32> {
+        self.child.lock().unwrap().as_ref().map(|child| child.id())
+    }
+
     fn write(&self, message: &Value) -> io::Result<()> {
         let body = serde_json::to_vec(message)?;
         let mut input = self.input.lock().unwrap();

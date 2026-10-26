@@ -72,6 +72,8 @@ pub struct Buffer {
     pub execution_line: Option<usize>,
     /// The frame's values, set in at the end of the stopped line as Rider's inline values are.
     pub inline_values: Option<(usize, String)>,
+    /// The exception a stop is on, named at the line that threw it.
+    pub exception: Option<(usize, String)>,
     git_comparing: Option<Task<()>>,
     is_csharp: bool,
     parsing: Option<Task<()>>,
@@ -225,6 +227,7 @@ impl Buffer {
             breakpoints: Vec::new(),
             execution_line: None,
             inline_values: None,
+            exception: None,
             git_comparing: None,
             is_csharp,
             parsing: None,
@@ -354,6 +357,14 @@ impl Buffer {
     pub fn set_inline_values(&mut self, values: Option<(usize, String)>, cx: &mut Context<Self>) {
         if self.inline_values != values {
             self.inline_values = values;
+            cx.notify();
+        }
+    }
+
+    /// The exception the stop is on, named at its line; none when the stop is not at one.
+    pub fn set_exception(&mut self, exception: Option<(usize, String)>, cx: &mut Context<Self>) {
+        if self.exception != exception {
+            self.exception = exception;
             cx.notify();
         }
     }

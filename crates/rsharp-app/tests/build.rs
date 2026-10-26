@@ -397,6 +397,9 @@ fn closing_or_switching_the_workspace_stops_its_build_and_discards_late_output(c
         !main.read_with(cx, |main, _| main.has_workspace() || main.is_building()),
         "Close Solution left the build session active"
     );
+    // The close's cancellation reaches the build's process tree on its own thread: give it its moment before the
+    // gate is opened, or a child still being killed passes it under a loaded machine.
+    pump(cx, Duration::from_secs(2));
     write(&run.folder, "release", "released");
     pump(cx, Duration::from_millis(350));
     assert!(!run.folder.join("gate-completed").exists(), "the closed workspace left its build child running");
@@ -414,6 +417,7 @@ fn closing_or_switching_the_workspace_stops_its_build_and_discards_late_output(c
     let next = Run::new("build-switch-destination", &[]);
     main.update_in(cx, |main, window, cx| main.open_workspace(&next.folder, window, cx));
     cx.run_until_parked();
+    pump(cx, Duration::from_secs(2));
     write(&run.folder, "release", "released");
     pump(cx, Duration::from_millis(350));
     assert!(!run.folder.join("gate-completed").exists(), "switching workspaces left the previous build child running");

@@ -173,6 +173,8 @@ pub struct CodeEditor {
     assist: assist::Assist,
     /// A console uses the editor's selection and visible-line drawing, without a file or undo history.
     console: Option<Console>,
+    /// A console whose program reads its input: what is typed goes to the program rather than into the text.
+    console_input: bool,
 }
 
 struct GitPopup {
@@ -208,6 +210,11 @@ pub struct ToggleBreakpoint {
 }
 
 impl gpui::EventEmitter<ToggleBreakpoint> for CodeEditor {}
+
+/// Text typed into a console whose program reads its input: the program's own, not the console's text.
+pub struct ConsoleInput(pub String);
+
+impl gpui::EventEmitter<ConsoleInput> for CodeEditor {}
 
 /// An edit refused because the file is read-only: the window asks to clear that.
 pub struct ReadOnlyEdit;
@@ -335,12 +342,18 @@ impl CodeEditor {
             pending: None,
             assist: assist::Assist::default(),
             console: None,
+            console_input: false,
         }
     }
 
     pub(crate) fn console(&mut self, folder: PathBuf) {
         self.console = Some(Console { folder, errors: Vec::new(), follow: true });
         self.soft_wrap = true;
+    }
+
+    /// Whether what is typed goes to the program reading the console's input.
+    pub(crate) fn console_input(&mut self, on: bool) {
+        self.console_input = on;
     }
 
     pub(crate) fn output(&mut self, text: Rope, errors: Vec<Range<usize>>, removed: usize, cx: &mut Context<Self>) {
@@ -1158,7 +1171,7 @@ moves! {
     SelectAll => |e, cx| { let len = e.text.len_bytes(); e.set_selections(vec![Selection { anchor: 0, head: len }]); cx.notify() };
     Backspace => |e, cx| { let plan = backspace(&e.text, e.carets.as_slice()); e.apply(plan, cx); e.backspaced(cx) };
     Delete => |e, cx| { let plan = delete(&e.text, e.carets.as_slice()); e.apply(plan, cx) };
-    Newline => |e, cx| { if e.popup_choose(cx) { return } let indent = e.buffer.read(cx).indent; let plan = newline(&e.text, e.carets.as_slice(), &indent); e.apply(plan, cx) };
+    Newline => |e, cx| { if e.popup_choose(cx) { return } if e.console_input { cx.emit(ConsoleInput("\n".into())); return } let indent = e.buffer.read(cx).indent; let plan = newline(&e.text, e.carets.as_slice(), &indent); e.apply(plan, cx) };
     Tab => |e, cx| { if e.popup_choose(cx) || e.next_template_stop(cx) || e.expand_template(cx) { return } let indent = e.buffer.read(cx).indent; let plan = tab(&e.text, e.carets.as_slice(), &indent); e.apply(plan, cx) };
     Undo => |e, cx| e.undo(false, cx);
     Redo => |e, cx| e.undo(true, cx);
@@ -1330,6 +1343,11 @@ impl EntityInputHandler for CodeEditor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A console whose program reads its input takes what is typed as the program's, not as its own text.
+        if self.console_input {
+            cx.emit(ConsoleInput(text.to_string()));
+            return;
+        }
         let range = range.map(|r| self.range_from_utf16(&r)).or(self.marked.take());
         let plan = match range {
             Some(range) => {
@@ -1531,6 +1549,7 @@ impl Element for EditorElement {
             let breakpoints = buffer.breakpoints.clone();
             let execution_line = buffer.execution_line;
             let inline_values = buffer.inline_values.clone();
+            let exception = buffer.exception.clone();
             let syntax: Vec<Highlight> =
                 buffer.tree.as_ref().map(|tree| highlights(tree, text, byte_range.clone())).unwrap_or_default();
             // Roslyn's colours win where it named a word; the syntax's fill the rest.
@@ -1572,6 +1591,13 @@ impl Element for EditorElement {
                     .filter(|(at, _)| (row.start..row.end).contains(at) || (*at == row.end && row.last))
                     .map(|(at, label)| (at - row.start, label.as_str()))
                     .collect();
+                // The exception a stop is on is named first, then the frame's values.
+                if let Some((line, said)) = &exception
+                    && *line == row.line
+                    && row.last
+                {
+                    hints.push((row.end - row.start, said.as_str()));
+                }
                 if let Some((line, values)) = &inline_values
                     && *line == row.line
                     && row.last

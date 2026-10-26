@@ -4821,6 +4821,7 @@ dependencies = [
  "serde",
  "serde_json",
  "symbolic-ppdb",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

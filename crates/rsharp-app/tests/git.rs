@@ -38,6 +38,8 @@ fn init(folder: &Path) {
     git(folder, &["config", "user.email", "test@example.invalid"]);
     git(folder, &["config", "commit.gpgsign", "false"]);
     git(folder, &["config", "core.hooksPath", "disabled-hooks"]);
+    // The fixtures' bytes are the files' bytes on every system: Windows' default would check them out as CRLF.
+    git(folder, &["config", "core.autocrlf", "false"]);
 }
 
 fn wait(cx: &mut VisualTestContext, mut done: impl FnMut(&mut VisualTestContext) -> bool) {
