@@ -76,6 +76,38 @@ struct Step {
     at: Instant,
 }
 
+/// A line carried through edits to the text, in their application order: the line its text stands on now. A line the
+/// edits delete goes to where the edit began; one whose line start is inserted above moves down with its code.
+pub fn map_line(changes: &[Change], line: usize) -> usize {
+    changes.iter().fold(line, |line, change| {
+        let (start, old_end, new_end) = (change.start.line, change.old_end.line, change.new_end.line);
+        if line < start {
+            return line;
+        }
+        if line > old_end {
+            return line + new_end - old_end;
+        }
+        // The line's start is where the edit begins, inside what it replaces, or is its last line's start.
+        if line == start {
+            // A line's own start is before the edit unless text is inserted at column 0, where it carries the original
+            // line down below it. A replacement begins with new text of its own: the line stays where it starts, even
+            // when that text spans lines.
+            let insertion = change.old_end.offset == change.start.offset;
+            if change.start.column == 0 && insertion && change.new_end.offset > change.start.offset {
+                new_end
+            } else {
+                start
+            }
+        } else if line == old_end {
+            // The last line's tail is kept, on the line the new text ends on.
+            new_end
+        } else {
+            // A line wholly inside what the edit replaces collapses to where the edit started.
+            start
+        }
+    })
+}
+
 /// A file's text held as a buffer holds it: its own line separator made `\n`, the others kept as they are. A text
 /// already separated by `\n` — nearly every file — is given back as it came, without a copy, so a large revision is
 /// read for the gutter or a comparison without being copied twice.

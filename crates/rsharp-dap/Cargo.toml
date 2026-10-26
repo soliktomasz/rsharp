@@ -9,6 +9,8 @@ license.workspace = true
 rsharp-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# A frame's source, decompiled by the adapter for an assembly that ships no symbols: the text its PDB embeds.
+symbolic-ppdb = "14.0.0-alpha.4"
 
 [build-dependencies]
 rsharp-core.workspace = true

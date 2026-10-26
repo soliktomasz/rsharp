@@ -75,10 +75,11 @@ impl MainWindow {
         });
     }
 
-    /// Saves every open buffer in the workspace, including the editors of a split or a window of their own, saying
-    /// which file could not be saved: what a build and a launch do first, so what they run is what the person sees.
-    pub(super) fn save_all(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
-        let Some(folder) = self.workspace.as_ref().map(|workspace| workspace.folder.clone()) else { return Ok(()) };
+    /// The solution's open buffers, including sibling projects, linked files and detached editors.
+    pub(super) fn workspace_buffers(&self, cx: &App) -> Vec<Entity<Buffer>> {
+        let Some(folder) = self.workspace.as_ref().map(|workspace| workspace.folder.clone()) else {
+            return Vec::new();
+        };
         let mut roots = vec![folder];
         if let Some(tree) = &self.tree {
             roots.extend(
@@ -93,7 +94,12 @@ impl MainWindow {
                 buffers.push(buffer);
             }
         }
-        for buffer in buffers {
+        buffers
+    }
+
+    /// Saves every open buffer in the workspace before a build or launch.
+    pub(super) fn save_all(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        for buffer in self.workspace_buffers(cx) {
             if buffer.read(cx).is_modified()
                 && let Err(error) = buffer.update(cx, |buffer, cx| buffer.save(cx))
             {

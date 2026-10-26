@@ -23,10 +23,15 @@ change that brings it in.
 | `ropey` | MIT | Nathan Vegdahl |
 | `serde` | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
 | `serde_json` | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
+| `symbolic-ppdb` | MIT | Sentry (https://github.com/getsentry/symbolic) |
 | `trash` | MIT | Artur Kovacs and contributors |
 | `tree-sitter` | MIT | Max Brunsfeld |
 | `tree-sitter-c-sharp` | MIT | Max Brunsfeld, Damien Guard and contributors |
 | `ureq` | MIT OR Apache-2.0 | Martin Algesten and contributors |
+
+`symbolic-ppdb` reads the sources the debugger's decompiled PDBs embed: it brings symbolic-common (MIT) and watto
+(Apache-2.0), and uses flate2 and thiserror (MIT OR Apache-2.0), indexmap and uuid (Apache-2.0 OR MIT), and
+serde/serde_json, which the workspace already carries.
 
 `ureq` brings rustls-platform-verifier (MIT OR Apache-2.0), webpki-roots (CDLA-Permissive-2.0, Mozilla's root
 certificates as data), ureq-proto, utf8-zero and base64 (MIT OR Apache-2.0); on macOS security-framework (MIT OR

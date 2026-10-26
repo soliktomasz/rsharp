@@ -57,6 +57,7 @@ fn a_breakpoint_stops_the_program_and_its_values_are_read() {
             environment: BTreeMap::new(),
             stop_at_entry: false,
             hot_reload: true,
+            just_my_code: true,
         }),
         &symbols,
         vec![(
@@ -67,6 +68,7 @@ fn a_breakpoint_stops_the_program_and_its_values_are_read() {
         Vec::new(),
         // Every exception nothing handles stops the program, as Rider's Any exception does.
         vec![ExceptionFilter { scenarios: vec!["unhandled".into()], ..ExceptionFilter::default() }],
+        Vec::new(),
         None,
         move |event| drop(sender.send(event)),
     )

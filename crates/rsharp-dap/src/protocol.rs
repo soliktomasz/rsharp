@@ -37,7 +37,7 @@ pub struct Threads {
     pub threads: Vec<Thread>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Frame {
     pub id: i64,
@@ -48,9 +48,43 @@ pub struct Frame {
     pub line: usize,
     #[serde(default)]
     pub column: usize,
+    /// The statement's last line and column, when the debugger says: the end is exclusive, from 0.
+    #[serde(default)]
+    pub end_line: Option<usize>,
+    #[serde(default)]
+    pub end_column: Option<usize>,
     /// "subtle" for code outside the person's own.
     #[serde(default)]
     pub presentation_hint: Option<String>,
+    /// Whether the debugger gave the frame source: false for one whose assembly's symbols are decompiled on demand.
+    #[serde(default)]
+    pub is_resolved: Option<bool>,
+    /// The type and assembly a frame's source was decompiled from, when it was.
+    #[serde(default)]
+    pub decompiled_source_info: Option<DecompiledSource>,
+}
+
+/// What a frame's source was decompiled from: the type, the assembly (its file and MVID), and the user code that called
+/// into it.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DecompiledSource {
+    pub type_full_name: String,
+    pub assembly: DecompiledAssembly,
+    pub calling_user_code_assembly_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DecompiledAssembly {
+    pub assembly_path: PathBuf,
+    pub mvid: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ResolveStackFrame {
+    pub stack_frame: Frame,
 }
 
 impl Frame {
@@ -141,6 +175,8 @@ pub struct HotReloadState {
     pub capabilities: Option<Vec<String>>,
     pub capabilities_unknown: Option<String>,
     pub modules: Vec<HotReloadModule>,
+    /// The statements paused threads are in, as Edit and Continue needs them: empty while the program runs.
+    pub active_statements: Vec<ActiveStatement>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -151,6 +187,23 @@ pub struct HotReloadModule {
     pub path: Option<PathBuf>,
     pub editable: bool,
     pub why_not: Option<String>,
+}
+
+/// A statement a paused thread is in: its method (module, token and the version of its code the frame runs), the IL
+/// offset, its sequence point's document and place (lines and columns from zero), and Roslyn's ActiveStatementFlags.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ActiveStatement {
+    pub module: String,
+    pub token: i64,
+    pub version: i64,
+    pub il_offset: i64,
+    pub document: Option<String>,
+    pub start_line: i64,
+    pub start_column: i64,
+    pub end_line: i64,
+    pub end_column: i64,
+    pub flags: i64,
 }
 
 /// What became of each module's Hot Reload update, in the order given: applied, or why not.
@@ -188,6 +241,14 @@ pub struct ExceptionDetails {
     pub full_type_name: Option<String>,
     pub evaluate_name: Option<String>,
     pub stack_trace: Option<String>,
+    /// Its HRESULT and the assembly it came from.
+    #[serde(default)]
+    pub h_result: Option<i64>,
+    #[serde(default)]
+    pub source: Option<String>,
+    /// The exceptions it wraps, as the debugger names each.
+    #[serde(default)]
+    pub inner_exception: Option<Vec<ExceptionDetails>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]

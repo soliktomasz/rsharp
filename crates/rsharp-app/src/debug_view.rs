@@ -235,6 +235,14 @@ impl DebugView {
         cx.notify();
     }
 
+    /// A frame's place, once the adapter decompiled its assembly: the Frames list shows where it is now.
+    pub fn resolved(&mut self, index: usize, row: FrameRow, cx: &mut Context<Self>) {
+        if let Some(slot) = self.frames.get_mut(index) {
+            *slot = row;
+        }
+        cx.notify();
+    }
+
     pub fn select(&mut self, index: usize, cx: &mut Context<Self>) {
         self.selected = index;
         self.variables.clear();

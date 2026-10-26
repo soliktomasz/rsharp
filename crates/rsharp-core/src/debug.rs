@@ -12,8 +12,6 @@ pub const SCENARIOS: [&str; 5] =
     ["thrownInUserCode", "thrownInExternalCode", "handledInUserCode", "handledInExternalCode", "unhandled"];
 
 /// One line breakpoint: where it is, and what it asks of the debugger at a hit.
-// shortcut: a breakpoint follows its line by number, so an edit above it moves it off its statement; carry it through
-// the buffer's changes, as Rider does, once that is missed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct LineBreakpoint {
@@ -183,6 +181,41 @@ impl Breakpoints {
                 self.files.remove(&key);
             }
         }
+    }
+
+    /// Carries a file's breakpoints through edits to it: each line moves to the line `at` gives, and breakpoints that
+    /// meet on one line become one. The moves made, each from its old line to its new one.
+    pub fn follow(&mut self, path: &Path, mut at: impl FnMut(usize) -> usize) -> Vec<(usize, usize)> {
+        let key = self.files.keys().find(|file| crate::paths::same(file, path)).cloned();
+        let Some(key) = key else { return Vec::new() };
+        let Some(breakpoints) = self.files.get_mut(&key) else { return Vec::new() };
+        let mut moved = Vec::new();
+        let mut stationary = Vec::with_capacity(breakpoints.len());
+        for breakpoint in breakpoints.iter_mut() {
+            let line = at(breakpoint.line);
+            if line != breakpoint.line {
+                moved.push((breakpoint.line, line));
+                breakpoint.line = line;
+                stationary.push(false);
+            } else {
+                stationary.push(true);
+            }
+        }
+        if !moved.is_empty() {
+            // A breakpoint that stays where it is keeps its line, and with it its condition and whether it is on, when
+            // another moves onto it: the lines meet in the one already there, whatever order they were kept in.
+            let mut ordered: Vec<(LineBreakpoint, bool)> = breakpoints.drain(..).zip(stationary).collect();
+            ordered.sort_by_key(|(breakpoint, stationary)| (breakpoint.line, !stationary));
+            let mut seen = None;
+            for (breakpoint, _) in ordered {
+                if seen == Some(breakpoint.line) {
+                    continue;
+                }
+                seen = Some(breakpoint.line);
+                breakpoints.push(breakpoint);
+            }
+        }
+        moved
     }
 
     /// Whether a line holds a breakpoint, on or not.
@@ -502,6 +535,45 @@ mod tests {
         breakpoints.remove_function(0);
         assert!(breakpoints.functions().is_empty());
         assert_eq!(breakpoints.count(), 1);
+    }
+
+    #[test]
+    fn a_breakpoint_follows_its_line_through_an_edit() {
+        let folder = folder("follow");
+        let file = folder.join("App").join("Program.cs");
+        std::fs::write(&file, "class Program {}\n").unwrap();
+        let mut breakpoints = Breakpoints::default();
+        breakpoints.toggle(&file, 1);
+        breakpoints.toggle(&file, 3);
+        assert_eq!(breakpoints.follow(&file, |line| line + 1), vec![(1, 2), (3, 4)], "each line moves by the edit");
+        assert_eq!(breakpoints.lines(&file), vec![2, 4]);
+        assert!(breakpoints.follow(&file, |_| 2) == vec![(4, 2)], "a line that meets another moves onto it");
+        assert_eq!(breakpoints.lines(&file), vec![2], "the two are one breakpoint");
+        assert!(breakpoints.follow(&file, |_| 2).is_empty(), "a line that stays put is no move");
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn a_breakpoint_that_lands_on_another_leaves_the_one_there() {
+        let folder = folder("follow-collision");
+        let file = folder.join("App").join("Program.cs");
+        std::fs::write(&file, "class Program {}\n").unwrap();
+        let mut breakpoints = Breakpoints::default();
+        breakpoints.toggle(&file, 1);
+        breakpoints.toggle(&file, 3);
+        // The breakpoint on line 3 is the one that stays, with its condition and being off its own.
+        breakpoints.edit(&file, 3, |breakpoint| {
+            breakpoint.enabled = false;
+            breakpoint.condition = "i > 2".into();
+            breakpoint.log_message = "hit {i}".into();
+        });
+        // The edit carries line 1's breakpoint onto line 3, where the other stays.
+        assert_eq!(breakpoints.follow(&file, |_| 3), vec![(1, 3)]);
+        let kept = breakpoints.breakpoint(&file, 3).expect("one breakpoint stands on line 3");
+        assert!(!kept.enabled, "the breakpoint already on line 3 is the one kept");
+        assert_eq!(kept.condition, "i > 2");
+        assert_eq!(kept.log_message, "hit {i}");
+        let _ = std::fs::remove_dir_all(&folder);
     }
 }
 

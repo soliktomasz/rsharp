@@ -333,6 +333,10 @@ pub struct MainWindow {
     evaluate_dialog: Option<Entity<crate::evaluate_dialog::EvaluateDialog>>,
     /// Rider's Smart Step Into dialog while it is open.
     step_dialog: Option<Entity<crate::step_into_dialog::StepIntoDialog>>,
+    /// A question with a few answers while it asks one: Hot Reload's restart for an edit the runtime cannot take.
+    choice_dialog: Option<Entity<crate::choice_dialog::ChoiceDialog>>,
+    /// The buffer version whose breakpoints last followed its edit, so two editors of one file move them once.
+    followed_edit: Option<(gpui::EntityId, u64)>,
     tests: tests::Tests,
     /// This window's own handle, so a task without a window (a build's end) reaches one to open a stopped file.
     handle: gpui::WindowHandle<MainWindow>,
@@ -472,6 +476,8 @@ impl MainWindow {
             attach_dialog: None,
             evaluate_dialog: None,
             step_dialog: None,
+            choice_dialog: None,
+            followed_edit: None,
             handle: window.window_handle().downcast::<MainWindow>().expect("this window is a MainWindow"),
             debug: debug::DebugState::new(),
             debug_view,
@@ -1434,6 +1440,7 @@ impl MainWindow {
                 }
                 self.attach_msbuild(&buffer, cx);
                 self.attach_git_buffer(&buffer, cx);
+                self.note_hot_reload_original(&buffer, cx);
                 self.show_breakpoints(&path, cx);
                 let editor = self.new_editor(buffer, window, cx);
                 self.area.add(editor, false)
@@ -1536,6 +1543,12 @@ impl MainWindow {
             crate::buffer::BufferEvent::Parsed => w.refresh_open_tests(cx),
             crate::buffer::BufferEvent::Moved(_) => w.refresh_tests(cx),
             _ => {}
+        })
+        .detach();
+        cx.subscribe(&buffer, |w, buffer, event: &crate::buffer::BufferEvent, cx| {
+            if let crate::buffer::BufferEvent::Edited { changes, .. } = event {
+                w.follow_breakpoints(&buffer, changes, cx);
+            }
         })
         .detach();
         cx.observe_release(&buffer, |w, _, cx| w.refresh_tests(cx)).detach();
@@ -2190,6 +2203,10 @@ impl Render for MainWindow {
                         {
                             w.evaluate_projects(cx);
                         }
+                        if w.said.is_none() {
+                            // A save made while the program is debugged applies its edits through Hot Reload.
+                            w.hot_reload_saved(&editor, cx);
+                        }
                         w.refresh_git(cx);
                         w.refresh_solution_problems(cx);
                         cx.notify();
@@ -2254,6 +2271,9 @@ impl Render for MainWindow {
                 div().absolute().top(px(TOOLBAR_HEIGHT + 80.)).left_0().right_0().flex().justify_center().child(dialog)
             }))
             .children(self.step_dialog.clone().map(|dialog| {
+                div().absolute().top(px(TOOLBAR_HEIGHT + 80.)).left_0().right_0().flex().justify_center().child(dialog)
+            }))
+            .children(self.choice_dialog.clone().map(|dialog| {
                 div().absolute().top(px(TOOLBAR_HEIGHT + 80.)).left_0().right_0().flex().justify_center().child(dialog)
             }))
             .children(self.go_to.clone().map(|popup| {

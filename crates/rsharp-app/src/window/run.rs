@@ -1,6 +1,7 @@
 //! One workspace's runs: the folder's run configurations, the plan a launch works out, the program in the Run console,
 //! and the browser a web project opens once it listens.
 
+use super::debug::HotReloadApply;
 use super::*;
 use crate::console::ConsoleView;
 use crate::settings::settings;
@@ -589,9 +590,26 @@ impl MainWindow {
         self.run_watching && self.is_running()
     }
 
-    /// Rider's Apply Hot Reload Changes: every open buffer is saved, since dotnet watch reads the files on disk, and the
-    /// status bar says what it makes of them as `dotnet watch` answers.
+    /// Rider's Apply Hot Reload Changes: a debugged program takes the editors' text through Edit and Continue; a program
+    /// run under dotnet watch has every open buffer saved, since watch reads the files on disk, and the status bar says
+    /// what it makes of them as `dotnet watch` answers.
     pub(super) fn apply_hot_reload(&mut self, cx: &mut Context<Self>) {
+        if self.is_debugging() {
+            match self.hot_reload_apply(None, cx) {
+                HotReloadApply::Started => {}
+                // The update's own message stands, as the language server's restart needs the program restarted.
+                HotReloadApply::Restart => {}
+                HotReloadApply::Nothing => {
+                    self.said = Some("Hot Reload: no managed code changes to apply".into());
+                    cx.notify();
+                }
+                HotReloadApply::Unavailable => {
+                    self.said = Some("Hot Reload: the program cannot take changes now".into());
+                    cx.notify();
+                }
+            }
+            return;
+        }
         if !self.is_watching() {
             self.said = Some("This program does not run with Hot Reload: turn it on in Settings, Hot Reload".into());
             cx.notify();
@@ -739,7 +757,7 @@ impl MainWindow {
                 .on_action(
                     cx.listener(|m, _: &EditRunConfigurations, window, cx| m.edit_run_configurations(window, cx)),
                 )
-                .when(self.is_watching(), |d| {
+                .when(self.is_watching() || self.is_debugging(), |d| {
                     d.on_action(cx.listener(|m, _: &ApplyHotReloadChanges, _, cx| m.apply_hot_reload(cx)))
                 })
                 .when(self.chosen_run_configuration().is_some() && !self.is_running(), |d| {
