@@ -288,7 +288,7 @@ impl DebugView {
             match find(&mut self.variables, &path) {
                 Some(node) => {
                     let value = node.row.value.clone();
-                    self.set_expression = node.row.evaluate_name.clone().filter(|name| !name.is_empty());
+                    self.set_expression = self.expression_of(&path);
                     self.set_value.update(cx, |field, cx| field.set_text(&value, cx));
                 }
                 None => {
@@ -365,16 +365,23 @@ impl DebugView {
         walk(&self.variables, name)
     }
 
+    /// The C# that reaches a row's value from the frame, as Passenger's Set Value writes it: a local's name, a member
+    /// after its object's expression, an element's index after its array's; none for a row no expression reaches.
+    fn expression_of(&self, path: &[usize]) -> Option<String> {
+        let mut rows = Vec::new();
+        let mut nodes = self.variables.as_slice();
+        for index in path {
+            let node = nodes.get(*index)?;
+            rows.push(&node.row);
+            nodes = node.children.as_deref().unwrap_or_default();
+        }
+        expression(&rows)
+    }
+
     /// A variable chosen in the tree: the field starts at its value, and Set Value asks the debugger for the rest.
-    fn select_variable(
-        &mut self,
-        path: Vec<usize>,
-        value: String,
-        evaluate_name: Option<String>,
-        cx: &mut Context<Self>,
-    ) {
+    fn select_variable(&mut self, path: Vec<usize>, value: String, cx: &mut Context<Self>) {
+        self.set_expression = self.expression_of(&path);
         self.selected_variable = Some(path);
-        self.set_expression = evaluate_name.filter(|name| !name.is_empty());
         self.set_value.update(cx, |field, cx| field.set_text(&value, cx));
         cx.notify();
     }
@@ -544,6 +551,42 @@ impl DebugView {
     }
 }
 
+/// Whether a row only groups an array's elements: a hundred at a time ("[100..199]") or a multi-dimensional array's
+/// row ("[1, ...]"), as the debugger names them.
+fn is_range(name: &str) -> bool {
+    let Some(inner) = name.strip_prefix('[').and_then(|name| name.strip_suffix(']')) else { return false };
+    let last = inner.rsplit(", ").next().unwrap_or(inner);
+    let leading = inner.split(", ").take(inner.split(", ").count() - 1).all(|part| part.parse::<u64>().is_ok());
+    let ranged = last == "..."
+        || last.split_once("..").is_some_and(|(from, to)| from.parse::<u64>().is_ok() && to.parse::<u64>().is_ok());
+    leading && ranged
+}
+
+/// The expression of the last of a chain of rows, from the frame's down.
+fn expression(rows: &[&VariableRow]) -> Option<String> {
+    let (row, above) = rows.split_last()?;
+    if above.is_empty() {
+        return row.evaluate_name.clone().filter(|name| !name.is_empty()).or_else(|| Some(row.name.clone()));
+    }
+    if is_range(&row.name) {
+        return None;
+    }
+    let owner = reach(above)?;
+    Some(if row.name.starts_with('[') { format!("{owner}{}", row.name) } else { format!("{owner}.{}", row.name) })
+}
+
+/// What the rows under the last of a chain reach their values from: its own expression, or for a row that only groups
+/// others (a range, the raw view) the one above it's.
+fn reach(rows: &[&VariableRow]) -> Option<String> {
+    let (row, above) = rows.split_last()?;
+    match row.name.as_str() {
+        "Static members" | "Results" => None,
+        "Raw View" => reach(above),
+        name if !above.is_empty() && is_range(name) => reach(above),
+        _ => expression(rows),
+    }
+}
+
 fn find<'a>(nodes: &'a mut Vec<Node>, path: &[usize]) -> Option<&'a mut Node> {
     let (first, rest) = path.split_first()?;
     let node = nodes.get_mut(*first)?;
@@ -690,10 +733,15 @@ impl Render for DebugView {
                             ),
                     )
                     .child(
+                        // One column scrolls whole: the Debug island is 220 px high by default, too little for the
+                        // values, Set value and the watches each to scroll on their own.
                         div()
+                            .id("debug values")
+                            .debug_selector(|| "debug variables".into())
                             .flex_1()
                             .min_w_0()
                             .min_h_0()
+                            .overflow_y_scroll()
                             .flex()
                             .flex_col()
                             // shortcut: a returned value's members are not opened here; Evaluate Expression can, until
@@ -742,10 +790,7 @@ impl Render for DebugView {
                             })
                             .child(
                                 div()
-                                    .id("debug variables")
-                                    .flex_1()
-                                    .min_h_0()
-                                    .overflow_y_scroll()
+                                    .flex_none()
                                     .px(px(4.))
                                     .children(rows.is_empty().then(|| {
                                         div()
@@ -824,12 +869,7 @@ impl Render for DebugView {
                                                 let path = path.clone();
                                                 let row = row.clone();
                                                 move |view, _: &ClickEvent, _, cx| {
-                                                    view.select_variable(
-                                                        path.clone(),
-                                                        row.value.clone(),
-                                                        row.evaluate_name.clone(),
-                                                        cx,
-                                                    );
+                                                    view.select_variable(path.clone(), row.value.clone(), cx);
                                                     if expandable {
                                                         let opened = toggle(&mut view.variables, &path);
                                                         if opened {
@@ -952,8 +992,8 @@ impl Render for DebugView {
                                     })
                                     .child(self.watch.clone()),
                             )
-                            .child(div().id("debug watches").max_h(px(110.)).overflow_y_scroll().px(px(4.)).children(
-                                self.watches.iter().enumerate().map(|(index, (expression, result))| {
+                            .child(div().flex_none().px(px(4.)).children(self.watches.iter().enumerate().map(
+                                |(index, (expression, result))| {
                                     div()
                                         .id(("debug watch", index))
                                         .debug_selector(move || format!("debug watch {index}"))
@@ -971,8 +1011,8 @@ impl Render for DebugView {
                                                 .text_color(theme::text_muted())
                                                 .child(format!("= {result}")),
                                         )
-                                }),
-                            )),
+                                },
+                            ))),
                     ),
             )
             .child(
@@ -1008,4 +1048,31 @@ fn toggle(nodes: &mut Vec<Node>, path: &[usize]) -> bool {
     let Some(node) = find(nodes, path) else { return false };
     node.open = !node.open;
     node.open && node.children.is_none()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(name: &str, evaluate: Option<&str>) -> VariableRow {
+        VariableRow {
+            name: name.into(),
+            value: String::new(),
+            r#type: None,
+            evaluate_name: evaluate.map(str::to_string),
+            reference: 0,
+        }
+    }
+
+    #[test]
+    fn an_element_under_a_range_is_reached_through_its_array() {
+        let (numbers, range, element) = (row("numbers", Some("numbers")), row("[100..199]", None), row("[150]", None));
+        assert_eq!(expression(&[&numbers, &range, &element]).as_deref(), Some("numbers[150]"));
+        assert_eq!(expression(&[&numbers, &range]), None, "a range is no value to set");
+        let (grid, line, cell) = (row("grid", None), row("[1, ...]", None), row("[1, 0]", None));
+        assert_eq!(expression(&[&grid, &line, &cell]).as_deref(), Some("grid[1, 0]"));
+        let (this, field) = (row("this", Some("this")), row("Count", Some("whatever")));
+        assert_eq!(expression(&[&this, &field]).as_deref(), Some("this.Count"));
+        assert!(!is_range("[150]") && !is_range("[1, 0]") && is_range("[0..99]") && is_range("[1, 2, ...]"));
+    }
 }

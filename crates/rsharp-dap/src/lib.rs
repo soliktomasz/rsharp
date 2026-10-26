@@ -138,11 +138,10 @@ pub struct ExceptionFilter {
 }
 
 impl ExceptionFilter {
-    /// The path the protocol takes: CLR, then the types; CLR alone is every exception.
-    fn path(&self) -> Vec<String> {
-        let mut path = vec!["CLR".to_string()];
-        path.extend(self.types.iter().filter(|kind| !kind.trim().is_empty()).cloned());
-        path
+    /// The path the protocol takes: a segment for CLR, then one naming the types; CLR alone is every exception.
+    fn path(&self) -> Value {
+        let types: Vec<&String> = self.types.iter().filter(|kind| !kind.trim().is_empty()).collect();
+        if types.is_empty() { json!([{ "names": ["CLR"] }]) } else { json!([{ "names": ["CLR"] }, { "names": types }]) }
     }
 }
 
@@ -588,7 +587,7 @@ impl Session {
             .iter()
             .map(|exception| {
                 let mut option = json!({
-                    "path": [{ "names": exception.path() }],
+                    "path": exception.path(),
                     // As Passenger maps Rider's "Suspend if": handling the exception in the user's code needs "always",
                     // external code's handling "userUnhandled", and neither "unhandled".
                     "breakMode": if exception.scenarios.is_empty() {

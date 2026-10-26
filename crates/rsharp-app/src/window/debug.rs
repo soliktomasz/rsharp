@@ -1297,10 +1297,47 @@ impl MainWindow {
                     return;
                 }
                 let name = self.debug_name();
-                self.finish_debug(&format!("Debugging {name} ended"), cx);
+                match self.debug.terminal {
+                    Some(id) => self.finish_with_terminal(id, name, cx),
+                    None => self.finish_debug(&format!("Debugging {name} ended"), cx),
+                }
             }
         }
         cx.notify();
+    }
+
+    /// A program the adapter started in a Terminal tab is the tab's to tell the end of: its exit code is waited for a
+    /// moment, as the tab drains its last output, before the session says how it ended.
+    fn finish_with_terminal(&mut self, id: usize, name: String, cx: &mut Context<Self>) {
+        let generation = self.debug.generation;
+        let handle = self.handle;
+        let panel = self.terminal.clone();
+        cx.spawn(async move |_, cx| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let code = loop {
+                let code = panel
+                    .read_with(cx, |panel, _| panel.session(id).and_then(|session| session.exit_code()))
+                    .unwrap_or(None);
+                if code.is_some() || std::time::Instant::now() > deadline {
+                    break code;
+                }
+                cx.background_executor().timer(std::time::Duration::from_millis(20)).await;
+            };
+            let _ = handle.update(cx, |m, _, cx| {
+                if m.debug.generation != generation || m.debug.phase == Phase::Idle {
+                    return;
+                }
+                match code {
+                    Some(code) => {
+                        // Ended on its own: its tab keeps what it wrote and how it ended, with nothing left to stop.
+                        m.debug.terminal = None;
+                        m.finish_debug(&format!("Debugging {name} ended with exit code {code}"), cx);
+                    }
+                    None => m.finish_debug(&format!("Debugging {name} ended"), cx),
+                }
+            });
+        })
+        .detach();
     }
 
     /// The stop's frames and the chosen frame's values, read off the UI thread, then shown and opened at the stop.
@@ -1324,9 +1361,14 @@ impl MainWindow {
                 .background_executor()
                 .spawn(async move {
                     let stop = read_stop(&session, thread);
-                    let description =
-                        described.then(|| session.exception_info(thread).ok().map(|info| describe_exception(&info)));
-                    stop.map(|(threads, frames, variables)| (threads, frames, variables, description.flatten()))
+                    // An exception whose description runs code that does not return in time still shows where it stopped.
+                    let description = described.then(|| {
+                        session
+                            .exception_info(thread)
+                            .map(|info| describe_exception(&info))
+                            .map_err(|why| format!("Paused on an exception the debugger could not describe: {why}"))
+                    });
+                    stop.map(|(threads, frames, variables)| (threads, frames, variables, description))
                 })
                 .await;
             let _ = handle.update(cx, |m, window, cx| {
@@ -1334,8 +1376,12 @@ impl MainWindow {
                     return;
                 }
                 match read {
+                    Ok((threads, frames, variables, Some(Err(undescribed)))) => {
+                        m.show_stopped(undescribed, at, fallback, threads, frames, variables, window, cx)
+                    }
                     Ok((threads, frames, variables, description)) => {
-                        m.show_stopped(status, at, description.or(fallback), threads, frames, variables, window, cx)
+                        let description = description.and_then(Result::ok).or(fallback);
+                        m.show_stopped(status, at, description, threads, frames, variables, window, cx)
                     }
                     Err(why) => m.fail_debug(&why, cx),
                 }
