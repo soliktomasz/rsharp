@@ -398,7 +398,9 @@ impl Session {
         }
         *self.verified.lock().unwrap() = verified;
         self.set_function_breakpoints(&functions)?;
-        self.set_exception_breakpoints(&filters, &exceptions)?;
+        // A filter-only launch keeps Passenger's default stop for unhandled exceptions.
+        let rules = if exceptions.is_empty() && !filters.is_empty() { None } else { Some(exceptions.as_slice()) };
+        self.configure_exception_breakpoints(&filters, rules)?;
         self.connection.request("configurationDone", json!({}), CONFIGURED)?;
         Ok(capabilities)
     }
@@ -496,11 +498,11 @@ impl Session {
             .ok_or_else(|| format!("The decompiled symbols for {name} are not in {}", folder.display()))?;
         let sources = self.decompiled_sources(&pdb)?;
         let wanted = comparable(&source);
+        let root = self.symbols.parent().map(Path::to_path_buf).unwrap_or_else(|| self.symbols.clone());
         let (_, text) = sources
             .iter()
-            .find(|(path, _)| comparable(Path::new(path)) == wanted)
+            .find(|(path, _)| comparable(Path::new(path)) == wanted || comparable(&root.join(path)) == wanted)
             .ok_or_else(|| format!("{} is not a document of {}", source.display(), pdb.display()))?;
-        let root = self.symbols.parent().map(Path::to_path_buf).unwrap_or_else(|| self.symbols.clone());
         let target = if source.is_absolute() { source.clone() } else { root.join(&source) };
         write_decompiled(&target, text)?;
         Ok((target, text.clone()))
@@ -534,10 +536,19 @@ impl Session {
 
     /// The DAP exception filters (`all`, `user-unhandled`, each with a condition or none) and the folder's own exception
     /// breakpoints, in one request as the adapter takes them. Answers what the adapter made of the filters.
+    /// An empty exception list clears the rules; filter-only callers use `set_exception_filters`.
     pub fn set_exception_breakpoints(
         &self,
         filters: &[(String, Option<String>)],
         exceptions: &[ExceptionFilter],
+    ) -> Result<Vec<Breakpoint>, String> {
+        self.configure_exception_breakpoints(filters, Some(exceptions))
+    }
+
+    fn configure_exception_breakpoints(
+        &self,
+        filters: &[(String, Option<String>)],
+        exceptions: Option<&[ExceptionFilter]>,
     ) -> Result<Vec<Breakpoint>, String> {
         let plain: Vec<&str> =
             filters.iter().filter(|(_, condition)| condition.is_none()).map(|(filter, _)| filter.as_str()).collect();
@@ -548,6 +559,7 @@ impl Session {
             })
             .collect();
         let rules: Vec<Value> = exceptions
+            .unwrap_or_default()
             .iter()
             .map(|exception| {
                 let mut option = json!({
@@ -572,7 +584,7 @@ impl Session {
         if !options.is_empty() {
             request["filterOptions"] = json!(options);
         }
-        if !rules.is_empty() {
+        if exceptions.is_some() {
             request["exceptionOptions"] = json!(rules);
         }
         let body = self.connection.request("setExceptionBreakpoints", request, REQUEST)?;
@@ -590,7 +602,7 @@ impl Session {
     pub fn set_exception_filters(&self, filters: &[(&str, Option<&str>)]) -> Result<Vec<Breakpoint>, String> {
         let filters: Vec<(String, Option<String>)> =
             filters.iter().map(|(filter, condition)| ((*filter).to_string(), condition.map(str::to_string))).collect();
-        self.set_exception_breakpoints(&filters, &[])
+        self.configure_exception_breakpoints(&filters, None)
     }
 
     /// What the adapter made of each file's breakpoints as the session opened: whether each will be hit, and why not.

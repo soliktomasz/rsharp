@@ -13,6 +13,9 @@ use rsharp_lsp::extension;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(test)]
+mod tests;
+
 /// The window's side of a debug session: its breakpoints, the session once the adapter is ready, and where it stands.
 pub(super) struct DebugState {
     pub(super) breakpoints: rsharp_core::debug::Breakpoints,
@@ -57,9 +60,7 @@ pub(super) struct DebugState {
 #[derive(Default)]
 struct HotReload {
     /// Roslyn's session, once it has started: most sessions never edit a file, so it starts at the first save.
-    session: Option<i64>,
-    /// The server whose extension holds the session: one restarted since cannot apply these edits.
-    server: Option<Arc<LanguageServer>>,
+    session: Option<Arc<HotReloadSession>>,
     /// Each C# file's text before its first edit since the launch, as it was built.
     originals: BTreeMap<PathBuf, String>,
     /// The files whose original texts Roslyn has been given.
@@ -68,11 +69,40 @@ struct HotReload {
     applied: BTreeMap<PathBuf, u64>,
     /// A save's update is on its way to Roslyn and the debugger: a save meanwhile waits for the next one.
     applying: bool,
+    /// A save or resume during the current apply needs another pass before the program goes on.
+    pending: bool,
     /// Why the runtime refused an update, which stops Hot Reload for the rest of the session.
     stopped: Option<String>,
 }
 
+/// The window and an in-flight update share ownership; the last one ends Roslyn's session, even after Stop.
+struct HotReloadSession {
+    number: i64,
+    server: Arc<LanguageServer>,
+}
+
+impl Drop for HotReloadSession {
+    fn drop(&mut self) {
+        let number = self.number;
+        let server = self.server.clone();
+        std::thread::spawn(move || {
+            let (method, params) =
+                extension::workspace_request(extension::END_HOT_RELOAD, &json!({ "session": number }));
+            let _ = server.request(method, params);
+        });
+    }
+}
+
 impl HotReload {
+    fn has_changes(&self, buffers: &[(PathBuf, u64, String)]) -> bool {
+        self.pending
+            || buffers.iter().any(|(path, version, text)| match (self.applied.get(path), self.originals.get(path)) {
+                (Some(applied), _) => applied != version,
+                (None, Some(original)) => original != text,
+                (None, None) => false,
+            })
+    }
+
     /// The original texts Roslyn has not been given yet, in a stable order, as the extension takes them.
     fn ungiven(&self) -> Vec<(PathBuf, String)> {
         self.originals
@@ -86,7 +116,7 @@ impl HotReload {
 /// What a save's Hot Reload came to, for the window to show and keep.
 struct HotReloadOutcome {
     /// The session and the server it lives on, once it has started.
-    session: Option<(i64, Arc<LanguageServer>)>,
+    session: Option<Arc<HotReloadSession>>,
     /// The original texts Roslyn now has.
     given: Vec<PathBuf>,
     /// What the Debug console says, each line with whether it is a failure.
@@ -121,8 +151,8 @@ impl HotReloadOutcome {
     }
 
     /// The session it started on, kept even when the update that followed failed.
-    fn session(mut self, number: i64, server: &Arc<LanguageServer>) -> Self {
-        self.session = Some((number, server.clone()));
+    fn session(mut self, session: Arc<HotReloadSession>) -> Self {
+        self.session = Some(session);
         self
     }
 
@@ -832,14 +862,8 @@ impl MainWindow {
     /// Each open C# file's text as the launch's save left it: what Roslyn needs as a file's original once an edit makes
     /// its text no longer match the build's PDB.
     fn capture_hot_reload_originals(&mut self, cx: &mut Context<Self>) {
-        let Some(folder) = self.workspace.as_ref().map(|workspace| workspace.folder.clone()) else { return };
-        let mut roots = vec![folder];
-        if let Some(tree) = &self.tree {
-            roots.extend(
-                tree.solution().projects().iter().filter_map(|project| project.path.parent().map(Path::to_path_buf)),
-            );
-        }
-        let texts: Vec<(PathBuf, String)> = crate::buffer::in_folders(&roots, cx)
+        let texts: Vec<(PathBuf, String)> = self
+            .workspace_buffers(cx)
             .into_iter()
             .filter_map(|buffer| {
                 let buffer = buffer.read(cx);
@@ -864,15 +888,7 @@ impl MainWindow {
 
     /// The debugging session is ending: Roslyn's Edit and Continue session ends with it, as Passenger's does.
     fn end_hot_reload(&mut self) {
-        let Some(hot) = self.debug.hot_reload.take() else { return };
-        if let (Some(session), Some(server)) = (hot.session, hot.server) {
-            // The request is only written; the answer is nobody's, and the session ends with the program either way.
-            std::thread::spawn(move || {
-                let (method, params) =
-                    extension::workspace_request(extension::END_HOT_RELOAD, &json!({ "session": session }));
-                let _ = server.request(method, params);
-            });
-        }
+        self.debug.hot_reload = None;
     }
 
     /// A save made while the program is debugged: the file's edits go to the program, as Rider's Apply Hot Reload
@@ -891,23 +907,26 @@ impl MainWindow {
         if self.debug.attached.is_some() || !matches!(self.debug.phase, Phase::Running | Phase::Paused) {
             return false;
         }
-        let Some(session) = self.debug.session.clone() else { return false };
-        let Some(server) = self.server.clone() else { return false };
-        let Some(folder) = self.workspace.as_ref().map(|workspace| workspace.folder.clone()) else { return false };
         let applying = self.debug.hot_reload.as_ref().is_some_and(|hot| hot.applying);
         let stopped = self.debug.hot_reload.as_ref().is_some_and(|hot| hot.stopped.is_some());
         if stopped {
             return false;
         }
-        // A step or resume asked for while another update is on its way goes on when that one lands.
+        // Coalesce saves and keep a waiting step behind the newest text, rather than only the update already on its way.
         if applying {
+            if let Some(hot) = &mut self.debug.hot_reload {
+                hot.pending = true;
+            }
             if after.is_some() {
                 self.debug.after_apply = after;
-                return true;
             }
-            return false;
+            return true;
         }
-        let buffers: Vec<(PathBuf, u64, String)> = crate::buffer::in_folders(&[folder.clone()], cx)
+        let Some(session) = self.debug.session.clone() else { return false };
+        let Some(server) = self.server.clone() else { return false };
+        let Some(folder) = self.workspace.as_ref().map(|workspace| workspace.folder.clone()) else { return false };
+        let buffers: Vec<(PathBuf, u64, String)> = self
+            .workspace_buffers(cx)
             .into_iter()
             .filter_map(|buffer| {
                 let buffer = buffer.read(cx);
@@ -918,8 +937,8 @@ impl MainWindow {
             .collect();
         let breakpoints = self.session_breakpoints(&folder);
         let Some(hot) = &mut self.debug.hot_reload else { return false };
-        if let Some(started_on) = &hot.server
-            && !Arc::ptr_eq(started_on, &server)
+        if let Some(started_on) = &hot.session
+            && !Arc::ptr_eq(&started_on.server, &server)
         {
             let said =
                 "Hot Reload: the C# language server restarted since the program was launched: restart to apply changes";
@@ -930,18 +949,13 @@ impl MainWindow {
         }
         // A file whose text the program already runs is no edit; one never given an original was not open when the
         // program was built, and its text is no edit of that build.
-        let changed =
-            buffers.iter().any(|(path, version, text)| match (hot.applied.get(path), hot.originals.get(path)) {
-                (Some(applied), _) => applied != version,
-                (None, Some(original)) => original != text,
-                (None, None) => false,
-            });
-        if !changed {
+        if !hot.has_changes(&buffers) {
             return false;
         }
         let record: Vec<(PathBuf, u64)> = buffers.iter().map(|(path, version, _)| (path.clone(), *version)).collect();
-        let number = hot.session;
+        let reload = hot.session.clone();
         let originals = hot.ungiven();
+        hot.pending = false;
         hot.applying = true;
         let paused = self.debug.phase == Phase::Paused;
         // A stop is read again after the update unless the step or resume waiting for it is about to go on.
@@ -957,7 +971,7 @@ impl MainWindow {
             let outcome = cx
                 .background_executor()
                 .spawn(async move {
-                    hot_reload_work(session, server, number, originals, paused, refresh, breakpoints).await
+                    hot_reload_work(session, server, reload, originals, paused, refresh, breakpoints).await
                 })
                 .await;
             let _ = handle.update(cx, |m, window, cx| {
@@ -983,11 +997,10 @@ impl MainWindow {
     ) {
         let HotReloadOutcome { session, given, lines, said, committed, verified, refreshed, restart, stopped } =
             outcome;
-        if let Some(hot) = &mut self.debug.hot_reload {
+        let pending = if let Some(hot) = &mut self.debug.hot_reload {
             hot.applying = false;
-            if let Some((number, server)) = session {
-                hot.session = Some(number);
-                hot.server = Some(server);
+            if let Some(session) = session {
+                hot.session = Some(session);
             }
             hot.given.extend(given);
             if committed {
@@ -996,13 +1009,22 @@ impl MainWindow {
             if stopped.is_some() {
                 hot.stopped = stopped;
             }
-        }
+            hot.pending
+        } else {
+            false
+        };
         for (file, lines, answers) in verified {
             self.note_verification(&file, &lines, answers, cx);
         }
         self.debug_console.update(cx, |view, cx| view.append(&lines, cx));
         let reason = said.clone();
         self.said = Some(said.into());
+        if pending {
+            if !self.hot_reload_apply(None, cx) {
+                self.continue_after_hot_reload(cx);
+            }
+            return;
+        }
         // The stop stands where the update left it, even while a question is asked over it.
         if self.debug.after_apply.is_none()
             && let Some((threads, frames, variables)) = refreshed
@@ -1268,7 +1290,9 @@ impl MainWindow {
         let rows: Vec<FrameRow> = frames.iter().map(frame_row).collect();
         let at = at.or_else(|| frames.first().and_then(|frame| frame.path().map(|path| (path, frame.line))));
         // A stop with no source to show: the top frame's assembly is decompiled so its code shows where it stopped.
-        let resolve_top = at.is_none() && frames.first().is_some_and(|frame| frame.is_resolved == Some(false));
+        let resolve_top = frames.first().is_some_and(|frame| {
+            frame.decompiled_source_info.is_some() || (at.is_none() && frame.is_resolved == Some(false))
+        });
         // The stopped frame's values, set in at the end of its line as Rider's inline values are: simple ones only,
         // four at most, each cut short.
         let inline = frames.first().and_then(|frame| {
@@ -1311,7 +1335,7 @@ impl MainWindow {
             view.set_variables(variables, cx);
         });
         self.clear_execution_line(cx);
-        if let Some((path, line)) = at {
+        if let Some((path, line)) = at.filter(|_| !resolve_top) {
             self.show_stop_marks(&path, line, inline, cx);
             self.open_file(&path, Some((line, 0)), window, cx);
         }
@@ -1327,6 +1351,7 @@ impl MainWindow {
     fn resolve_debug_frame(&mut self, index: usize, cx: &mut Context<Self>) {
         let Some(session) = self.debug.session.clone() else { return };
         let Some(frame) = self.debug.frames.get(index).cloned() else { return };
+        let frame_id = frame.id;
         let generation = self.debug.generation;
         let handle = self.handle;
         self.said = Some("Decompiling the frame's assembly…".into());
@@ -1335,13 +1360,20 @@ impl MainWindow {
             let read = cx
                 .background_executor()
                 .spawn(async move {
-                    let resolved = session.resolve_stack_frame(frame.id)?;
+                    let resolved = if frame.decompiled_source_info.is_some() {
+                        frame
+                    } else {
+                        session.resolve_stack_frame(frame.id)?
+                    };
                     let (path, text) = session.decompiled_source(&resolved)?;
                     Ok::<_, String>((resolved, path, text))
                 })
                 .await;
             let _ = handle.update(cx, |m, window, cx| {
-                if m.debug.generation != generation {
+                if m.debug.generation != generation
+                    || m.debug.phase != Phase::Paused
+                    || m.debug.frames.get(index).is_none_or(|frame| frame.id != frame_id)
+                {
                     return;
                 }
                 match read {
@@ -1356,6 +1388,9 @@ impl MainWindow {
                             *slot = frame;
                         }
                         m.debug_view.update(cx, |view, cx| view.resolved(index, row, cx));
+                        if index == 0 {
+                            m.show_stop_marks(&path, line, None, cx);
+                        }
                         m.open_file(&path, Some((line, 0)), window, cx);
                         m.said = Some(
                             "Decompiled code: the debug adapter made this from the assembly, so it is read-only".into(),
@@ -1372,11 +1407,10 @@ impl MainWindow {
     /// Opens a frame's source at its place: what clicking it in the Frames list does.
     pub(super) fn select_debug_frame(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(frame) = self.debug.frames.get(index).cloned() else { return };
-        if let Some(path) = frame.path() {
-            self.open_file(&path, Some((frame.line, 0)), window, cx);
-        } else if frame.is_resolved == Some(false) {
-            // A frame of an assembly with no symbols: the adapter decompiles it, and its source opens read-only.
+        if frame.decompiled_source_info.is_some() || frame.is_resolved == Some(false) {
             self.resolve_debug_frame(index, cx);
+        } else if let Some(path) = frame.path() {
+            self.open_file(&path, Some((frame.line, 0)), window, cx);
         }
         self.debug_view.update(cx, |view, cx| view.select(index, cx));
         let Some(session) = self.debug.session.clone() else { return };
@@ -1690,10 +1724,11 @@ impl MainWindow {
             let buffer = buffer.read(cx);
             (rsharp_core::paths::canonical(&buffer.path), buffer.document.version())
         };
-        if self.followed_edit.as_ref() == Some(&(path.clone(), version)) {
+        let edit = (buffer.entity_id(), version);
+        if self.followed_edit == Some(edit) {
             return;
         }
-        self.followed_edit = Some((path.clone(), version));
+        self.followed_edit = Some(edit);
         let moved = self.debug.breakpoints.follow(&path, |line| rsharp_text::map_line(changes, line));
         if moved.is_empty() {
             return;
@@ -2270,7 +2305,7 @@ fn read_variables(session: &Session, frame: i64) -> Result<Vec<VariableRow>, Str
 async fn hot_reload_work(
     session: Arc<Session>,
     server: Arc<LanguageServer>,
-    number: Option<i64>,
+    reload: Option<Arc<HotReloadSession>>,
     originals: Vec<(PathBuf, String)>,
     paused: bool,
     refresh: Option<i64>,
@@ -2280,13 +2315,13 @@ async fn hot_reload_work(
     let given: Vec<PathBuf> = originals.iter().map(|(path, _)| path.clone()).collect();
     let originals_json =
         json!(originals.iter().map(|(path, text)| json!({ "path": path, "text": text })).collect::<Vec<_>>());
-    let number = match number {
-        Some(number) => number,
+    let reload = match reload {
+        Some(reload) => reload,
         None => {
             let message = json!({ "capabilities": [], "originals": originals_json });
             match extension_request(&server, extension::START_HOT_RELOAD, message).await {
                 Ok(started) => match started["session"].as_i64() {
-                    Some(number) => number,
+                    Some(number) => Arc::new(HotReloadSession { number, server: server.clone() }),
                     None => {
                         let problem =
                             started["problem"].as_str().unwrap_or("the extension gave no session").to_string();
@@ -2297,11 +2332,12 @@ async fn hot_reload_work(
             }
         }
     };
+    let number = reload.number;
     let state = match session.hot_reload_state() {
         Ok(state) => state,
         Err(why) => {
             let said = format!("Hot Reload: the debugger could not say what the program can take: {why}");
-            return HotReloadOutcome::failed(said).session(number, &server).given(given);
+            return HotReloadOutcome::failed(said).session(reload).given(given);
         }
     };
     let Some(capabilities) = state.capabilities.clone() else {
@@ -2309,7 +2345,7 @@ async fn hot_reload_work(
             .capabilities_unknown
             .clone()
             .unwrap_or_else(|| "the program's runtime did not say which edits it can take".into());
-        return HotReloadOutcome::failed(format!("Hot Reload: {why}")).session(number, &server).given(given);
+        return HotReloadOutcome::failed(format!("Hot Reload: {why}")).session(reload).given(given);
     };
     let modules: Vec<String> =
         state.modules.iter().filter(|module| module.editable).map(|module| module.mvid.clone()).collect();
@@ -2349,19 +2385,19 @@ async fn hot_reload_work(
         Ok(emitted) => emitted,
         Err(why) => {
             let said = format!("Hot Reload failed in the C# language server: {why}");
-            return HotReloadOutcome::failed(said).session(number, &server).given(given);
+            return HotReloadOutcome::failed(said).session(reload).given(given);
         }
     };
     if let Some(problem) = emitted["problem"].as_str() {
         let said = format!("Hot Reload failed: {problem}");
-        return HotReloadOutcome::failed(said).session(number, &server).given(given);
+        return HotReloadOutcome::failed(said).session(reload).given(given);
     }
     let problems = hot_reload_problems(&emitted["problems"]);
     match emitted["status"].as_str().unwrap_or_default() {
         "none" => {
             let said = "Hot Reload: no managed code changes to apply".to_string();
             HotReloadOutcome {
-                session: Some((number, server.clone())),
+                session: Some(reload),
                 given,
                 lines: vec![(format!("{said}\n"), false)],
                 said,
@@ -2385,7 +2421,7 @@ async fn hot_reload_work(
                 problems.iter().map(|problem| (format!("{problem}\n"), true)).collect();
             lines.push((format!("{said}\n"), true));
             HotReloadOutcome {
-                session: Some((number, server.clone())),
+                session: Some(reload),
                 given,
                 lines,
                 said,
@@ -2402,7 +2438,7 @@ async fn hot_reload_work(
                 Err(why) => {
                     tell_hot_reload(&server, extension::DISCARD_HOT_RELOAD, number).await;
                     let said = format!("The debugger could not apply the changes: {why}");
-                    return HotReloadOutcome::failed(said).session(number, &server).given(given);
+                    return HotReloadOutcome::failed(said).session(reload).given(given);
                 }
             };
             let mut lines: Vec<(String, bool)> =
@@ -2422,7 +2458,7 @@ async fn hot_reload_work(
                 let said = format!("Hot Reload: {why}");
                 lines.push((format!("{said}\n"), true));
                 return HotReloadOutcome {
-                    session: Some((number, server.clone())),
+                    session: Some(reload),
                     given,
                     lines,
                     said,
@@ -2468,7 +2504,7 @@ async fn hot_reload_work(
             );
             lines.push((format!("{said}\n"), false));
             HotReloadOutcome {
-                session: Some((number, server.clone())),
+                session: Some(reload),
                 given,
                 lines,
                 said,

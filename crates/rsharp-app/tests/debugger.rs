@@ -928,6 +928,15 @@ const GREETER: &str = "using System;\n\nstatic class Greeter\n{\n    public stat
 
 #[test]
 fn a_saved_edit_reaches_the_program_the_debugger_runs() {
+    saved_edit_reaches_program(false);
+}
+
+#[test]
+fn a_saved_edit_in_a_project_beside_the_solution_reaches_the_program() {
+    saved_edit_reaches_program(true);
+}
+
+fn saved_edit_reaches_program(project_beside_solution: bool) {
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -936,20 +945,27 @@ fn a_saved_edit_reaches_the_program_the_debugger_runs() {
         eprintln!("skipped: Roslyn's language server is not installed");
         return;
     }
-    let run = Run::new("debugger-hot-reload", &[]);
-    // At the folder's root, where the window finds the project Roslyn and the launch plan both need.
-    write(&run.folder, "App.csproj", EXE_PROJECT);
-    write(&run.folder, "Program.cs", GREETING_PROGRAM);
-    write(&run.folder, "Greeter.cs", GREETER);
+    let run =
+        Run::new(if project_beside_solution { "debugger-hot-reload-sibling" } else { "debugger-hot-reload" }, &[]);
+    let project = if project_beside_solution { run.folder.join("App") } else { run.folder.clone() };
+    let workspace = if project_beside_solution {
+        write(&run.folder, "Solution/App.slnx", "<Solution><Project Path=\"../App/App.csproj\" /></Solution>");
+        run.folder.join("Solution/App.slnx")
+    } else {
+        run.folder.clone()
+    };
+    write(&project, "App.csproj", EXE_PROJECT);
+    write(&project, "Program.cs", GREETING_PROGRAM);
+    write(&project, "Greeter.cs", GREETER);
     if !offline(&run) {
         return;
     }
-    let source = rsharp_core::paths::canonical(&run.folder.join("Greeter.cs"));
+    let source = rsharp_core::paths::canonical(&project.join("Greeter.cs"));
     let mut cx = TestAppContext::single();
     let (main, cx) = run.window(&mut cx);
     cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
     main.update_in(cx, |main, window, cx| {
-        main.open_workspace(&run.folder, window, cx);
+        main.open_workspace(&workspace, window, cx);
         // The caret at the start of `Hello`, on the line that greets.
         main.open_file(&source, Some((6, 28)), window, cx);
     });
@@ -1196,6 +1212,28 @@ fn apply_hot_reload_changes_applies_a_debugged_programs_edit() {
 }
 
 #[test]
+fn closing_the_last_tab_releases_its_buffer() {
+    let run = Run::new("debugger-closed-buffer", &[("Program.cs", "class Program {}\n")]);
+    let source = rsharp_core::paths::canonical(&run.folder.join("Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, None, window, cx));
+    cx.run_until_parked();
+    let (buffer, editor) = main.read_with(cx, |main, cx| {
+        let editor = main.editor().unwrap();
+        (editor.read(cx).buffer.downgrade(), editor.downgrade())
+    });
+
+    cx.simulate_keystrokes("secondary-w");
+    cx.run_until_parked();
+    // The frame dropped its editor; the next effect cycle releases the editor's buffer too.
+    cx.update(|_, _| {});
+    assert!(main.read_with(cx, |main, _| main.editor().is_none()), "the last tab closed");
+    editor.assert_released();
+    buffer.assert_released();
+}
+
+#[test]
 fn a_breakpoint_follows_its_code_through_an_edit() {
     let run = Run::new(
         "debugger-breakpoint-follow",
@@ -1227,6 +1265,17 @@ fn a_breakpoint_follows_its_code_through_an_edit() {
         rsharp_app::buffer::find(&source, cx).map(|buffer| buffer.read(cx).breakpoints.clone()).unwrap_or_default()
     });
     assert_eq!(marks.iter().map(|mark| mark.line).collect::<Vec<_>>(), vec![5], "the gutter shows it at its new line");
+
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-s" } else { "ctrl-s" });
+    cx.simulate_keystrokes("secondary-w");
+    cx.update(|_, _| {});
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((0, 0)), window, cx));
+    cx.simulate_keystrokes("enter");
+    assert_eq!(
+        main.read_with(cx, |main, _| main.breakpoints().lines(&source)),
+        vec![6],
+        "the reopened buffer's first edit is not mistaken for its previous buffer's edit"
+    );
 }
 
 #[test]
@@ -1340,7 +1389,7 @@ fn choosing_a_frame_without_symbols_opens_its_decompiled_source() {
 
     // The library's frame has no source of its own: choosing it decompiles System.Linq and opens the source read-only.
     click(cx, "debug frame 1");
-    let decompiled = pump(cx, |cx| {
+    let decompiled = |cx: &mut VisualTestContext| {
         main.read_with(cx, |main, cx| {
             main.editor().is_some_and(|editor| {
                 let editor = editor.read(cx);
@@ -1349,12 +1398,32 @@ fn choosing_a_frame_without_symbols_opens_its_decompiled_source() {
                     && editor.text().to_string().contains("namespace System.Linq")
             })
         })
-    });
-    assert!(decompiled, "the decompiled source opened at the frame: {:?}", output(&main, cx));
+    };
+    assert!(pump(cx, &decompiled), "the decompiled source opened at the frame: {:?}", output(&main, cx));
     let read_only = main.read_with(cx, |main, cx| {
         main.editor().map(|editor| editor.read(cx).buffer.read(cx).read_only).unwrap_or(false)
     });
     assert!(read_only, "decompiled code opens read-only");
+
+    // A frame already opened has its materialized path rather than the PDB's relative document name.
+    click(cx, "debug frame 0");
+    click(cx, "debug frame 1");
+    assert!(pump(cx, &decompiled), "the same decompiled frame opened again");
+
+    // Another call stops in the same library: its cached decompiled source must still open.
+    click(cx, "debug frame 0");
+    cx.simulate_keystrokes("f5");
+    assert!(
+        pump(cx, |cx| main.read_with(cx, |main, _| main.debug_phase() == Phase::Paused)),
+        "the next selector call stopped: {:?}",
+        output(&main, cx)
+    );
+    click(cx, "debug frame 1");
+    assert!(
+        pump(cx, &decompiled),
+        "the decompiled source opened again after the next stop: {:?}",
+        main.read_with(cx, |main, _| main.said().map(str::to_string))
+    );
 
     cx.simulate_keystrokes("shift-f5");
     assert!(pump(cx, |cx| main.read_with(cx, |main, _| !main.is_debugging())), "the session stopped");

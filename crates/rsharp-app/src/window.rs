@@ -336,7 +336,7 @@ pub struct MainWindow {
     /// A question with a few answers while it asks one: Hot Reload's restart for an edit the runtime cannot take.
     choice_dialog: Option<Entity<crate::choice_dialog::ChoiceDialog>>,
     /// The buffer version whose breakpoints last followed its edit, so two editors of one file move them once.
-    followed_edit: Option<(PathBuf, u64)>,
+    followed_edit: Option<(gpui::EntityId, u64)>,
     tests: tests::Tests,
     /// This window's own handle, so a task without a window (a build's end) reaches one to open a stopped file.
     handle: gpui::WindowHandle<MainWindow>,
@@ -1545,10 +1545,9 @@ impl MainWindow {
             _ => {}
         })
         .detach();
-        let followed = buffer.clone();
-        cx.subscribe(&buffer, move |w, _, event: &crate::buffer::BufferEvent, cx| {
+        cx.subscribe(&buffer, |w, buffer, event: &crate::buffer::BufferEvent, cx| {
             if let crate::buffer::BufferEvent::Edited { changes, .. } = event {
-                w.follow_breakpoints(&followed, changes, cx);
+                w.follow_breakpoints(&buffer, changes, cx);
             }
         })
         .detach();
