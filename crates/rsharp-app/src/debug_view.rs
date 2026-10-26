@@ -132,6 +132,8 @@ pub struct DebugView {
     data_breakpoints: Vec<(String, String)>,
     /// The Variables or Frames menu open, and what it acts on.
     menu: Option<Menu>,
+    /// Where the menu was opened, in the window, so it stands at the pointer over the lists rather than in their flow.
+    menu_at: gpui::Point<gpui::Pixels>,
     focus: FocusHandle,
     _watch_subscription: Subscription,
 }
@@ -180,6 +182,7 @@ impl DebugView {
             muted: false,
             data_breakpoints: Vec::new(),
             menu: None,
+            menu_at: gpui::Point::default(),
             focus: cx.focus_handle(),
             _watch_subscription: subscription,
         }
@@ -504,11 +507,11 @@ impl DebugView {
         let mut panel = div()
             .id("debug menu")
             .debug_selector(|| "debug menu".into())
-            .mx(px(4.))
-            .mb(px(4.))
+            .min_w(px(180.))
             .flex()
             .flex_col()
             .py(px(4.))
+            .shadow_lg()
             .rounded(px(4.))
             .bg(theme::popup())
             .border_1()
@@ -647,6 +650,18 @@ impl Render for DebugView {
             .debug_selector(|| "debug window".into())
             .key_context("DebugWindow")
             .on_action(cx.listener(|view, _: &ApplySetValue, _, cx| view.apply_set_value(cx)))
+            .children(self.menu.clone().map(|menu| {
+                gpui::deferred(
+                    gpui::anchored().position(self.menu_at).snap_to_window_with_margin(px(8.)).child(
+                        div()
+                            .on_mouse_down_out(cx.listener(|view, _, _, cx| {
+                                view.menu = None;
+                                cx.notify();
+                            }))
+                            .child(self.menu_panel(menu, cx)),
+                    ),
+                )
+            }))
             .relative()
             .size_full()
             .flex()
@@ -719,10 +734,6 @@ impl Render for DebugView {
                                 div().flex().flex_col().child(label("Threads")).children(rows)
                             }))
                             .child(label("Frames"))
-                            .children(match &self.menu {
-                                Some(menu @ Menu::Frames) => Some(self.menu_panel(menu.clone(), cx)),
-                                _ => None,
-                            })
                             .child(
                                 div()
                                     .id("debug frames")
@@ -732,7 +743,8 @@ impl Render for DebugView {
                                     .px(px(4.))
                                     .on_mouse_down(
                                         gpui::MouseButton::Right,
-                                        cx.listener(|view, _: &gpui::MouseDownEvent, _, cx| {
+                                        cx.listener(|view, event: &gpui::MouseDownEvent, _, cx| {
+                                            view.menu_at = event.position;
                                             view.menu = Some(Menu::Frames);
                                             cx.notify();
                                         }),
@@ -823,10 +835,6 @@ impl Render for DebugView {
                                 div().flex().flex_col().child(label("Return values")).children(rows)
                             }))
                             .child(label("Variables"))
-                            .children(match &self.menu {
-                                Some(menu @ Menu::Variable { .. }) => Some(self.menu_panel(menu.clone(), cx)),
-                                _ => None,
-                            })
                             .child(
                                 div()
                                     .flex_none()
@@ -888,7 +896,8 @@ impl Render for DebugView {
                                                     let value = row.value.clone();
                                                     let evaluate = row.evaluate_name.clone();
                                                     let path = path.clone();
-                                                    move |view, _: &gpui::MouseDownEvent, _, cx| {
+                                                    move |view, event: &gpui::MouseDownEvent, _, cx| {
+                                                        view.menu_at = event.position;
                                                         let parent = path
                                                             .split_last()
                                                             .and_then(|(_, parent)| find(&mut view.variables, parent))

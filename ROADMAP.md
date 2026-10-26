@@ -292,7 +292,7 @@ and unsupported non-text changes are refused in the merge view rather than guess
 (a `// shortcut:` in `buffer.rs`), the Log asks for 2,000 commits, and a failed save stops a Git command rather
 than running it on stale bytes.
 
-### Phase 8: Debugger (L) — first slice in place
+### Phase 8: Debugger (L) — built
 Built: the DAP client and the adapter. `crates/rsharp-dap` publishes Passenger's `Passenger.DebugAdapter` from
 the submodule into `sidecars/debugger` and drives it as Passenger does, over the protocol's framed messages on
 standard input and output: initialize, launch or attach, `initialized`, each file's breakpoints, the exception
@@ -412,21 +412,39 @@ requests; `LaunchTests`' two late-runtime cases (a held runtime and a launch sto
 into a module without symbols; and `DecompiledSymbolsTests`' resolved frame.
 The client now sends Just My Code as a choice (`Launch::just_my_code`, `Start::Attach::just_my_code`), though the window
 still always starts with it on. Every case in `vendor/passenger/tests/Passenger.Tests/Debugging/` is translated.
-The window-level `DebuggerTests` cases translated in `crates/rsharp-app/tests/debugger.rs` include: F9/F5 with the
-locals, the Variables and Frames menus (copy a value and the stack, add a watch), the Breakpoints dialog's list and a
-breakpoint turned off, an unreadable hit count refused by the debugger,
-Mute Breakpoints passing a line and an exception breakpoint, `$exception` and a watch of its message, an exception named
-at the throwing line and in the status bar, the typed Debug console as the program's input, 100,000 coloured lines with
-no colour codes, Pause in a loop, Attach to Process's .NET-only listing, closing the window and a debugger killed while
-paused leaving no program, and the session-only data-breakpoint menu and list.
-Still to translate in the window suite, each needing the UI it names first: exception breakpoints by type with a
-condition (the dialog stores both and the client sends them, but the window case is unproven), the execution arrow
-dragged past the loop
-(run to cursor), the breakpoint's inline Alt+F9 popup and a shift-click tracepoint, the exception handler options, a
-value from the previous stop opening to an error, megabyte strings in Variables and a hover, Set Value under a range,
-an evaluation that could not be stopped, a debugger that dies with an exception, Stop of a program the debugger cannot
-end, a test host the debugger cannot attach to, and the terminal's own debug cases. These are the remaining work of
-this phase, not behaviour taken as done.
+Every `DebuggerTests` case is translated in `crates/rsharp-app/tests/debugger.rs` (and `debugger_crash.rs`, a binary
+of its own for the environment variable that crashes the adapter), or gated below with its reason: F9/F5 with the
+locals, the Variables and Frames menus, the Breakpoints dialog's list and a breakpoint turned off, an unreadable hit
+count refused, Mute Breakpoints, `$exception` and a watch of its message, an exception named at its line and in the
+status bar, the typed Debug console, 100,000 coloured lines, Pause, Attach to Process's .NET-only listing, closing the
+window and a debugger killed while paused; the execution arrow dragged past the loop, a condition typed into the
+Alt+F9 popup, a Shift+click tracepoint and its popup's log message, an exception breakpoint added by its type with a
+condition, the handler options (user-unhandled, then handled in user code), a value from the stop before a step
+refused rather than opened to another value's members, a 4 MB string drawn cut short with a hover card while Copy
+Value keeps all of it, Set Value on elements under `[100..199]` and `[1, ...]`, an evaluation that could not be
+stopped, an exception the debugger cannot describe, a debugger dying with an exception (its stack trace in the Debug
+console and the IDE's log), Stop and the window's close on a program the debugger cannot end, closing the window
+while attached, both terminal cases (a stop on Main's first line, typed input and the tab's exit code; Stop ending the
+program and its child), Stop while the program's runtime is held at its start, a line typed above a bound breakpoint
+while paused, and Run and Debug giving a configuration the same arguments, variable and working folder.
+The UI they needed: the execution arrow's drag (Set Next Statement), Rider's breakpoint popup (Alt+F9, or a
+right-click on a breakpoint) and Shift+click tracepoints, a debugger hover card, values cut short where they are drawn,
+Set Value's expression built from the tree as Passenger's is, a values column that scrolls whole, a Variables tree
+numbered per stop, Stop from a session's first moment (`rsharp_dap::Starting`), the adapter's standard error in the
+IDE's log, a terminal program's exit code from its tab, breakpoints sent in the lines the program was built from, and
+an exception breakpoint's types sent as their own path segment, which the engine needs to tell one type from another.
+Known limits, taken on purpose:
+- Data breakpoints stop a program only on Windows x64, where ICorDebug offers them; their live test runs there alone.
+- Profile's third of the Run/Debug/Profile case waits for the profiler, Phase 11.
+- Debugging unit tests (Passenger's "a test host the debugger cannot attach to") waits for a Debug action in the Unit
+  Tests window, which RSharp does not have yet; the case is translated with that action.
+- Smart Step Into offers the statement's calls in a list over the window (Shift+Alt+F11, chosen by click or Enter),
+  where Passenger marks them in the editor and cycles them with the arrows and Tab: the same steps, Rider's own
+  editor marks not yet drawn.
+- The window's held-start and terminal Stop cases hold the runtime by a Unix socket and read processes as Unix does,
+  so they run on macOS and Linux; the DAP suite holds a Windows runtime by named pipe.
+- Hot Reload is for a program this window launches (above).
+On macOS every case passes; Windows x64 and Linux are CI's.
 
 ### Phase 9: Avalonia and WPF (L)
 - A XAML host: `Passenger.Xaml` behind a thin JSON-lines (or LSP) process, giving completion, diagnostics,

@@ -1711,6 +1711,7 @@ fn an_exception_stop_lists_the_exception_as_exception_and_a_watch_reads_its_mess
         "the exception's own value names its type: {value:?}"
     );
 
+    scroll_to_row(cx, "debug field: Watch");
     click(cx, "debug field: Watch");
     cx.simulate_input("$exception.Message");
     let watched = pump(cx, |cx| {
