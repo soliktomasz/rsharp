@@ -356,7 +356,12 @@ mod tests {
         std::fs::create_dir_all(folder.join("Shop")).unwrap();
         let canonical = crate::paths::canonical(&folder);
         let inside = canonical.join("Shop/Shop.csproj");
-        let outside = PathBuf::from("/elsewhere/Other/Other.csproj");
+        // Absolute on the system it runs on: "/elsewhere" is drive-relative on Windows, which a canonical path is not.
+        let outside = PathBuf::from(if cfg!(windows) {
+            r"C:\elsewhere\Other\Other.csproj"
+        } else {
+            "/elsewhere/Other/Other.csproj"
+        });
         let document = RunConfigurations {
             configurations: vec![
                 RunConfiguration { name: "Shop".into(), project: inside.clone(), ..RunConfiguration::default() },

@@ -796,7 +796,13 @@ impl Repository {
         }
         for (mode, hash, from, to) in moves {
             let mut insert = words(&["update-index", "--add", "--cacheinfo", utf8(mode)?, utf8(hash)?]);
-            insert.push(to.into_os_string());
+            // An index path is Git's own, '/' between its names: a path joined on Windows has '\' (a Unix name may hold
+            // one, so only Windows' separators are turned).
+            insert.push(if cfg!(windows) {
+                OsString::from(to.to_string_lossy().replace('\\', "/"))
+            } else {
+                to.into_os_string()
+            });
             self.run(&insert)?;
             let mut remove = words(&["update-index", "--force-remove", "--"]);
             remove.push(from.into_os_string());

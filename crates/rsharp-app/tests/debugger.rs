@@ -2191,6 +2191,15 @@ fn a_data_breakpoint_stops_the_program_when_the_value_it_watches_is_written() {
         "the debugger watches counter.Count: {listed:?}; it said {:?}",
         main.read_with(cx, |main, _| main.said().map(str::to_string))
     );
+    // As Passenger's test waits for its watch to be bound before the program goes on.
+    let bound = |main: &Entity<MainWindow>, cx: &mut VisualTestContext| {
+        main.read_with(cx, |main, _| main.data_breakpoints_bound().to_vec())
+    };
+    assert!(
+        pump(cx, |cx| bound(&main, cx).first().is_some_and(|(verified, _)| *verified)),
+        "the debugger did not take the data breakpoint: {:?}",
+        bound(&main, cx)
+    );
 
     // The line breakpoint cleared, as Passenger's test has none: only the watched write stops the program, and the
     // runtime stops it at the statement after the write, which a line breakpoint there would also claim.

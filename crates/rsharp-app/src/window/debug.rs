@@ -59,6 +59,8 @@ pub(super) struct DebugState {
     /// The session's data breakpoints, watched for a write that changes the value: never kept with the folder, as
     /// the objects they watch live in the program alone.
     data_breakpoints: Vec<rsharp_dap::DataBreakpoint>,
+    /// What the debugger made of each data breakpoint, in their order: whether it watches, and why not.
+    data_bound: Vec<(bool, Option<String>)>,
     /// Console input reaches the adapter in the order it was entered.
     input_task: Option<Task<()>>,
     _task: Option<Task<()>>,
@@ -210,6 +212,7 @@ impl DebugState {
             hot_reload: None,
             after_apply: None,
             data_breakpoints: Vec::new(),
+            data_bound: Vec::new(),
             input_task: None,
             _task: None,
         }
@@ -1319,6 +1322,12 @@ impl MainWindow {
             }
             Said::Exited(code) => {
                 let name = self.debug_name();
+                // A program in a Terminal tab is the tab's: the adapter's exit there is of what it started, which on
+                // Windows is not the program itself.
+                if let Some(id) = self.debug.terminal {
+                    self.finish_with_terminal(id, name, cx);
+                    return;
+                }
                 let message = match code {
                     Some(code) => format!("{name} exited with code {code}"),
                     None => format!("{name} exited"),
@@ -1868,6 +1877,7 @@ impl MainWindow {
         self.debug.starting = None;
         self.debug.attached = None;
         self.debug.data_breakpoints.clear();
+        self.debug.data_bound.clear();
         self.debug.phase = Phase::Idle;
         self.debug.frames.clear();
         self.debug.thread = None;
@@ -1910,6 +1920,7 @@ impl MainWindow {
         self.debug.phase = Phase::Idle;
         self.debug.attached = None;
         self.debug.data_breakpoints.clear();
+        self.debug.data_bound.clear();
         self.debug.frames.clear();
         self.debug.thread = None;
         self.debug.pending.clear();
@@ -2461,13 +2472,28 @@ impl MainWindow {
                 if m.debug.generation != generation {
                     return;
                 }
-                if let Err(why) = sent {
-                    m.said = Some(why.into());
-                    cx.notify();
+                match sent {
+                    Ok(answers) => {
+                        // A watch the debugger could not set says so, as a line breakpoint it refuses does.
+                        if let Some(why) = answers.iter().find(|answer| !answer.verified).map(|answer| {
+                            answer.message.clone().unwrap_or_else(|| "the debugger did not set it".into())
+                        }) {
+                            m.said = Some(format!("The data breakpoint does not watch: {why}").into());
+                        }
+                        m.debug.data_bound =
+                            answers.into_iter().map(|answer| (answer.verified, answer.message)).collect();
+                    }
+                    Err(why) => m.said = Some(why.into()),
                 }
+                cx.notify();
             });
         })
         .detach();
+    }
+
+    /// What the debugger made of each data breakpoint, for a test: whether it watches, and why not.
+    pub fn data_breakpoints_bound(&self) -> &[(bool, Option<String>)] {
+        &self.debug.data_bound
     }
 
     /// The Debug window's list of the session's data breakpoints.

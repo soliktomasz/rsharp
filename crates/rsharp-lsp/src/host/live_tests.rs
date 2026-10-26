@@ -95,7 +95,9 @@ fn generating_design_time_builds_and_external_holds_take_turns() {
         let _ = sender.send(answer);
     });
     let projects = waiting.recv_timeout(Duration::from_secs(3)).expect("a hold did not report its running project");
-    assert_eq!(projects, [project.clone()]);
+    // The Host names the project as MSBuild does, canonically: on Windows an 8.3 temp folder's name spelled out.
+    let canonical: Vec<PathBuf> = projects.iter().map(|path| rsharp_core::paths::canonical(path)).collect();
+    assert_eq!(canonical, [rsharp_core::paths::canonical(&project)]);
     assert!(acquired.try_recv().is_err(), "an external build could start while the generating target was running");
     cancel.store(true, Ordering::Release);
     assert!(acquired.recv_timeout(Duration::from_secs(1)).expect("Stop waited for the generating build").is_err());

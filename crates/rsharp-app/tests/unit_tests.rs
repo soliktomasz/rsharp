@@ -318,7 +318,8 @@ fn run_unit_tests_uses_the_active_files_project_and_the_solution_selection() {
     assert!(main.read_with(cx, |main, _| main.is_testing()), "Run Unit Tests did not complete its chord in the editor");
     wait(cx, "the context test build", |cx| !main.read_with(cx, |main, _| main.is_testing()));
     assert!(
-        !main.read_with(cx, |main, cx| main.build_output(cx)).contains("Other/Orders.cs"),
+        // MSBuild names files as the system does: '\' on Windows.
+        !main.read_with(cx, |main, cx| main.build_output(cx)).replace('\\', "/").contains("Other/Orders.cs"),
         "the editor's context built a different project's same-named test"
     );
     main.update_in(cx, |main, window, cx| {
@@ -331,7 +332,7 @@ fn run_unit_tests_uses_the_active_files_project_and_the_solution_selection() {
     cx.simulate_keystrokes("ctrl-u r");
     cx.run_until_parked();
     wait(cx, "the selected project's test build", |cx| !main.read_with(cx, |main, _| main.is_testing()));
-    let output = main.read_with(cx, |main, cx| main.build_output(cx));
+    let output = main.read_with(cx, |main, cx| main.build_output(cx)).replace('\\', "/");
     assert!(
         output.contains("Other/Orders.cs") && !output.contains("Tests/Orders.cs"),
         "Run Unit Tests ignored the Solution selection: {output}"
