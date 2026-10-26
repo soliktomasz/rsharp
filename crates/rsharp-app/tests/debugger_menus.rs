@@ -39,8 +39,10 @@ fn a_data_breakpoint_menu_names_the_member_of_the_clicked_object(cx: &mut TestAp
     let counter = cx.debug_bounds("debug variable counter").unwrap().center();
     cx.simulate_click(counter, Modifiers::default());
     view.update(cx, |view, cx| {
+        let tree = view.tree();
         view.set_children(
             &[0],
+            tree,
             vec![VariableRow {
                 name: "Count".into(),
                 value: "0".into(),

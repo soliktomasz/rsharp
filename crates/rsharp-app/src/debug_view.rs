@@ -24,10 +24,12 @@ pub enum DebugAction {
     StepOut,
     /// A frame of the stopped thread chosen, from 0.
     SelectFrame(usize),
-    /// A variable with members opened: where it is in the tree, and the debugger's reference to them.
+    /// A variable with members opened: where it is in the tree, the debugger's reference to them, and which tree it
+    /// was (a stop, a frame chosen, values read again each make a new one, whose references are the debugger's anew).
     OpenVariable {
         path: Vec<usize>,
         reference: i64,
+        tree: u64,
     },
     /// A watch asked as it is typed.
     Evaluate(String),
@@ -112,6 +114,8 @@ pub struct DebugView {
     frames: Vec<FrameRow>,
     selected: usize,
     variables: Vec<Node>,
+    /// Counted each time the values shown are made anew, so a request from a tree since replaced is told apart.
+    tree: u64,
     watch: Entity<TextField>,
     watches: Vec<(String, String)>,
     /// The values a step over left at the top of the frame, as Rider's Return values group shows them.
@@ -165,6 +169,7 @@ impl DebugView {
             frames: Vec::new(),
             selected: 0,
             variables: Vec::new(),
+            tree: 0,
             watch,
             watches: Vec::new(),
             return_values: Vec::new(),
@@ -236,6 +241,7 @@ impl DebugView {
         self.status = format!("Starting {name}…").into();
         self.frames.clear();
         self.variables.clear();
+        self.tree += 1;
         self.selected = 0;
         cx.notify();
     }
@@ -248,6 +254,7 @@ impl DebugView {
         self.chosen_thread = None;
         self.frames.clear();
         self.variables.clear();
+        self.tree += 1;
         cx.notify();
     }
 
@@ -258,6 +265,7 @@ impl DebugView {
         self.frames = frames;
         self.selected = 0;
         self.variables.clear();
+        self.tree += 1;
         cx.notify();
     }
 
@@ -272,6 +280,7 @@ impl DebugView {
     pub fn select(&mut self, index: usize, cx: &mut Context<Self>) {
         self.selected = index;
         self.variables.clear();
+        self.tree += 1;
         cx.notify();
     }
 
@@ -283,6 +292,7 @@ impl DebugView {
             .partition(|row| row.evaluate_name.as_deref().is_some_and(|name| name.starts_with("$ReturnValue")));
         self.return_values = returned;
         self.variables = locals.into_iter().map(|row| Node { row, open: false, children: None }).collect();
+        self.tree += 1;
         // The chosen variable stays chosen if its place still holds one, its value read again.
         if let Some(path) = self.selected_variable.clone() {
             match find(&mut self.variables, &path) {
@@ -396,8 +406,24 @@ impl DebugView {
         cx.emit(DebugAction::SetValue { expression, value });
     }
 
-    /// The debugger's answer for a value's members: the rows of its children, shown at once.
-    pub fn set_children(&mut self, path: &[usize], variables: Vec<VariableRow>, cx: &mut Context<Self>) {
+    /// The tree the values shown are, which a request for members names.
+    pub fn tree(&self) -> u64 {
+        self.tree
+    }
+
+    /// What opening a top-level row asks the window, as a click on it does, for a test that holds it past a stop.
+    pub fn open_request(&self, name: &str) -> Option<DebugAction> {
+        let index = self.variables.iter().position(|node| node.row.name == name && node.row.reference != 0)?;
+        let reference = self.variables[index].row.reference;
+        Some(DebugAction::OpenVariable { path: vec![index], reference, tree: self.tree })
+    }
+
+    /// The debugger's answer for a value's members: the rows of its children, shown at once. An answer for a tree
+    /// since replaced is another value's members, and is dropped.
+    pub fn set_children(&mut self, path: &[usize], tree: u64, variables: Vec<VariableRow>, cx: &mut Context<Self>) {
+        if tree != self.tree {
+            return;
+        }
         if let Some(node) = find(&mut self.variables, path) {
             node.children = Some(variables.into_iter().map(|row| Node { row, open: false, children: None }).collect());
             node.open = true;
@@ -428,6 +454,7 @@ impl DebugView {
         self.chosen_thread = None;
         self.frames.clear();
         self.variables.clear();
+        self.tree += 1;
         cx.notify();
     }
 
@@ -876,6 +903,7 @@ impl Render for DebugView {
                                                             cx.emit(DebugAction::OpenVariable {
                                                                 path: path.clone(),
                                                                 reference,
+                                                                tree: view.tree,
                                                             });
                                                         }
                                                     }

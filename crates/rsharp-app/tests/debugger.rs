@@ -2814,3 +2814,237 @@ fn stop_ends_a_program_debugged_in_the_terminal_and_what_it_started() {
     assert!(gone(child), "Stop left the program's child running");
     assert!(main.read_with(cx, |main, cx| main.terminal().read(cx).has_tab(id)), "the program's tab went with it");
 }
+
+/// Passenger's StartHold: the program's runtime held at its start by a diagnostic port the test owns, so the debugger
+/// waits for it as it waits for one slow to start.
+// shortcut: a Unix socket only; the DAP suite holds a Windows runtime by named pipe, and this window case can take that
+// helper when the window's Windows run needs it.
+#[cfg(unix)]
+struct StartHold {
+    path: PathBuf,
+    listener: std::os::unix::net::UnixListener,
+}
+
+#[cfg(unix)]
+impl StartHold {
+    fn new() -> Option<Self> {
+        let path = std::env::temp_dir().join(format!("rsharp-whold-{}", std::process::id()));
+        if path.as_os_str().len() > 100 {
+            return None;
+        }
+        let _ = std::fs::remove_file(&path);
+        let listener = std::os::unix::net::UnixListener::bind(&path).ok()?;
+        Some(Self { path, listener })
+    }
+
+    /// The held runtime's process id once it has connected, its connection kept open so it never goes on.
+    fn held(self) -> std::sync::mpsc::Receiver<u32> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let Ok((mut stream, _)) = self.listener.accept() else { return };
+            // "ADVR_V1\0", the cookie, its process's id and two bytes kept for later.
+            let mut advertised = [0u8; 34];
+            if stream.read_exact(&mut advertised).is_ok() {
+                let _ = sender.send(u64::from_le_bytes(advertised[24..32].try_into().unwrap()) as u32);
+            }
+            let mut rest = [0u8; 1];
+            let _ = stream.read(&mut rest);
+            let _ = std::fs::remove_file(&self.path);
+        });
+        receiver
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn stop_ends_a_debug_session_whose_program_is_still_starting_and_the_program_with_it() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let Some(hold) = StartHold::new() else {
+        eprintln!("skipped: the temp folder's path leaves no room for a diagnostic socket");
+        return;
+    };
+    let run = Run::new("debugger-held-start", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(&run.folder, "App/Program.cs", PROGRAM);
+    if !offline(&run) {
+        return;
+    }
+    let store = rsharp_core::state::StateStore::open(run.state.clone());
+    store.write_for(
+        &run.folder,
+        &rsharp_core::run::configuration::RunConfigurations {
+            configurations: vec![rsharp_core::run::RunConfiguration {
+                name: "App held".into(),
+                project: run.folder.join("App/App.csproj"),
+                environment: std::collections::BTreeMap::from([(
+                    "DOTNET_DiagnosticPorts".to_string(),
+                    format!("{},connect,suspend", hold.path.display()),
+                )]),
+                ..rsharp_core::run::RunConfiguration::default()
+            }],
+            selected: Some("App held".into()),
+        },
+    );
+    store.flush();
+    let held = hold.held();
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    cx.simulate_keystrokes("f5");
+    let program = std::cell::Cell::new(None);
+    assert!(
+        pump(cx, |_| {
+            if program.get().is_none() {
+                program.set(held.try_recv().ok());
+            }
+            program.get().is_some()
+        }),
+        "the build, then the program's runtime never came to the hold: {:?}",
+        main.read_with(cx, |main, _| main.said().map(str::to_string))
+    );
+    let program = program.get().unwrap();
+    assert!(
+        pump(cx, |cx| main.read_with(cx, |main, _| main.debug_adapter_process().is_some())),
+        "the debugger waited for the program to start with no session for Stop to end"
+    );
+    let adapter = main.read_with(cx, |main, _| main.debug_adapter_process()).unwrap();
+    assert_eq!(main.read_with(cx, |main, _| main.debug_phase()), Phase::Starting, "the session is not starting");
+    assert!(cx.debug_bounds("debug: Stop").is_some(), "the Debug window has no Stop while the program starts");
+
+    click(cx, "debug: Stop");
+    assert!(
+        pump(cx, |cx| !main.read_with(cx, |main, _| main.is_debugging()) && !process_running(program)),
+        "Stop did not end the starting session and its program"
+    );
+    assert!(gone(adapter), "Stop left the debugger running");
+    let said = main.read_with(cx, |main, _| main.said().map(str::to_string)).unwrap_or_default();
+    assert_eq!(said, "Debugging App held was stopped as it started", "the status bar does not say it was stopped");
+    assert!(
+        output(&main, cx).contains("Debugging App held was stopped as it started"),
+        "the Debug console does not say so"
+    );
+    // Nothing the session said once it was let go stands: the window stays as Stop left it.
+    for _ in 0..10 {
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!main.read_with(cx, |main, _| main.is_debugging()), "the stopped start came back as a session");
+}
+
+/// Passenger's test of a program the debugger cannot end: stopped where it stands, it answers neither Stop nor the
+/// window's close, which end it and the debugger once their limit has passed, leaving no request waiting on a window
+/// that is gone.
+#[cfg(unix)]
+#[test]
+fn stop_and_the_windows_close_on_a_program_the_debugger_cannot_end_leave_nothing_running() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-unendable", &[]);
+    let started = run.folder.join("program.pid");
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(
+        &run.folder,
+        "App/Program.cs",
+        &format!(
+            "using System;\nusing System.IO;\nusing System.Threading;\n\nclass Program\n{{\n    static void Main()\n    {{\n        File.WriteAllText(@\"{}\", Environment.ProcessId.ToString());\n        Thread.Sleep(Timeout.Infinite);\n    }}\n}}\n",
+            started.display()
+        ),
+    );
+    if !offline(&run) {
+        return;
+    }
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    cx.simulate_keystrokes("f5");
+    assert!(
+        pump(cx, |_| std::fs::read_to_string(&started).is_ok_and(|id| !id.is_empty())),
+        "the program did not start"
+    );
+    let program: u32 = std::fs::read_to_string(&started).unwrap().trim().parse().expect("the program wrote its id");
+    assert!(
+        pump(cx, |cx| main.read_with(cx, |main, _| main.debug_phase() == Phase::Running)),
+        "the session does not say the program runs"
+    );
+    let adapter = main.read_with(cx, |main, _| main.debug_adapter_process()).expect("the debugger's process");
+    let _ = std::process::Command::new("kill").args(["-STOP", &program.to_string()]).status();
+
+    cx.simulate_keystrokes("shift-f5");
+    assert!(!main.read_with(cx, |main, _| main.is_debugging()), "Stop left the session going");
+    assert!(cx.simulate_close(), "the window closes as a person closes it");
+    assert!(gone(adapter), "after the window closed, the debugger went on running");
+    assert!(gone(program), "after the window closed, the program being debugged went on running");
+    let log = std::fs::read_to_string(run.state.join("logs").join("rsharp.log")).unwrap_or_default();
+    assert!(!log.contains("panicked"), "a request to the debugger failed once the window was gone:\n{log}");
+}
+
+#[test]
+fn a_value_from_the_stop_before_a_step_opens_to_an_error_never_to_another_values_members() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-stale-value", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(
+        &run.folder,
+        "App/Program.cs",
+        "using System;\n\nstatic class Program\n{\n    static void Main()\n    {\n        Inner inner = new Inner();\n        Visited visited = new Visited();\n        Visit(visited);\n        Console.WriteLine(Console.ReadLine());\n    }\n\n    static void Visit(Visited visited)\n    {\n        Console.WriteLine(visited.VisitedField);\n    }\n}\n\nsealed class Inner\n{\n    public int InnerField = 1;\n}\n\nsealed class Visited\n{\n    public string VisitedField = \"v\";\n}\n",
+    );
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((8, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    cx.simulate_keystrokes("f5");
+    let names = |main: &Entity<MainWindow>, cx: &mut VisualTestContext| {
+        main.read_with(cx, |main, cx| main.debug_view().read(cx).variable_names())
+    };
+    assert!(pump(cx, |cx| names(&main, cx).iter().any(|n| n == "inner")), "the program did not stop before the call");
+    // The row as the last stop showed it, its click held past the step as one in flight would be.
+    let stale = main.read_with(cx, |main, cx| main.debug_view().read(cx).open_request("inner")).expect("inner opens");
+
+    cx.simulate_keystrokes("f11");
+    assert!(
+        pump(cx, |cx| {
+            let shown = names(&main, cx);
+            !shown.iter().any(|n| n == "inner") && shown.iter().any(|n| n == "visited")
+        }),
+        "the step did not stop in the method called"
+    );
+    main.update(cx, |main, cx| main.debug_view().update(cx, |_, cx| cx.emit(stale)));
+    for _ in 0..20 {
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let shown = names(&main, cx);
+    assert!(
+        !shown.iter().any(|n| n == "VisitedField" || n == "InnerField"),
+        "a value of the stop before opened to another value's members: {shown:?}"
+    );
+    let status = main.read_with(cx, |main, cx| main.debug_view().read(cx).status().to_string());
+    assert!(
+        status.contains("earlier stop"),
+        "the Debug window does not say the value is gone with its stop: {status:?}"
+    );
+
+    // Run on to a read of input, the Debug window lets the stop's frames and values go, as Rider's does.
+    cx.simulate_keystrokes("f5");
+    assert!(
+        pump(cx, |cx| main.read_with(cx, |main, cx| main.debug_phase() == Phase::Running
+            && main.debug_view().read(cx).frames().is_empty()
+            && main.debug_view().read(cx).variable_names().is_empty())),
+        "the last stop's frames and values were not cleared while the program runs"
+    );
+    cx.simulate_keystrokes("shift-f5");
+}

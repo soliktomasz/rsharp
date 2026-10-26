@@ -48,6 +48,8 @@ pub(super) struct DebugState {
     terminal: Option<usize>,
     /// What the adapter said while the session was still starting.
     pending: Vec<Said>,
+    /// The session while it waits for its program's runtime, so Stop can end it from its first moment, as Rider's can.
+    starting: Option<Arc<rsharp_dap::Starting>>,
     /// Hot Reload's Edit and Continue session, for a program this window launched.
     hot_reload: Option<HotReload>,
     /// The step or resume waiting for the edits made while paused to reach the program.
@@ -174,6 +176,9 @@ impl Drop for DebugState {
         if let Some(session) = self.session.take() {
             let terminate = self.attached.is_none();
             std::thread::spawn(move || session.disconnect(terminate));
+        } else if let Some(starting) = self.starting.take() {
+            let attached = self.attached.is_some();
+            std::thread::spawn(move || if attached { starting.let_go() } else { starting.stop() });
         }
     }
 }
@@ -198,6 +203,7 @@ impl DebugState {
             recent_attached: None,
             terminal: None,
             pending: Vec::new(),
+            starting: None,
             hot_reload: None,
             after_apply: None,
             data_breakpoints: Vec::new(),
@@ -210,6 +216,8 @@ impl DebugState {
 enum Event {
     /// The plan a Debug works out, or why it cannot run.
     Resolved(Result<Box<LaunchPlan>, String>),
+    /// The adapter is up and the program is being started: its handle until the runtime answers.
+    Starting(Arc<rsharp_dap::Starting>),
     Started(Arc<Session>),
     Failed(String),
     Said(Said),
@@ -250,7 +258,10 @@ impl MainWindow {
 
     /// The adapter's own process, for a test that ends it as a crash would.
     pub fn debug_adapter_process(&self) -> Option<u32> {
-        self.debug.session.as_ref().and_then(|session| session.adapter_process_id())
+        match &self.debug.session {
+            Some(session) => session.adapter_process_id(),
+            None => self.debug.starting.as_ref().and_then(|starting| starting.adapter_process_id()),
+        }
     }
 
     /// Debug: the chosen configuration's program is built, its plan worked out, and it is started under the debugger with
@@ -359,7 +370,9 @@ impl MainWindow {
         match event {
             Event::Resolved(Ok(plan)) => self.begin_debug(*plan, cx),
             Event::Resolved(Err(why)) => self.refuse_debug(&why, cx),
+            Event::Starting(starting) => self.debug.starting = Some(starting),
             Event::Started(session) => {
+                self.debug.starting = None;
                 let verified = session.verified();
                 self.debug.session = Some(session);
                 // The adapter answers the breakpoints it was sent, in their order: the lines that were sent say where
@@ -398,7 +411,10 @@ impl MainWindow {
                 }
                 cx.notify();
             }
-            Event::Failed(why) => self.refuse_debug(&why, cx),
+            Event::Failed(why) => {
+                let name = self.debug_name();
+                self.refuse_debug(&format!("Could not debug {name}: {why}"), cx)
+            }
             Event::Said(said) => self.session_said(said, window, cx),
             Event::RunInTerminal { request, reply } => self.run_in_terminal(request, reply, cx),
         }
@@ -705,7 +721,8 @@ impl MainWindow {
         let generation = self.debug.generation;
         std::thread::spawn(move || {
             let reports = sender.clone();
-            let result = Session::start(
+            let watching = sender.clone();
+            let result = Session::start_watched(
                 &adapter,
                 Start::Launch(launch),
                 &symbols,
@@ -716,6 +733,9 @@ impl MainWindow {
                 terminal,
                 move |said| {
                     let _ = reports.unbounded_send(Event::Said(said));
+                },
+                move |starting| {
+                    let _ = watching.unbounded_send(Event::Starting(Arc::new(starting)));
                 },
             );
             let event = match result {
@@ -867,7 +887,8 @@ impl MainWindow {
         let (sender, receiver) = mpsc::unbounded();
         std::thread::spawn(move || {
             let reports = sender.clone();
-            let result = Session::start(
+            let watching = sender.clone();
+            let result = Session::start_watched(
                 &adapter,
                 Start::Attach { process_id: id, just_my_code: true },
                 &symbols,
@@ -878,6 +899,9 @@ impl MainWindow {
                 None,
                 move |said| {
                     let _ = reports.unbounded_send(Event::Said(said));
+                },
+                move |starting| {
+                    let _ = watching.unbounded_send(Event::Starting(Arc::new(starting)));
                 },
             );
             let event = match result {
@@ -1552,8 +1576,15 @@ impl MainWindow {
     }
 
     /// A value's members, as its row opens in the Variables tree.
-    pub(super) fn open_debug_variable(&mut self, path: Vec<usize>, reference: i64, cx: &mut Context<Self>) {
+    pub(super) fn open_debug_variable(&mut self, path: Vec<usize>, reference: i64, tree: u64, cx: &mut Context<Self>) {
         let Some(session) = self.debug.session.clone() else { return };
+        // The debugger numbers values anew at each stop: a reference from an earlier one names another value now.
+        if tree != self.debug_view.read(cx).tree() {
+            self.debug_view.update(cx, |view, cx| {
+                view.set_status("That value is from an earlier stop: open it again where the program is now", cx)
+            });
+            return;
+        }
         let generation = self.debug.generation;
         let handle = self.handle;
         cx.spawn(async move |_, cx| {
@@ -1565,7 +1596,7 @@ impl MainWindow {
                 match read {
                     Ok(variables) => {
                         let variables = variables.into_iter().map(variable_row).collect();
-                        m.debug_view.update(cx, |view, cx| view.set_children(&path, variables, cx));
+                        m.debug_view.update(cx, |view, cx| view.set_children(&path, tree, variables, cx));
                     }
                     Err(why) => m.fail_debug(&why, cx),
                 }
@@ -1719,6 +1750,18 @@ impl MainWindow {
         if !self.is_debugging() {
             return;
         }
+        // A session still waiting for its program's runtime: the adapter is told to end it, and the program with it.
+        if let Some(starting) = self.debug.starting.take().filter(|_| self.debug.session.is_none()) {
+            let attached = self.debug.attached.is_some();
+            std::thread::spawn(move || if attached { starting.let_go() } else { starting.stop() });
+            self.debug.generation += 1;
+            self.debug._task = None;
+            let name = self.debug_name();
+            let message = format!("Debugging {name} was stopped as it started");
+            self.debug_console.update(cx, |view, cx| view.append(&[(format!("{message}\n"), false)], cx));
+            self.finish_debug(&message, cx);
+            return;
+        }
         // An attached program is the person's, not this window's: Stop lets it go rather than ending it.
         if self.debug.attached.is_some() {
             self.detach_debug(cx);
@@ -1748,6 +1791,7 @@ impl MainWindow {
         self.debug.threads.clear();
         self.evaluate_dialog = None;
         self.debug.session = None;
+        self.debug.starting = None;
         self.debug.attached = None;
         self.debug.data_breakpoints.clear();
         self.debug.phase = Phase::Idle;
@@ -1784,7 +1828,11 @@ impl MainWindow {
         if let Some(session) = self.debug.session.take() {
             let terminate = self.debug.attached.is_none();
             std::thread::spawn(move || session.disconnect(terminate));
+        } else if let Some(starting) = self.debug.starting.take() {
+            let attached = self.debug.attached.is_some();
+            std::thread::spawn(move || if attached { starting.let_go() } else { starting.stop() });
         }
+        self.debug.starting = None;
         self.debug.phase = Phase::Idle;
         self.debug.attached = None;
         self.debug.data_breakpoints.clear();
@@ -1812,6 +1860,7 @@ impl MainWindow {
         self.debug.generation += 1;
         self.debug._task = None;
         self.debug.session = None;
+        self.debug.starting = None;
         self.debug.attached = None;
         self.debug.phase = Phase::Idle;
         self.debug.after_build = None;
@@ -2118,7 +2167,7 @@ impl MainWindow {
             DebugAction::StepInto => self.step_debug(Step::Into, cx),
             DebugAction::StepOut => self.step_debug(Step::Out, cx),
             DebugAction::SelectFrame(index) => self.select_debug_frame(index, window, cx),
-            DebugAction::OpenVariable { path, reference } => self.open_debug_variable(path, reference, cx),
+            DebugAction::OpenVariable { path, reference, tree } => self.open_debug_variable(path, reference, tree, cx),
             DebugAction::Evaluate(expression) => self.evaluate_watch(expression, cx),
             DebugAction::ToggleMute => self.set_breakpoints_muted(!self.debug.breakpoints.muted(), cx),
             DebugAction::SetValue { expression, value } => self.set_value(expression, value, cx),
