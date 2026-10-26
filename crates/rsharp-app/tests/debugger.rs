@@ -62,6 +62,13 @@ fn open<'a>(run: &Run, cx: &'a mut TestAppContext) -> (Entity<MainWindow>, &'a m
     (main, cx)
 }
 
+/// One debugging test at a time, as Passenger runs its debugger window tests alone: each starts a build, the adapter
+/// and a program, and several at once on a CI runner's few cores pass their limits waiting for one another.
+fn alone() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
 /// Clicks what a debug selector names, as a person would.
 fn click(cx: &mut VisualTestContext, selector: &'static str) {
     cx.run_until_parked();
@@ -86,6 +93,7 @@ fn pump(cx: &mut VisualTestContext, done: impl Fn(&mut VisualTestContext) -> boo
 
 #[test]
 fn a_breakpoint_stops_the_program_and_the_debug_window_shows_it() {
+    let _alone = alone();
     if !cfg!(target_os = "macos") {
         // The debugger's engine is Passenger's, and macOS is where this suite runs; Windows and Linux are CI's.
     }
@@ -143,6 +151,7 @@ fn a_breakpoint_stops_the_program_and_the_debug_window_shows_it() {
 
 #[test]
 fn a_breakpoint_is_kept_with_the_folder_and_read_back() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -193,6 +202,7 @@ fn run_to_end(main: &Entity<MainWindow>, cx: &mut VisualTestContext) -> bool {
 
 #[test]
 fn the_breakpoints_dialog_keeps_a_condition_and_mutes_every_breakpoint() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -240,6 +250,7 @@ fn the_breakpoints_dialog_keeps_a_condition_and_mutes_every_breakpoint() {
 
 #[test]
 fn a_condition_the_debugger_is_false_stops_nothing_and_a_logpoint_logs() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -295,6 +306,7 @@ fn a_condition_the_debugger_is_false_stops_nothing_and_a_logpoint_logs() {
 
 #[test]
 fn any_exception_off_lets_an_unhandled_exception_run_to_its_end() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -398,6 +410,7 @@ fn transport_ready(id: u32) -> bool {
 
 #[test]
 fn attach_to_a_running_program_stops_at_its_breakpoint_and_detaching_lets_it_run_on() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -440,6 +453,7 @@ fn attach_to_a_running_program_stops_at_its_breakpoint_and_detaching_lets_it_run
 
 #[test]
 fn evaluate_expression_answers_in_the_paused_frame_and_set_next_statement_moves_the_thread() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -505,6 +519,7 @@ fn evaluate_expression_answers_in_the_paused_frame_and_set_next_statement_moves_
 
 #[test]
 fn set_value_changes_a_local_and_the_program_goes_on_with_it() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -548,6 +563,7 @@ const THREADS_PROGRAM: &str = "using System;\nusing System.Threading;\n\nclass P
 
 #[test]
 fn the_debug_window_lists_a_paused_programs_threads_and_choosing_one_shows_its_frames() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -589,6 +605,7 @@ const SMART_STEP_PROGRAM: &str = "using System;\n\nclass Program\n{\n    static 
 
 #[test]
 fn smart_step_into_steps_into_the_call_chosen() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -641,6 +658,7 @@ fn smart_step_into_steps_into_the_call_chosen() {
 
 #[test]
 fn a_debug_configuration_that_runs_in_a_terminal_starts_its_program_there() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -700,6 +718,7 @@ fn a_debug_configuration_that_runs_in_a_terminal_starts_its_program_there() {
 
 #[test]
 fn a_step_over_shows_what_its_call_returned() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -749,6 +768,7 @@ fn a_step_over_shows_what_its_call_returned() {
 
 #[test]
 fn evaluate_expression_shows_the_values_members() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -806,6 +826,7 @@ fn evaluate_expression_shows_the_values_members() {
 
 #[test]
 fn stepping_over_an_await_stops_after_it() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -847,6 +868,7 @@ fn stepping_over_an_await_stops_after_it() {
 
 #[test]
 fn a_stop_sets_the_frame_values_in_at_the_end_of_its_line() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -888,6 +910,7 @@ fn a_stop_sets_the_frame_values_in_at_the_end_of_its_line() {
 
 #[test]
 fn a_function_breakpoint_stops_the_program_in_its_method() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -935,11 +958,13 @@ const GREETER: &str = "using System;\n\nstatic class Greeter\n{\n    public stat
 
 #[test]
 fn a_saved_edit_reaches_the_program_the_debugger_runs() {
+    let _alone = alone();
     saved_edit_reaches_program(false);
 }
 
 #[test]
 fn a_saved_edit_in_a_project_beside_the_solution_reaches_the_program() {
+    let _alone = alone();
     saved_edit_reaches_program(true);
 }
 
@@ -1036,6 +1061,7 @@ const RUDE_GREETER: &str = "using System;\n\nstatic class Greeter\n{\n    static
 
 #[test]
 fn an_edit_the_runtime_cannot_take_restarts_the_program() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -1102,6 +1128,7 @@ fn output(main: &Entity<MainWindow>, cx: &mut VisualTestContext) -> String {
 
 #[test]
 fn an_unsaved_edit_is_applied_before_resuming() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -1161,6 +1188,7 @@ fn an_unsaved_edit_is_applied_before_resuming() {
 
 #[test]
 fn apply_hot_reload_changes_applies_a_debugged_programs_edit() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -1220,6 +1248,7 @@ fn apply_hot_reload_changes_applies_a_debugged_programs_edit() {
 
 #[test]
 fn closing_the_last_tab_releases_its_buffer() {
+    let _alone = alone();
     let run = Run::new("debugger-closed-buffer", &[("Program.cs", "class Program {}\n")]);
     let source = rsharp_core::paths::canonical(&run.folder.join("Program.cs"));
     let mut cx = TestAppContext::single();
@@ -1242,6 +1271,7 @@ fn closing_the_last_tab_releases_its_buffer() {
 
 #[test]
 fn a_breakpoint_follows_its_code_through_an_edit() {
+    let _alone = alone();
     let run = Run::new(
         "debugger-breakpoint-follow",
         &[(
@@ -1287,6 +1317,7 @@ fn a_breakpoint_follows_its_code_through_an_edit() {
 
 #[test]
 fn an_edit_the_runtime_cannot_take_asks_when_the_restart_setting_is_off() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -1365,6 +1396,7 @@ const LINQ_PROGRAM: &str = "using System;\nusing System.Linq;\n\nclass Program\n
 
 #[test]
 fn choosing_a_frame_without_symbols_opens_its_decompiled_source() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -1464,6 +1496,7 @@ fn gone(id: u32) -> bool {
 
 #[test]
 fn pause_stops_a_running_program_and_shows_where_it_is_in_its_loop() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -1504,6 +1537,7 @@ fn pause_stops_a_running_program_and_shows_where_it_is_in_its_loop() {
 
 #[test]
 fn the_breakpoints_dialog_lists_every_breakpoint_and_turns_one_off() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -1543,6 +1577,7 @@ fn the_breakpoints_dialog_lists_every_breakpoint_and_turns_one_off() {
 
 #[test]
 fn the_breakpoints_dialog_adds_and_removes_exception_breakpoints_and_the_folder_keeps_them() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -1597,6 +1632,7 @@ fn the_breakpoints_dialog_adds_and_removes_exception_breakpoints_and_the_folder_
 
 #[test]
 fn mute_breakpoints_lets_a_run_pass_a_line_breakpoint_and_an_exception_breakpoint_and_unmuting_stops_it_again() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -1671,6 +1707,7 @@ fn mute_breakpoints_lets_a_run_pass_a_line_breakpoint_and_an_exception_breakpoin
 
 #[test]
 fn an_exception_stop_lists_the_exception_as_exception_and_a_watch_reads_its_message() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -1726,6 +1763,7 @@ fn an_exception_stop_lists_the_exception_as_exception_and_a_watch_reads_its_mess
 
 #[test]
 fn what_is_typed_into_the_debug_console_is_the_programs_input() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -1763,6 +1801,7 @@ fn what_is_typed_into_the_debug_console_is_the_programs_input() {
 
 #[test]
 fn debugging_a_program_that_prints_100000_coloured_lines_leaves_the_console_free_of_colour_codes() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -1798,6 +1837,7 @@ fn debugging_a_program_that_prints_100000_coloured_lines_leaves_the_console_free
 
 #[test]
 fn attach_to_process_lists_dotnet_programs_alone() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -1839,6 +1879,7 @@ fn attach_to_process_lists_dotnet_programs_alone() {
 #[cfg(unix)]
 #[test]
 fn closing_the_window_while_debugging_leaves_no_program_or_debugger_running() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -1882,6 +1923,7 @@ fn closing_the_window_while_debugging_leaves_no_program_or_debugger_running() {
 #[cfg(unix)]
 #[test]
 fn a_debugger_killed_while_its_program_is_paused_takes_the_program_with_it() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -1928,6 +1970,7 @@ fn a_debugger_killed_while_its_program_is_paused_takes_the_program_with_it() {
 
 #[test]
 fn an_exception_stop_names_the_exception_at_the_line_that_threw_it() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -1978,6 +2021,7 @@ fn right_click(cx: &mut VisualTestContext, selector: &'static str) {
 
 #[test]
 fn the_variables_and_frames_menus_copy_values_add_watches_and_copy_the_stack() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -2043,6 +2087,7 @@ const LOOP_PROGRAM: &str = "using System;\n\nclass Program\n{\n    static void M
 
 #[test]
 fn a_hit_count_the_debugger_cannot_read_is_refused_and_the_loop_goes_on_to_the_next_breakpoint() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -2099,6 +2144,7 @@ fn a_hit_count_the_debugger_cannot_read_is_refused_and_the_loop_goes_on_to_the_n
 #[cfg(all(windows, target_arch = "x86_64"))]
 #[test]
 fn a_data_breakpoint_stops_the_program_when_the_value_it_watches_is_written() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -2108,7 +2154,7 @@ fn a_data_breakpoint_stops_the_program_when_the_value_it_watches_is_written() {
     write(
         &run.folder,
         "App/Program.cs",
-        "using System;\n\nclass Counter { public int Count; }\n\nclass Program\n{\n    static void Main()\n    {\n        var counter = new Counter();\n        int total = 0;\n        for (int i = 1; i <= 3; i++)\n        {\n            total += i;\n            counter.Count = total;\n        }\n        Console.WriteLine(counter.Count);\n    }\n}\n",
+        "using System;\n\nclass Counter { public int Count; }\n\nclass Program\n{\n    static void Main()\n    {\n        var counter = new Counter();\n        int total = 0;\n        for (int i = 1; i <= 3; i++)\n        {\n            total += i;\n            counter.Count = total;\n            Console.WriteLine(total);\n        }\n        Console.WriteLine(counter.Count);\n    }\n}\n",
     );
     if !offline(&run) {
         return;
@@ -2146,11 +2192,17 @@ fn a_data_breakpoint_stops_the_program_when_the_value_it_watches_is_written() {
         main.read_with(cx, |main, _| main.said().map(str::to_string))
     );
 
+    // The line breakpoint cleared, as Passenger's test has none: only the watched write stops the program, and the
+    // runtime stops it at the statement after the write, which a line breakpoint there would also claim.
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((12, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    assert!(main.read_with(cx, |main, _| main.breakpoints().lines(&source).is_empty()), "the line breakpoint stayed");
     cx.simulate_keystrokes("f5");
     let stopped = pump(cx, |cx| {
         main.read_with(cx, |main, _| {
             main.debug_phase() == Phase::Paused
-                && main.debug_frames().first().is_some_and(|frame| frame.line == 13)
+                && main.debug_frames().first().is_some_and(|frame| (13..=14).contains(&frame.line))
                 && main.said().is_some_and(|said| said.contains("data breakpoint"))
         })
     });
@@ -2182,6 +2234,7 @@ fn add_exception_breakpoint(cx: &mut VisualTestContext, type_name: &str) {
 #[test]
 fn an_exception_breakpoint_added_by_its_type_stops_where_that_type_is_thrown_as_its_condition_allows_and_at_no_other_type()
  {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -2239,6 +2292,7 @@ fn an_exception_breakpoint_added_by_its_type_stops_where_that_type_is_thrown_as_
 
 #[test]
 fn an_exception_breakpoints_handler_options_stop_it_where_the_users_code_leaves_the_exception_or_where_it_handles_it() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -2377,6 +2431,7 @@ fn set_row(cx: &mut VisualTestContext, name: &str, value: &str) {
 
 #[test]
 fn a_value_set_on_an_element_listed_under_a_range_is_the_one_the_program_goes_on_with() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -2453,6 +2508,7 @@ fn evaluate(main: &Entity<MainWindow>, cx: &mut VisualTestContext, expression: &
 
 #[test]
 fn an_evaluation_that_could_not_be_stopped_leaves_the_program_paused_and_a_step_goes_on_once_it_returns() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -2526,6 +2582,7 @@ fn an_evaluation_that_could_not_be_stopped_leaves_the_program_paused_and_a_step_
 
 #[test]
 fn an_exception_the_debugger_cannot_describe_still_shows_where_the_program_stopped() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -2573,6 +2630,7 @@ fn an_exception_the_debugger_cannot_describe_still_shows_where_the_program_stopp
 
 #[test]
 fn closing_the_window_while_attached_lets_go_of_the_program_which_runs_on() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -2635,6 +2693,7 @@ fn sysinfo_like_running(id: u32) -> bool {
 
 #[test]
 fn a_configuration_is_run_and_debugged_with_the_same_arguments_variable_and_working_folder() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -2724,6 +2783,7 @@ fn terminal_text(main: &Entity<MainWindow>, cx: &mut VisualTestContext, id: usiz
 
 #[test]
 fn debugged_in_the_terminal_a_program_stops_at_a_breakpoint_on_mains_first_line_and_reads_what_is_typed_there() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -2777,12 +2837,17 @@ fn debugged_in_the_terminal_a_program_stops_at_a_breakpoint_on_mains_first_line_
     assert!(shown.contains("key q") && shown.contains("line hello"), "the program's tab shows:\n{shown}");
     assert_eq!(code, Some(3), "the tab does not carry the program's own exit code");
     let said = main.read_with(cx, |main, _| main.said().map(str::to_string)).unwrap_or_default();
-    assert!(said.contains("ended with exit code 3"), "the status bar does not say how it ended: {said:?}");
+    // The adapter says the exit itself where it can read it (Windows), else the tab does: either way, the code is said.
+    assert!(
+        said.contains("exit code 3") || said.contains("exited with code 3"),
+        "the status bar does not say how it ended: {said:?}"
+    );
 }
 
 #[cfg(unix)]
 #[test]
 fn stop_ends_a_program_debugged_in_the_terminal_and_what_it_started() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -2860,6 +2925,7 @@ impl StartHold {
 #[cfg(unix)]
 #[test]
 fn stop_ends_a_debug_session_whose_program_is_still_starting_and_the_program_with_it() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -2942,6 +3008,7 @@ fn stop_ends_a_debug_session_whose_program_is_still_starting_and_the_program_wit
 #[cfg(unix)]
 #[test]
 fn stop_and_the_windows_close_on_a_program_the_debugger_cannot_end_leave_nothing_running() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -2986,6 +3053,7 @@ fn stop_and_the_windows_close_on_a_program_the_debugger_cannot_end_leave_nothing
 
 #[test]
 fn a_value_from_the_stop_before_a_step_opens_to_an_error_never_to_another_values_members() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -3064,6 +3132,7 @@ fn popup_field(main: &Entity<MainWindow>, cx: &mut VisualTestContext) -> Option<
 
 #[test]
 fn dragging_the_execution_arrow_past_the_loop_goes_on_from_there_and_skips_it() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -3115,6 +3184,7 @@ fn dragging_the_execution_arrow_past_the_loop_goes_on_from_there_and_skips_it() 
 
 #[test]
 fn a_condition_typed_into_a_breakpoints_popup_decides_where_it_stops() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -3162,6 +3232,7 @@ fn a_condition_typed_into_a_breakpoints_popup_decides_where_it_stops() {
 
 #[test]
 fn a_tracepoint_set_with_shift_click_logs_its_message_and_the_program_runs_on() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -3208,6 +3279,7 @@ fn a_tracepoint_set_with_shift_click_logs_its_message_and_the_program_runs_on() 
 
 #[test]
 fn a_string_of_megabytes_shows_its_start_in_variables_and_a_hover_without_holding_the_window() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -3274,6 +3346,7 @@ fn a_string_of_megabytes_shows_its_start_in_variables_and_a_hover_without_holdin
 
 #[test]
 fn a_line_typed_above_a_bound_breakpoint_while_paused_leaves_it_stopping_at_its_statement() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -3377,6 +3450,7 @@ fn card(main: &Entity<MainWindow>, cx: &mut VisualTestContext) -> Option<String>
 
 #[test]
 fn a_hover_reads_the_chosen_frame_and_goes_when_the_program_leaves_its_stop() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;
@@ -3443,6 +3517,7 @@ fn a_hover_reads_the_chosen_frame_and_goes_when_the_program_leaves_its_stop() {
 
 #[test]
 fn a_watch_reads_the_chosen_frame_and_is_asked_again_at_each_stop() {
+    let _alone = alone();
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
         return;

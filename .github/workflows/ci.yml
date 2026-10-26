@@ -74,4 +74,5 @@ jobs:
         run: cargo build --workspace --all-targets
 
       - name: Tests
-        run: cargo test --workspace
+        # Every suite runs even after one fails, so a run shows all that failed, not only the first binary's.
+        run: cargo test --workspace --no-fail-fast

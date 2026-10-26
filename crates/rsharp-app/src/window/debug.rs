@@ -32,6 +32,8 @@ pub(super) struct DebugState {
     frames: Vec<rsharp_dap::protocol::Frame>,
     /// The paused program's threads, as last read.
     threads: Vec<rsharp_dap::protocol::Thread>,
+    /// Counted at every stop's end, so an answer asked of one stop is told from the next's, whose frame ids may repeat.
+    stop: u64,
     /// The file the program is stopped in, whose buffer shows the execution line.
     shown_at: Option<PathBuf>,
     /// What the debugger made of each breakpoint: whether it will be hit, and why not.
@@ -195,6 +197,7 @@ impl DebugState {
             thread: None,
             frames: Vec::new(),
             threads: Vec::new(),
+            stop: 0,
             shown_at: None,
             verification: BTreeMap::new(),
             step_targets: Vec::new(),
@@ -1485,8 +1488,8 @@ impl MainWindow {
             view.set_threads(threads, chosen, cx);
             view.set_variables(variables, cx);
         });
-        self.refresh_watches(cx);
         self.clear_execution_line(cx);
+        self.refresh_watches(cx);
         if let Some((path, line)) = at.filter(|_| !resolve_top) {
             self.show_stop_marks(&path, line, inline, exception, cx);
             self.open_file(&path, Some((line, 0)), window, cx);
@@ -1627,11 +1630,8 @@ impl MainWindow {
             return;
         }
         // The frame chosen in the Frames list, whose values Variables shows: a caller's word is the caller's value.
-        let (selected, tree) = {
-            let view = self.debug_view.read(cx);
-            (view.selected_frame(), view.tree())
-        };
-        let Some(frame) = self.debug.frames.get(selected).map(|frame| frame.id) else { return };
+        let Some(chosen) = self.chosen_frame(cx) else { return };
+        let frame = chosen.1;
         let Some(session) = self.debug.session.clone() else { return };
         let generation = self.debug.generation;
         let handle = self.handle;
@@ -1647,7 +1647,7 @@ impl MainWindow {
                 // A stop, a step or another frame chosen since makes a new tree: the answer is then another frame's.
                 if m.debug.generation == generation
                     && m.debug.phase == Phase::Paused
-                    && m.debug_view.read(cx).tree() == tree
+                    && m.chosen_frame(cx) == Some(chosen)
                 {
                     editor.update(cx, |editor, cx| editor.show_value(at, card, cx));
                 }
@@ -1658,14 +1658,11 @@ impl MainWindow {
 
     /// A watch, asked as it is typed: the expression in the frame chosen in the Frames list, as Rider's watches are.
     pub(super) fn evaluate_watch(&mut self, expression: String, cx: &mut Context<Self>) {
-        let (selected, tree) = {
-            let view = self.debug_view.read(cx);
-            (view.selected_frame(), view.tree())
-        };
-        let Some(frame) = self.debug.frames.get(selected).map(|frame| frame.id) else {
+        let Some(chosen) = self.chosen_frame(cx) else {
             self.debug_view.update(cx, |view, cx| view.set_watch(&expression, "Not paused", cx));
             return;
         };
+        let frame = chosen.1;
         let Some(session) = self.debug.session.clone() else { return };
         let generation = self.debug.generation;
         let handle = self.handle;
@@ -1675,7 +1672,7 @@ impl MainWindow {
             let _ = handle.update(cx, |m, _, cx| {
                 // Another frame chosen, a step or a stop since: the answer is no longer the frame shown's, and the
                 // watch is asked again there.
-                if m.debug.generation != generation || m.debug_view.read(cx).tree() != tree {
+                if m.debug.generation != generation || m.chosen_frame(cx) != Some(chosen) {
                     return;
                 }
                 match read {
@@ -1691,6 +1688,17 @@ impl MainWindow {
             });
         })
         .detach();
+    }
+
+    /// The frame chosen in the Frames list, by its stop and id: what a watch or a hover is asked in, and what its answer
+    /// must still be asked of when it lands. The values read for the frame after it is chosen do not change it.
+    fn chosen_frame(&self, cx: &App) -> Option<(u64, i64)> {
+        let selected = self.debug_view.read(cx).selected_frame();
+        self.debug
+            .frames
+            .get(selected)
+            .filter(|_| self.debug.phase == Phase::Paused)
+            .map(|frame| (self.debug.stop, frame.id))
     }
 
     /// Every watch asked again, in the frame now shown.
@@ -2327,6 +2335,7 @@ impl MainWindow {
     }
 
     fn clear_execution_line(&mut self, cx: &mut App) {
+        self.debug.stop += 1;
         // Every stop's end clears the marks, and with them the value cards read at it.
         let editors: Vec<Entity<CodeEditor>> = self.area.editors().cloned().collect();
         for editor in editors {
