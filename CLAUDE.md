@@ -25,6 +25,8 @@ tools/passenger-parity.sh  # Phase 4's acceptance, Passenger's side: the steps o
                            # window, written to tests/fixtures/phase4 (needs the SDK vendor/passenger pins and 10.0.1xx)
 tools/bench.sh             # the release build on 1, 3 and 10 projects: start, load, memory, key to frame;
                            # appends bench/results.csv by commit (keep its window in front)
+tools/clean.sh             # what builds and test runs leave behind: a dry run unless --yes; --deep is cargo
+                           # clean, --temp the stale test folders, --worktrees the agent's git worktrees
 ```
 
 `--key` and `--type` are steps through the window's real input once it has opened, in order, each waiting for
