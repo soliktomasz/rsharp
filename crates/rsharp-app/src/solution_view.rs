@@ -60,6 +60,7 @@ struct Level {
 
 pub struct SolutionTree {
     solution: Solution,
+    entry_order: RefCell<HashMap<String, Rc<Vec<usize>>>>,
     root: PathBuf,
     evaluated: HashMap<PathBuf, EvaluatedProject>,
     files: RefCell<HashMap<PathBuf, Rc<ProjectFiles>>>,
@@ -75,6 +76,7 @@ impl SolutionTree {
         let root = solution.path.parent().map(Path::to_path_buf).unwrap_or_default();
         let mut tree = Self {
             solution,
+            entry_order: RefCell::default(),
             root,
             evaluated,
             files: RefCell::default(),
@@ -106,6 +108,7 @@ impl SolutionTree {
     /// The solution read again after a change to its file; what was open stays open.
     pub fn set_solution(&mut self, solution: Solution) {
         self.solution = solution;
+        self.entry_order.borrow_mut().clear();
         self.rebuild();
     }
 
@@ -235,22 +238,28 @@ impl SolutionTree {
         }
         rows.push(root);
         if expanded {
-            self.entries(&self.solution.entries, 1, &mut rows);
+            self.entries("solution", &self.solution.entries, 1, &mut rows);
         }
         self.rows = rows;
     }
 
     /// A level of the solution as Rider's Solution view sorts it, whatever order the file declares: its folders, then
     /// its projects, then the files a folder lists, each by name.
-    fn entries(&self, entries: &[SolutionEntry], depth: usize, rows: &mut Vec<TreeRow>) {
-        let mut sorted: Vec<&SolutionEntry> = entries.iter().collect();
-        sorted.sort_by_key(|e| match e {
-            SolutionEntry::Folder { name, .. } => (0, by_name(name)),
-            SolutionEntry::Project(project) => (1, by_name(&project.name)),
-            SolutionEntry::Item { name, .. } => (2, by_name(name)),
+    fn entries(&self, key: &str, entries: &[SolutionEntry], depth: usize, rows: &mut Vec<TreeRow>) {
+        let cached = self.entry_order.borrow().get(key).cloned();
+        let sorted = cached.unwrap_or_else(|| {
+            let mut order: Vec<usize> = (0..entries.len()).collect();
+            order.sort_by_cached_key(|&i| match &entries[i] {
+                SolutionEntry::Folder { name, .. } => (0, by_name(name)),
+                SolutionEntry::Project(project) => (1, by_name(&project.name)),
+                SolutionEntry::Item { name, .. } => (2, by_name(name)),
+            });
+            let order = Rc::new(order);
+            self.entry_order.borrow_mut().insert(key.to_string(), order.clone());
+            order
         });
-        for entry in sorted {
-            match entry {
+        for &index in sorted.iter() {
+            match &entries[index] {
                 SolutionEntry::Folder { name, path, children } => {
                     let key = format!("sf:{path}");
                     let expanded = self.open.contains(&key);
@@ -261,10 +270,10 @@ impl SolutionTree {
                         depth,
                         !children.is_empty(),
                         expanded,
-                        key,
+                        key.clone(),
                     ));
                     if expanded {
-                        self.entries(children, depth + 1, rows);
+                        self.entries(&key, children, depth + 1, rows);
                     }
                 }
                 SolutionEntry::Project(project) => self.project(project, depth, rows),

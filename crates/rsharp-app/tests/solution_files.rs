@@ -137,8 +137,9 @@ fn new_file_and_new_folder_show_in_the_tree_and_a_new_file_opens(cx: &mut TestAp
 fn a_name_taken_in_the_folder_is_refused_and_nothing_changes_on_disk(cx: &mut TestAppContext) {
     let run = Run::new("sf-taken", &files());
     let (main, cx) = open(&run, cx);
+    let existing_file = if cfg!(target_os = "linux") { "Program.cs" } else { "program.cs" };
     for (name, item) in
-        [("program.cs", "Add > New File..."), ("Models", "Add > New Folder..."), ("a:b", "Add > New File...")]
+        [(existing_file, "Add > New File..."), ("Models", "Add > New Folder..."), ("a:b", "Add > New File...")]
     {
         choose(&main, cx, "Shop.App", item);
         answer(&main, cx, name);

@@ -27,6 +27,8 @@ path.write_text(text.replace("</Project>", f"<ItemGroup>{references}</ItemGroup>
 config = project / "nuget.config"
 config.write_text('<configuration><packageSources><clear/><add key="nuget" value="https://api.nuget.org/v3/index.json" /></packageSources></configuration>', encoding="utf-8")
 subprocess.run(["dotnet", "restore", str(path), "--configfile", str(config)], env=environment, check=True)
+# Passenger's preview SDK also builds net10.0 executables: cache their reference packs and native app host.
+subprocess.run(["dotnet", "restore", str(path), "--configfile", str(config), "-p:TargetFramework=net10.0", "-p:OutputType=Exe", "-p:UseAppHost=true"], env=environment, check=True)
 for archive in (root / "packages").rglob("*.nupkg"):
     destination = feed / archive.name
     if not destination.exists():

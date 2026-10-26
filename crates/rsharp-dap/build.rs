@@ -4,7 +4,6 @@
 //! as a warning, and RSharp then says why it cannot debug.
 
 use std::path::PathBuf;
-use std::process::Command;
 
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
@@ -19,8 +18,12 @@ fn main() {
     ] {
         println!("cargo:rerun-if-changed={}", passenger.join(input).display());
     }
-    println!("cargo:rerun-if-changed={}", passenger.join("../Directory.Packages.props").display());
+    for input in ["Directory.Packages.props", "Directory.Build.props", "Directory.Build.targets", "global.json"] {
+        println!("cargo:rerun-if-changed={}", passenger.join("..").join(input).display());
+    }
+    println!("cargo:rerun-if-env-changed=CI");
     let without = |why: &str| {
+        assert!(std::env::var("CI").as_deref() != Ok("true"), "Passenger's debug adapter is required in CI: {why}");
         println!("cargo:warning=Passenger's debug adapter was not built ({why}); RSharp cannot debug");
         println!("cargo:rustc-env=RSHARP_DEBUG_ADAPTER=");
     };
@@ -32,18 +35,18 @@ fn main() {
     // target/<profile>/sidecars/debugger, beside the other sidecars, whichever crate's build asked.
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let sidecars = out.ancestors().nth(3).expect("OUT_DIR is target/<profile>/build/<crate>/out").join("sidecars");
-    let output = match Command::new(&dotnet)
-        .args(["publish", "-c", "Release", "-o"])
-        .arg(&sidecars.join("debugger"))
-        .arg(&project)
-        // NuGet's audit is not this build's business: the feeds' advisories are the NuGet window's, and a machine that
-        // cannot write its audit cache (a sandbox, an offline runner) must still build the adapter.
-        .args(["-nologo", "-v", "q", "-p:WarningsNotAsErrors=NU1900"])
-        .output()
-    {
-        Ok(output) => output,
-        Err(error) => return without(&format!("dotnet publish could not run: {error}")),
-    };
+    let output =
+        match rsharp_core::dotnet::command(&dotnet, ["publish", "-c", "Release", "-o"], passenger.parent().unwrap())
+            .arg(&sidecars.join("debugger"))
+            .arg(&project)
+            // NuGet's audit is not this build's business: the feeds' advisories are the NuGet window's, and a machine that
+            // cannot write its audit cache (a sandbox, an offline runner) must still build the adapter.
+            .args(["-nologo", "-v", "q", "-p:WarningsNotAsErrors=NU1900"])
+            .output()
+        {
+            Ok(output) => output,
+            Err(error) => return without(&format!("dotnet publish could not run: {error}")),
+        };
     let said = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
     let (answer, errors) = (said(&output.stdout), said(&output.stderr));
     if !output.status.success() {

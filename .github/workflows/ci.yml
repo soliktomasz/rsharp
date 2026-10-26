@@ -55,7 +55,14 @@ jobs:
 
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 10.0.x
+          # The offline fixtures use this SDK feature band and its installed reference packs.
+          dotnet-version: 10.0.1xx
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          # Passenger currently needs a preview SDK to build its sidecars.
+          global-json-file: vendor/passenger/global.json
+          dotnet-quality: preview
 
       - name: Formatting
         run: cargo fmt --all --check

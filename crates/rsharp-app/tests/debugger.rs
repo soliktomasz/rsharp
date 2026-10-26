@@ -1757,7 +1757,7 @@ fn what_is_typed_into_the_debug_console_is_the_programs_input() {
     cx.simulate_keystrokes("enter");
     let read = pump(cx, |cx| output(&main, cx).contains("read: Ada Lovelace"));
     assert!(read, "what was typed and pasted did not reach the program: {:?}", output(&main, cx));
-    assert_eq!(main.read_with(cx, |main, _| !main.is_debugging()), true, "the program read the line and ended");
+    assert!(pump(cx, |cx| main.read_with(cx, |main, _| !main.is_debugging())), "the program read the line and ended");
 }
 
 #[test]
@@ -2012,7 +2012,10 @@ fn the_variables_and_frames_menus_copy_values_add_watches_and_copy_the_stack() {
 
     right_click(cx, "debug variable a");
     assert!(main.read_with(cx, |main, cx| main.debug_view().read(cx).menu_open()), "the variable's menu opens again");
-    assert!(cx.debug_bounds("debug menu: Set Data Breakpoint").is_some(), "a value's menu offers Set Data Breakpoint");
+    assert!(
+        cx.debug_bounds("debug menu: Set Data Breakpoint").is_none(),
+        "a top-level local has no parent object for a data breakpoint"
+    );
     click(cx, "debug menu: Add to Watches");
     let watched = pump(cx, |cx| {
         main.read_with(cx, |main, cx| {
