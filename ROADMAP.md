@@ -332,25 +332,31 @@ the program in that method wherever it is, as does a line breakpoint. The window
 buttons and its frame list, and checks the marked line and the program's output; both debugger suites skip,
 saying why, when dotnet or the adapter is not there. macOS is where they ran; Windows and Linux are CI's.
 - Data breakpoints (Windows x64's to offer). (Not yet.)
-- Decompiled symbols. (Not yet: the adapter's `resolveStackFrame` writes a PDB whose sources are embedded, and names
-  them under a `decompiled/…` path that no file on disk has; the client would have to read the embedded source out of
-  the PDB, or a decompiler of its own would. The client's side — `isResolved` on a frame and `resolveStackFrame` —
-  was written and taken back out until then.)
-- Hot Reload while debugging. (Started. The engine is already carried: the adapter takes `hotReload` at launch and
-  answers `hotReloadState` and `applyChanges` with module deltas, and Passenger's Roslyn extension — published into
-  `sidecars/roslyn` by `rsharp-lsp/build.rs` — already serves the Edit and Continue session (`Passenger.Roslyn.Extension/
-  HotReloadMessages.cs`, listed in `Passenger.Lsp/RoslynExtension.cs`), so no new C# sidecar is needed. What remains is
-  the Rust side. In so far: every launch turns the runtime's Edit and Continue on (`hotReload`), and
-  `Session::hot_reload_state` reads the runtime's capabilities and each module's editability, proven by a launched
-  program in the parity tests; `rsharp-lsp::extension` has the workspace route and the session's handler names, and
-  the live Roslyn test starts and ends the extension's Edit and Continue session. Next: `Session::apply_changes` (the
-  deltas as the extension emits them), the emit/commit/discard calls filled in around it, and the window's
-  save-while-debugging path: a DebugState carries the Hot Reload session's number and each edited file's text from
-  before its first edit (the originals the emit call needs), the save action — after `buffer.save` succeeds — hands
-  the active buffer's text and its server (`buffer.rs`'s `server`) to a path in `window/debug.rs` that runs
-  state → emit (through `rsharp-lsp::extension::workspace_request`) → `apply_changes` → commit or discard on the
-  background executor, each module's result appended to `debug_console`; its test edits a line, saves, resumes and
-  sees the program print the new value.)
+- Decompiled symbols. (Built: a frame the adapter has no source for (`isResolved` false) is resolved with
+  `resolveStackFrame`, which decompiles its assembly into the adapter's symbol cache off the engine's lock; RSharp reads
+  the text the decompiled PDB embeds (`symbolic-ppdb`, read once per PDB), writes it under the cache's `decompiled/…`
+  path read-only, and opens it at the stop. Choosing a frame in the Debug window resolves it, and a stop with no source
+  at all resolves its top frame. `crates/rsharp-dap/tests/passenger.rs` resolves a System.Linq frame and reads its
+  embedded source; `crates/rsharp-app/tests/debugger.rs` chooses that frame and opens the file read-only.)
+- Hot Reload while debugging. (Built for a program this window launches. The adapter takes `hotReload` at launch and
+  answers `hotReloadState` — the runtime's capabilities, each module's editability and, paused, each thread's active
+  statements — and `applyChanges` with module deltas, which `Session::apply_changes` hands over as they are; Passenger's
+  Roslyn extension in `sidecars/roslyn` serves the Edit and Continue session. `window/debug.rs`'s `HotReload` keeps
+  Roslyn's session number and the server it lives on, and every open C# file's text as the launch's save left it (a file
+  first shown while debugging is read from disk); a save that succeeds while the program runs or is paused starts the
+  session if it has not, reads the state, emits through `rsharp-lsp::extension::workspace_request`, applies, and commits
+  or discards on the background executor, each module's result, Roslyn's problems and the summary landing in
+  `debug_console`. Rider's Apply Hot Reload Changes (Alt+F10) does the same for a debugged program, saved or not, and a
+  step or resume applies the paused program's edits first, as Rider's "Changes will be applied on the next step or
+  resume". A committed update sends the changed files' breakpoints again in the code it replaced and reads a paused stop
+  again where the update left it, and a file's breakpoints move with their lines through edits (`rsharp_text::map_line`,
+  `Breakpoints::follow`), so a line inserted above one keeps it on its statement. An edit the runtime cannot take
+  restarts the program — built and launched again with the folder's breakpoints — when Settings' "Always restart for a
+  change it cannot apply" says so; else the window asks Never/Always/No/Yes, as dotnet watch does, Never for the rest of
+  the session. Stop (Shift+F5 as well), leaving the folder, a refused launch and Attach end the session with the program.
+  `tests/debugger.rs` pauses in the edited method, saves, sees its breakpoint verified again and the program print the
+  edit; applies an unsaved edit by Alt+F10 and another by resuming; saves a field's type change and watches the program
+  restart, and answers the question when the setting is off; and moves a breakpoint with the line inserted above it.)
 - Attach to Process on Windows. (Not yet: the Windows listing reads the process's `dotnet-diagnostic-<pid>` named pipe,
   which is not read; macOS's `clr-debug-pipe` and Linux's `/proc` are.)
 - Data breakpoints (Windows x64's to offer). (Not yet: the adapter answers `dataBreakpointInfo` and
@@ -372,7 +378,33 @@ members and calls, a paused frame's locals and their members (a struct's, the ob
 `DebuggableConsoleApp`, an exception thrown in a parallel loop stopping where it was thrown, its message read
 through `exceptionInfo`, a stack naming the program's frames and the library's between them, each placed or subtle as
 Passenger's test expects, a stop inside a lambda listing the values it closes over, and a step through an async method
-and the method it awaits, each stop on the line Passenger's AsyncStepTests names.
+and the method it awaits, each stop on the line Passenger's AsyncStepTests names. Since: `LaunchTests`' four
+stop-at-entry cases (a console app, top-level statements, an async Main and async top-level statements, each with its
+locals); `BreakpointTests`' three column cases (a column on a statement, a line without one taking its first statement,
+and a column on a multiline statement taking its start); `FunctionBreakpointTests`' names (a fully qualified method, a
+generic nested class, a name in two namespaces, every overload with and without its class, and one overload named by
+its parameters); `ConditionalBreakpointTests`' true and false conditions, an unreadable condition that stops and says
+why, a tracepoint's logged line, and a hit count in its three forms; `StackTraceTests`' synthetic async callers;
+`SetNextStatementTests`' go-ahead-and-back case; `ExceptionTests`' seven filter cases (all; an exception handled in
+external code with and without Just My Code; one returned to user code; user-unhandled; a condition naming one type;
+no filters); `JustMyCodeTests`' attributed methods passed over by Step Into, a breakpoint refused saying Just My Code,
+an evaluation that never returns stopped, and every thread with frames; `InterpreterTests`' integers, enums, conversions
+and unboxing, Set Value, a multi-dimensional array, a constrained call on a struct and checked conversions;
+`VariablesCasesTests`' lambda capture, DebuggerDisplay and a ToString that throws; `AsyncEvalTests`' locals before and
+after an await; `AsyncVariablesTests`' async locals; `LaunchTests`' input, a debugged program's child, 64 KB of output
+with its own exit code, Main Thread, a program in the client's terminal (five launches) and a client that cannot start
+one, and a program that ends before its runtime; `AttachTests`' held start, a running program's pause, an attached
+program's exit code and a non-.NET refusal; `ExceptionTests`' exception scope and an exception in external code;
+`JustMyCodeTests`' exception caught outside the user's code as user-unhandled, the steps from it and from a throw back
+to the user's code, and a throwing call's step over; `BreakpointTests`' same-named file and a re-sent breakpoint's hit
+count and id; `StackTraceTests`' frame numbering across stops and an emitted code's stack; `InterpreterTests`' lambda
+speed and an expression that loops without end; `VariablesTests`' full local tree and `Variables2Tests`' 39 locals and
+their members; `StuckEvaluationTests`' stuck evaluation on a continue and at an exception; `ProtocolTests`' unsupported
+requests; `LaunchTests`' two late-runtime cases (a held runtime and a launch stopped while it starts); `StepTests`' step
+into a module without symbols; and `DecompiledSymbolsTests`' resolved frame.
+The client now sends Just My Code as a choice (`Launch::just_my_code`, `Start::Attach::just_my_code`), though the window
+still always starts with it on. Remaining: none — every case in `vendor/passenger/tests/Passenger.Tests/Debugging/` is
+translated; the window-level cases it shares with `DebuggerTests` are `crates/rsharp-app/tests/debugger.rs`.
 
 ### Phase 9: Avalonia and WPF (L)
 - A XAML host: `Passenger.Xaml` behind a thin JSON-lines (or LSP) process, giving completion, diagnostics,

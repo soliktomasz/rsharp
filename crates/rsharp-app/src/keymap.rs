@@ -79,6 +79,10 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new("enter", Choose, Some("SmartStepInto")),
         KeyBinding::new("up", SelectPrevious, Some("SmartStepInto")),
         KeyBinding::new("down", SelectNext, Some("SmartStepInto")),
+        KeyBinding::new("escape", Dismiss, Some("ChoiceDialog")),
+        KeyBinding::new("enter", Choose, Some("ChoiceDialog")),
+        KeyBinding::new("up", SelectPrevious, Some("ChoiceDialog")),
+        KeyBinding::new("down", SelectNext, Some("ChoiceDialog")),
         // Rider's Visual Studio keymap breaks all programs with Ctrl+Alt+Break, which gpui has no key for.
         KeyBinding::new("ctrl-alt-p", PauseDebug, None),
         KeyBinding::new("alt-f8", EvaluateExpression, None),

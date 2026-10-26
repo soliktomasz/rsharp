@@ -12,8 +12,6 @@ pub const SCENARIOS: [&str; 5] =
     ["thrownInUserCode", "thrownInExternalCode", "handledInUserCode", "handledInExternalCode", "unhandled"];
 
 /// One line breakpoint: where it is, and what it asks of the debugger at a hit.
-// shortcut: a breakpoint follows its line by number, so an edit above it moves it off its statement; carry it through
-// the buffer's changes, as Rider does, once that is missed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct LineBreakpoint {
@@ -183,6 +181,27 @@ impl Breakpoints {
                 self.files.remove(&key);
             }
         }
+    }
+
+    /// Carries a file's breakpoints through edits to it: each line moves to the line `at` gives, and breakpoints that
+    /// meet on one line become one. The moves made, each from its old line to its new one.
+    pub fn follow(&mut self, path: &Path, mut at: impl FnMut(usize) -> usize) -> Vec<(usize, usize)> {
+        let key = self.files.keys().find(|file| crate::paths::same(file, path)).cloned();
+        let Some(key) = key else { return Vec::new() };
+        let Some(breakpoints) = self.files.get_mut(&key) else { return Vec::new() };
+        let mut moved = Vec::new();
+        for breakpoint in breakpoints.iter_mut() {
+            let line = at(breakpoint.line);
+            if line != breakpoint.line {
+                moved.push((breakpoint.line, line));
+                breakpoint.line = line;
+            }
+        }
+        if !moved.is_empty() {
+            breakpoints.sort_by_key(|breakpoint| breakpoint.line);
+            breakpoints.dedup_by_key(|breakpoint| breakpoint.line);
+        }
+        moved
     }
 
     /// Whether a line holds a breakpoint, on or not.
@@ -502,6 +521,22 @@ mod tests {
         breakpoints.remove_function(0);
         assert!(breakpoints.functions().is_empty());
         assert_eq!(breakpoints.count(), 1);
+    }
+
+    #[test]
+    fn a_breakpoint_follows_its_line_through_an_edit() {
+        let folder = folder("follow");
+        let file = folder.join("App").join("Program.cs");
+        std::fs::write(&file, "class Program {}\n").unwrap();
+        let mut breakpoints = Breakpoints::default();
+        breakpoints.toggle(&file, 1);
+        breakpoints.toggle(&file, 3);
+        assert_eq!(breakpoints.follow(&file, |line| line + 1), vec![(1, 2), (3, 4)], "each line moves by the edit");
+        assert_eq!(breakpoints.lines(&file), vec![2, 4]);
+        assert!(breakpoints.follow(&file, |_| 2) == vec![(4, 2)], "a line that meets another moves onto it");
+        assert_eq!(breakpoints.lines(&file), vec![2], "the two are one breakpoint");
+        assert!(breakpoints.follow(&file, |_| 2).is_empty(), "a line that stays put is no move");
+        let _ = std::fs::remove_dir_all(&folder);
     }
 }
 

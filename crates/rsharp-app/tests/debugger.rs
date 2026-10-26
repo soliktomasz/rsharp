@@ -919,3 +919,443 @@ fn a_function_breakpoint_stops_the_program_in_its_method() {
     assert_eq!(path, Some(source), "and in its own file");
     cx.simulate_keystrokes("shift-f5");
 }
+
+/// The program the Hot Reload test edits: it greets every tick, forever, so an edit can reach it while it runs. The
+/// greeting is a method of its own, called on every tick: a method on the stack would wait for a restart, as Roslyn warns.
+const GREETING_PROGRAM: &str = "using System;\nusing System.Threading;\n\nfor (int i = 1; ; i++)\n{\n    Greeter.Greet(i);\n    Thread.Sleep(100);\n}\n";
+
+const GREETER: &str = "using System;\n\nstatic class Greeter\n{\n    public static void Greet(int i)\n    {\n        Console.WriteLine($\"Hello {i}\");\n    }\n}\n";
+
+#[test]
+fn a_saved_edit_reaches_the_program_the_debugger_runs() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    if rsharp_lsp::roslyn_server().is_none() {
+        eprintln!("skipped: Roslyn's language server is not installed");
+        return;
+    }
+    let run = Run::new("debugger-hot-reload", &[]);
+    // At the folder's root, where the window finds the project Roslyn and the launch plan both need.
+    write(&run.folder, "App.csproj", EXE_PROJECT);
+    write(&run.folder, "Program.cs", GREETING_PROGRAM);
+    write(&run.folder, "Greeter.cs", GREETER);
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("Greeter.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = run.window(&mut cx);
+    cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
+    main.update_in(cx, |main, window, cx| {
+        main.open_workspace(&run.folder, window, cx);
+        // The caret at the start of `Hello`, on the line that greets.
+        main.open_file(&source, Some((6, 28)), window, cx);
+    });
+    let loaded = pump(cx, |cx| main.read_with(cx, |main, _| main.server_ready() || main.server_failed().is_some()));
+    assert!(loaded, "Roslyn loaded the project: {:?}", main.read_with(cx, |main, _| main.server_status()));
+    assert_eq!(main.read_with(cx, |main, _| main.server_failed().map(str::to_string)), None, "Roslyn failed");
+
+    // A breakpoint on the greeting line: the program stops in the method the edit changes, on its stack.
+    cx.simulate_keystrokes("f9");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f5");
+    assert!(
+        pump(cx, |cx| main.read_with(cx, |main, _| main.debug_phase() == Phase::Paused)),
+        "the program stopped at the greeting's breakpoint: {:?}",
+        output(&main, cx)
+    );
+
+    // The stop put the caret where the program paused; the edit is made at the greeting.
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((6, 28)), window, cx));
+    cx.run_until_parked();
+
+    // `Hello` replaced by `Howdy`: the file saved while the program is paused is what Hot Reload applies.
+    cx.simulate_keystrokes("shift-right shift-right shift-right shift-right shift-right");
+    cx.simulate_input("Howdy");
+    cx.run_until_parked();
+    let typed = main
+        .read_with(cx, |main, cx| main.editor().map(|editor| editor.read(cx).text().to_string()).unwrap_or_default());
+    assert!(typed.contains("Console.WriteLine($\"Howdy {i}\");"), "the edit lands on the greeting: {typed}");
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-s" } else { "ctrl-s" });
+    let applied = |cx: &mut VisualTestContext| {
+        main.read_with(cx, |main, cx| main.debug_console().read(cx).text().contains("C# changes applied"))
+    };
+    assert!(pump(cx, applied), "the Debug console says Hot Reload applied the save: {:?}", output(&main, cx));
+    assert_eq!(
+        main.read_with(cx, |main, _| main.breakpoint_verified(&source, 6)),
+        Some(true),
+        "the breakpoint was bound again in the code the update replaced"
+    );
+
+    // The breakpoint taken away, going on runs the edited statement the program was paused in.
+    cx.simulate_keystrokes("f9");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f5");
+    let edited = |cx: &mut VisualTestContext| {
+        main.read_with(cx, |main, cx| main.debug_console().read(cx).text().contains("Howdy "))
+    };
+    assert!(pump(cx, edited), "the saved edit ran in the program: {:?}", output(&main, cx));
+
+    // Shift+F5's Stop ends the session, its program with it.
+    cx.simulate_keystrokes("shift-f5");
+    let stopped = pump(cx, |cx| main.read_with(cx, |main, _| !main.is_debugging()));
+    assert!(
+        stopped,
+        "the session stopped: {:?}",
+        main.read_with(cx, |main, _| (main.debug_phase(), main.said().map(str::to_string)))
+    );
+}
+
+/// The greeting with a static field, whose type needs a new program to change.
+const RUDE_GREETER: &str = "using System;\n\nstatic class Greeter\n{\n    static int calls;\n\n    public static void Greet(int i)\n    {\n        Console.WriteLine($\"Hello {i} {++calls}\");\n    }\n}\n";
+
+#[test]
+fn an_edit_the_runtime_cannot_take_restarts_the_program() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    if rsharp_lsp::roslyn_server().is_none() {
+        eprintln!("skipped: Roslyn's language server is not installed");
+        return;
+    }
+    let run = Run::new("debugger-hot-reload-restart", &[]);
+    write(&run.folder, "App.csproj", EXE_PROJECT);
+    write(&run.folder, "Program.cs", GREETING_PROGRAM);
+    write(&run.folder, "Greeter.cs", RUDE_GREETER);
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("Greeter.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = run.window(&mut cx);
+    cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
+    main.update_in(cx, |main, window, cx| {
+        main.open_workspace(&run.folder, window, cx);
+        // The caret at the start of `int`, on the field whose type changes.
+        main.open_file(&source, Some((4, 11)), window, cx);
+    });
+    let loaded = pump(cx, |cx| main.read_with(cx, |main, _| main.server_ready() || main.server_failed().is_some()));
+    assert!(loaded, "Roslyn loaded the project: {:?}", main.read_with(cx, |main, _| main.server_status()));
+    assert_eq!(main.read_with(cx, |main, _| main.server_failed().map(str::to_string)), None, "Roslyn failed");
+
+    cx.simulate_keystrokes("f5");
+    let greeting = |cx: &mut VisualTestContext| {
+        main.read_with(cx, |main, cx| main.debug_console().read(cx).text().contains("Hello 2"))
+    };
+    assert!(pump(cx, greeting), "the debugged program greets: {:?}", output(&main, cx));
+
+    // `int` becomes `long`: a field's type is an edit only a new program runs.
+    cx.simulate_keystrokes("shift-right shift-right shift-right");
+    cx.simulate_input("long");
+    cx.run_until_parked();
+    let typed = main
+        .read_with(cx, |main, cx| main.editor().map(|editor| editor.read(cx).text().to_string()).unwrap_or_default());
+    assert!(typed.contains("static long calls;"), "the edit lands on the field: {typed}");
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-s" } else { "ctrl-s" });
+    let restarted = |cx: &mut VisualTestContext| {
+        main.read_with(cx, |main, cx| {
+            main.debug_console().read(cx).text().contains("restarting the program to apply the changes")
+        })
+    };
+    assert!(pump(cx, restarted), "the rude edit restarted the program: {:?}", output(&main, cx));
+    assert!(pump(cx, greeting), "the restarted program greets: {:?}", output(&main, cx));
+    assert!(main.read_with(cx, |main, _| main.is_debugging()), "a new session runs");
+
+    // Shift+F5's Stop ends it.
+    cx.simulate_keystrokes("shift-f5");
+    assert!(
+        pump(cx, |cx| main.read_with(cx, |main, _| !main.is_debugging())),
+        "the session stopped: {:?}",
+        output(&main, cx)
+    );
+}
+
+fn output(main: &Entity<MainWindow>, cx: &mut VisualTestContext) -> String {
+    main.read_with(cx, |main, cx| main.debug_console().read(cx).text())
+}
+
+#[test]
+fn an_unsaved_edit_is_applied_before_resuming() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    if rsharp_lsp::roslyn_server().is_none() {
+        eprintln!("skipped: Roslyn's language server is not installed");
+        return;
+    }
+    let run = Run::new("debugger-hot-reload-resume", &[]);
+    write(&run.folder, "App.csproj", EXE_PROJECT);
+    write(&run.folder, "Program.cs", GREETING_PROGRAM);
+    write(&run.folder, "Greeter.cs", GREETER);
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("Greeter.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = run.window(&mut cx);
+    cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
+    main.update_in(cx, |main, window, cx| {
+        main.open_workspace(&run.folder, window, cx);
+        main.open_file(&source, Some((6, 28)), window, cx);
+    });
+    let loaded = pump(cx, |cx| main.read_with(cx, |main, _| main.server_ready() || main.server_failed().is_some()));
+    assert!(loaded, "Roslyn loaded the project: {:?}", main.read_with(cx, |main, _| main.server_status()));
+    assert_eq!(main.read_with(cx, |main, _| main.server_failed().map(str::to_string)), None, "Roslyn failed");
+
+    cx.simulate_keystrokes("f9");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f5");
+    assert!(
+        pump(cx, |cx| main.read_with(cx, |main, _| main.debug_phase() == Phase::Paused)),
+        "the program stopped at the greeting's breakpoint: {:?}",
+        output(&main, cx)
+    );
+
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((6, 28)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("shift-right shift-right shift-right shift-right shift-right");
+    cx.simulate_input("Howdy");
+    cx.run_until_parked();
+    assert!(
+        std::fs::read_to_string(&source).unwrap().contains("Hello {i}"),
+        "the edit is not saved: resuming is what applies it"
+    );
+
+    // Rider's "Changes will be applied on the next step or resume": the program runs the edit it never saved.
+    cx.simulate_keystrokes("f5");
+    let edited = |cx: &mut VisualTestContext| {
+        main.read_with(cx, |main, cx| main.debug_console().read(cx).text().contains("Howdy "))
+    };
+    assert!(pump(cx, edited), "the unsaved edit ran when the program resumed: {:?}", output(&main, cx));
+
+    cx.simulate_keystrokes("shift-f5");
+    assert!(pump(cx, |cx| main.read_with(cx, |main, _| !main.is_debugging())), "the session stopped");
+}
+
+#[test]
+fn apply_hot_reload_changes_applies_a_debugged_programs_edit() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    if rsharp_lsp::roslyn_server().is_none() {
+        eprintln!("skipped: Roslyn's language server is not installed");
+        return;
+    }
+    let run = Run::new("debugger-hot-reload-action", &[]);
+    write(&run.folder, "App.csproj", EXE_PROJECT);
+    write(&run.folder, "Program.cs", GREETING_PROGRAM);
+    write(&run.folder, "Greeter.cs", GREETER);
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("Greeter.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = run.window(&mut cx);
+    cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
+    main.update_in(cx, |main, window, cx| {
+        main.open_workspace(&run.folder, window, cx);
+        main.open_file(&source, Some((6, 28)), window, cx);
+    });
+    let loaded = pump(cx, |cx| main.read_with(cx, |main, _| main.server_ready() || main.server_failed().is_some()));
+    assert!(loaded, "Roslyn loaded the project: {:?}", main.read_with(cx, |main, _| main.server_status()));
+    assert_eq!(main.read_with(cx, |main, _| main.server_failed().map(str::to_string)), None, "Roslyn failed");
+
+    cx.simulate_keystrokes("f5");
+    let greeting = |cx: &mut VisualTestContext| {
+        main.read_with(cx, |main, cx| main.debug_console().read(cx).text().contains("Hello 2"))
+    };
+    assert!(pump(cx, greeting), "the debugged program greets: {:?}", output(&main, cx));
+
+    cx.simulate_keystrokes("shift-right shift-right shift-right shift-right shift-right");
+    cx.simulate_input("Howdy");
+    cx.run_until_parked();
+    assert!(
+        std::fs::read_to_string(&source).unwrap().contains("Hello {i}"),
+        "the edit is not saved: Apply Hot Reload Changes applies the editors' text"
+    );
+
+    // Rider's Apply Hot Reload Changes (Alt+F10) for the debugged program, the file unsaved.
+    cx.simulate_keystrokes("alt-f10");
+    let applied = |cx: &mut VisualTestContext| {
+        main.read_with(cx, |main, cx| main.debug_console().read(cx).text().contains("C# changes applied"))
+    };
+    assert!(pump(cx, applied), "Alt+F10 applied the unsaved edit: {:?}", output(&main, cx));
+    let edited = |cx: &mut VisualTestContext| {
+        main.read_with(cx, |main, cx| main.debug_console().read(cx).text().contains("Howdy "))
+    };
+    assert!(pump(cx, edited), "the program printed the edit Alt+F10 applied: {:?}", output(&main, cx));
+    assert!(main.read_with(cx, |main, _| main.debug_phase() == Phase::Running), "the program ran on");
+
+    cx.simulate_keystrokes("shift-f5");
+    assert!(pump(cx, |cx| main.read_with(cx, |main, _| !main.is_debugging())), "the session stopped");
+}
+
+#[test]
+fn a_breakpoint_follows_its_code_through_an_edit() {
+    let run = Run::new(
+        "debugger-breakpoint-follow",
+        &[(
+            "Program.cs",
+            "class Program\n{\n    static void Main()\n    {\n        System.Console.WriteLine(1);\n    }\n}\n",
+        )],
+    );
+    let source = rsharp_core::paths::canonical(&run.folder.join("Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((4, 8)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    cx.run_until_parked();
+    assert_eq!(main.read_with(cx, |main, _| main.breakpoints().lines(&source)), vec![4], "F9 set the breakpoint");
+
+    // A line inserted at the file's start carries the statement, and its breakpoint, down one.
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((0, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(
+        main.read_with(cx, |main, _| main.breakpoints().lines(&source)),
+        vec![5],
+        "the breakpoint moved with its code"
+    );
+    let marks = main.read_with(cx, |_, cx| {
+        rsharp_app::buffer::find(&source, cx).map(|buffer| buffer.read(cx).breakpoints.clone()).unwrap_or_default()
+    });
+    assert_eq!(marks.iter().map(|mark| mark.line).collect::<Vec<_>>(), vec![5], "the gutter shows it at its new line");
+}
+
+#[test]
+fn an_edit_the_runtime_cannot_take_asks_when_the_restart_setting_is_off() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    if rsharp_lsp::roslyn_server().is_none() {
+        eprintln!("skipped: Roslyn's language server is not installed");
+        return;
+    }
+    let run = Run::new("debugger-hot-reload-ask", &[]);
+    write(&run.folder, "App.csproj", EXE_PROJECT);
+    write(&run.folder, "Program.cs", GREETING_PROGRAM);
+    write(&run.folder, "Greeter.cs", RUDE_GREETER);
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("Greeter.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = run.window(&mut cx);
+    cx.update(|_, cx| {
+        cx.global_mut::<rsharp_app::state::Ide>().servers = true;
+        let mut settings = rsharp_app::settings::settings(cx).clone();
+        settings.hot_reload_restart_on_rude_edit = false;
+        rsharp_app::settings::apply(settings, cx);
+    });
+    main.update_in(cx, |main, window, cx| {
+        main.open_workspace(&run.folder, window, cx);
+        main.open_file(&source, Some((4, 11)), window, cx);
+    });
+    let loaded = pump(cx, |cx| main.read_with(cx, |main, _| main.server_ready() || main.server_failed().is_some()));
+    assert!(loaded, "Roslyn loaded the project: {:?}", main.read_with(cx, |main, _| main.server_status()));
+    assert_eq!(main.read_with(cx, |main, _| main.server_failed().map(str::to_string)), None, "Roslyn failed");
+
+    cx.simulate_keystrokes("f5");
+    let greeting = |cx: &mut VisualTestContext| {
+        main.read_with(cx, |main, cx| main.debug_console().read(cx).text().contains("Hello 2"))
+    };
+    assert!(pump(cx, greeting), "the debugged program greets: {:?}", output(&main, cx));
+
+    cx.simulate_keystrokes("shift-right shift-right shift-right");
+    cx.simulate_input("long");
+    cx.run_until_parked();
+    assert!(main.read_with(cx, |main, cx| {
+        main.editor()
+            .map(|editor| editor.read(cx).text().to_string())
+            .unwrap_or_default()
+            .contains("static long calls;")
+    }));
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-s" } else { "ctrl-s" });
+    assert!(
+        pump(cx, |cx| cx.debug_bounds("choice dialog").is_some()),
+        "the edit the runtime cannot take asks whether to restart: {:?}",
+        output(&main, cx)
+    );
+    assert!(
+        main.read_with(cx, |main, cx| main.choice_dialog().map(|dialog| dialog.read(cx).chosen().map(str::to_string)))
+            == Some(Some("Yes".into())),
+        "Yes is the answer Enter would take"
+    );
+
+    click(cx, "choice: Yes");
+    let restarted = |cx: &mut VisualTestContext| {
+        main.read_with(cx, |main, cx| {
+            main.debug_console().read(cx).text().contains("restarting the program to apply the changes")
+        })
+    };
+    assert!(pump(cx, restarted), "the answer restarted the program: {:?}", output(&main, cx));
+    assert!(pump(cx, greeting), "the restarted program greets: {:?}", output(&main, cx));
+    assert!(main.read_with(cx, |main, _| main.choice_dialog().is_none()), "the question is gone");
+
+    cx.simulate_keystrokes("shift-f5");
+    assert!(pump(cx, |cx| main.read_with(cx, |main, _| !main.is_debugging())), "the session stopped");
+}
+
+/// A program whose stop passes through System.Linq, an assembly that ships no symbols: its frame is decompiled.
+const LINQ_PROGRAM: &str = "using System;\nusing System.Linq;\n\nclass Program\n{\n    static int Selector(int x) => x * 2;\n\n    static void Main()\n    {\n        int[] numbers = { 1, 2, 3 };\n        int[] doubled = numbers.Select(Selector).ToArray();\n        Console.WriteLine(string.Join(\",\", doubled));\n    }\n}\n";
+
+#[test]
+fn choosing_a_frame_without_symbols_opens_its_decompiled_source() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-decompiled", &[]);
+    write(&run.folder, "App.csproj", EXE_PROJECT);
+    write(&run.folder, "Program.cs", LINQ_PROGRAM);
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((5, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    cx.simulate_keystrokes("f5");
+    assert!(
+        pump(cx, |cx| main.read_with(cx, |main, _| main.debug_phase() == Phase::Paused)),
+        "the program stopped in the selector: {:?}",
+        output(&main, cx)
+    );
+    let names: Vec<String> =
+        main.read_with(cx, |main, _| main.debug_frames().iter().map(rsharp_dap::protocol::Frame::short_name).collect());
+    assert!(
+        names.get(1).is_some_and(|name| name.starts_with("System.Linq.dll!")),
+        "System.Linq's frame is below the selector's: {names:?}"
+    );
+
+    // The library's frame has no source of its own: choosing it decompiles System.Linq and opens the source read-only.
+    click(cx, "debug frame 1");
+    let decompiled = pump(cx, |cx| {
+        main.read_with(cx, |main, cx| {
+            main.editor().is_some_and(|editor| {
+                let editor = editor.read(cx);
+                editor.path != source
+                    && editor.path.to_string_lossy().contains("decompiled")
+                    && editor.text().to_string().contains("namespace System.Linq")
+            })
+        })
+    });
+    assert!(decompiled, "the decompiled source opened at the frame: {:?}", output(&main, cx));
+    let read_only = main.read_with(cx, |main, cx| {
+        main.editor().map(|editor| editor.read(cx).buffer.read(cx).read_only).unwrap_or(false)
+    });
+    assert!(read_only, "decompiled code opens read-only");
+
+    cx.simulate_keystrokes("shift-f5");
+    assert!(pump(cx, |cx| main.read_with(cx, |main, _| !main.is_debugging())), "the session stopped");
+}

@@ -9,7 +9,7 @@ use connection::{Connection, Incoming};
 pub use protocol::Capabilities;
 use protocol::{Breakpoint, Evaluated, Frame, Scope, Thread, Variable};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -138,6 +138,8 @@ pub struct Launch {
     pub stop_at_entry: bool,
     /// The program's code may be changed as it runs (Hot Reload): the adapter turns the runtime's Edit and Continue on.
     pub hot_reload: bool,
+    /// Just My Code: the debugger passes over library code, as Rider's setting does.
+    pub just_my_code: bool,
 }
 
 /// What the client's terminal answers the adapter with: the program's process, once it runs.
@@ -150,7 +152,7 @@ pub struct RunInTerminalAnswer {
 #[derive(Clone, Debug)]
 pub enum Start {
     Launch(Launch),
-    Attach { process_id: u32 },
+    Attach { process_id: u32, just_my_code: bool },
 }
 
 const INITIALIZE: Duration = Duration::from_secs(20);
@@ -158,6 +160,8 @@ const LAUNCH: Duration = Duration::from_secs(30);
 const INITIALIZED: Duration = Duration::from_secs(60);
 const CONFIGURED: Duration = Duration::from_secs(120);
 const REQUEST: Duration = Duration::from_secs(20);
+/// A frame's decompile: CoreLib's takes a minute or more, off the engine's lock.
+const DECOMPILE: Duration = Duration::from_secs(300);
 
 /// One program under the debugger: the adapter's process, the conversation with it, and the requests the debug window
 /// makes. Every method is safe to call off the UI thread and none needs the UI.
@@ -170,6 +174,22 @@ pub struct Session {
     pub capabilities: Capabilities,
     /// What the program is, as the Debug window names it.
     pub program: String,
+    /// Where the adapter keeps the symbols it decompiles (`--symbolCache`).
+    symbols: PathBuf,
+    /// The embedded sources of each decompiled PDB read, by its path.
+    decompiled: Mutex<HashMap<PathBuf, Arc<Vec<(String, String)>>>>,
+}
+
+/// A session's connection while it starts, for a client that stops a launch whose runtime has not answered yet.
+pub struct Starting {
+    connection: Arc<Connection>,
+}
+
+impl Starting {
+    /// Stops the launch: the adapter ends the program and answers configurationDone saying the session ended.
+    pub fn stop(&self) -> Result<(), String> {
+        self.connection.request("disconnect", json!({ "terminateDebuggee": true }), REQUEST).map(drop)
+    }
 }
 
 impl Session {
@@ -182,8 +202,37 @@ impl Session {
         breakpoints: Vec<(PathBuf, Vec<SourceBreakpoint>)>,
         functions: Vec<FunctionBreakpoint>,
         exceptions: Vec<ExceptionFilter>,
+        filters: Vec<(String, Option<String>)>,
         terminal: Option<TerminalRun>,
         events: impl Fn(Event) + Send + Sync + 'static,
+    ) -> Result<Session, String> {
+        Self::start_watched(
+            adapter,
+            start,
+            symbols,
+            breakpoints,
+            functions,
+            exceptions,
+            filters,
+            terminal,
+            events,
+            |_| {},
+        )
+    }
+
+    /// As `start`, with the starting session given to `watch` before its runtime is waited for.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_watched(
+        adapter: &Path,
+        start: Start,
+        symbols: &Path,
+        breakpoints: Vec<(PathBuf, Vec<SourceBreakpoint>)>,
+        functions: Vec<FunctionBreakpoint>,
+        exceptions: Vec<ExceptionFilter>,
+        filters: Vec<(String, Option<String>)>,
+        terminal: Option<TerminalRun>,
+        events: impl Fn(Event) + Send + Sync + 'static,
+        watch: impl FnOnce(Starting),
     ) -> Result<Session, String> {
         let dotnet = rsharp_core::programs::dotnet()
             .ok_or_else(|| "No .NET command line found: install the .NET SDK, or set DOTNET_ROOT".to_string())?;
@@ -258,6 +307,7 @@ impl Session {
         };
         let connection = Connection::start(command, notify, requests)
             .map_err(|error| format!("The debugger did not start: {error}"))?;
+        watch(Starting { connection: Arc::clone(&connection) });
         let mut session = Session {
             connection,
             process_id,
@@ -265,10 +315,12 @@ impl Session {
             capabilities: Capabilities::default(),
             program: match &start {
                 Start::Launch(launch) => launch.program.file_stem().unwrap_or_default().to_string_lossy().into_owned(),
-                Start::Attach { process_id } => format!("process {process_id}"),
+                Start::Attach { process_id, .. } => format!("process {process_id}"),
             },
+            symbols: symbols.to_path_buf(),
+            decompiled: Mutex::new(HashMap::new()),
         };
-        match session.begin(start, breakpoints, functions, exceptions, terminal.is_some(), &initialized) {
+        match session.begin(start, breakpoints, functions, exceptions, filters, terminal.is_some(), &initialized) {
             Ok(capabilities) => {
                 session.capabilities = capabilities;
                 Ok(session)
@@ -288,6 +340,7 @@ impl Session {
         breakpoints: Vec<(PathBuf, Vec<SourceBreakpoint>)>,
         functions: Vec<FunctionBreakpoint>,
         exceptions: Vec<ExceptionFilter>,
+        filters: Vec<(String, Option<String>)>,
         runs_in_terminal: bool,
         initialized: &Arc<(Mutex<bool>, Condvar)>,
     ) -> Result<Capabilities, String> {
@@ -317,14 +370,16 @@ impl Session {
                     "env": launch.environment,
                     "console": if runs_in_terminal { "integratedTerminal" } else { "internalConsole" },
                     "stopAtEntry": launch.stop_at_entry,
-                    "justMyCode": true,
+                    "justMyCode": launch.just_my_code,
                     "hotReload": launch.hot_reload,
                 }),
                 LAUNCH,
             )?,
-            Start::Attach { process_id } => {
-                self.connection.request("attach", json!({ "processId": process_id, "justMyCode": true }), LAUNCH)?
-            }
+            Start::Attach { process_id, just_my_code } => self.connection.request(
+                "attach",
+                json!({ "processId": process_id, "justMyCode": just_my_code }),
+                LAUNCH,
+            )?,
         };
         let (ready, woken) = &**initialized;
         let mut done = ready.lock().unwrap();
@@ -343,7 +398,7 @@ impl Session {
         }
         *self.verified.lock().unwrap() = verified;
         self.set_function_breakpoints(&functions)?;
-        self.set_exceptions(&exceptions)?;
+        self.set_exception_breakpoints(&filters, &exceptions)?;
         self.connection.request("configurationDone", json!({}), CONFIGURED)?;
         Ok(capabilities)
     }
@@ -410,10 +465,89 @@ impl Session {
         Ok(answered.breakpoints)
     }
 
-    /// Sends the exception breakpoints that are on. A client that sends none, as DAP has it, stops on every exception
-    /// nothing handles; one that sends options stops only where one of them says.
-    pub fn set_exceptions(&self, exceptions: &[ExceptionFilter]) -> Result<(), String> {
-        let options: Vec<Value> = exceptions
+    /// `resolveStackFrame`: a frame with no source, its assembly decompiled by the adapter into the symbol cache. The
+    /// first call for an assembly takes as long as the decompile, off the engine's lock, while the session answers.
+    pub fn resolve_stack_frame(&self, id: i64) -> Result<Frame, String> {
+        let body = self.connection.request("resolveStackFrame", json!({ "stackFrameId": id }), DECOMPILE)?;
+        let answered: protocol::ResolveStackFrame = serde_json::from_value(body)
+            .map_err(|error| format!("The debugger's resolved frame did not read: {error}"))?;
+        Ok(placed(answered.stack_frame))
+    }
+
+    /// A resolved frame's source, from the embedded text of the decompiled PDB the adapter wrote: the read-only file
+    /// RSharp writes it to under the cache, for a window to open, and its text.
+    pub fn decompiled_source(&self, frame: &Frame) -> Result<(PathBuf, String), String> {
+        let info = frame.decompiled_source_info.as_ref().ok_or("The frame's source was not decompiled")?;
+        let source = frame.path().ok_or("The frame has no decompiled source")?;
+        let name = info
+            .assembly
+            .assembly_path
+            .file_stem()
+            .map(|name| name.to_string_lossy().into_owned())
+            .ok_or_else(|| format!("{} names no assembly", info.assembly.assembly_path.display()))?;
+        let mvid: String =
+            info.assembly.mvid.chars().filter(char::is_ascii_hexdigit).collect::<String>().to_ascii_lowercase();
+        let folder = self.symbols.join(&name).join(&mvid);
+        let pdb = std::fs::read_dir(&folder)
+            .map_err(|error| format!("The decompiled symbols for {name} are not in {}: {error}", folder.display()))?
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| path.extension().is_some_and(|extension| extension == "pdb"))
+            .ok_or_else(|| format!("The decompiled symbols for {name} are not in {}", folder.display()))?;
+        let sources = self.decompiled_sources(&pdb)?;
+        let wanted = comparable(&source);
+        let (_, text) = sources
+            .iter()
+            .find(|(path, _)| comparable(Path::new(path)) == wanted)
+            .ok_or_else(|| format!("{} is not a document of {}", source.display(), pdb.display()))?;
+        let root = self.symbols.parent().map(Path::to_path_buf).unwrap_or_else(|| self.symbols.clone());
+        let target = if source.is_absolute() { source.clone() } else { root.join(&source) };
+        write_decompiled(&target, text)?;
+        Ok((target, text.clone()))
+    }
+
+    /// The embedded sources of a decompiled PDB, read once: each document's path as the PDB names it, and its text.
+    fn decompiled_sources(&self, pdb: &Path) -> Result<Arc<Vec<(String, String)>>, String> {
+        let mut cache = self.decompiled.lock().unwrap();
+        if let Some(sources) = cache.get(pdb) {
+            return Ok(sources.clone());
+        }
+        let bytes = std::fs::read(pdb).map_err(|error| format!("{} did not read: {error}", pdb.display()))?;
+        let parsed = symbolic_ppdb::PortablePdb::parse(&bytes)
+            .map_err(|error| format!("{} is not a portable PDB: {error}", pdb.display()))?;
+        let mut sources = Vec::new();
+        for source in parsed
+            .get_embedded_sources()
+            .map_err(|error| format!("{}'s embedded sources did not read: {error}", pdb.display()))?
+        {
+            let source =
+                source.map_err(|error| format!("{}'s embedded source did not read: {error}", pdb.display()))?;
+            let text = source
+                .get_contents(Some(64 << 20))
+                .map_err(|error| format!("{}'s embedded source did not read: {error}", pdb.display()))?;
+            sources.push((source.get_path().to_string(), String::from_utf8_lossy(&text).into_owned()));
+        }
+        let sources = Arc::new(sources);
+        cache.insert(pdb.to_path_buf(), sources.clone());
+        Ok(sources)
+    }
+
+    /// The DAP exception filters (`all`, `user-unhandled`, each with a condition or none) and the folder's own exception
+    /// breakpoints, in one request as the adapter takes them. Answers what the adapter made of the filters.
+    pub fn set_exception_breakpoints(
+        &self,
+        filters: &[(String, Option<String>)],
+        exceptions: &[ExceptionFilter],
+    ) -> Result<Vec<Breakpoint>, String> {
+        let plain: Vec<&str> =
+            filters.iter().filter(|(_, condition)| condition.is_none()).map(|(filter, _)| filter.as_str()).collect();
+        let options: Vec<Value> = filters
+            .iter()
+            .filter_map(|(filter, condition)| {
+                condition.as_ref().map(|condition| json!({ "filterId": filter, "condition": condition }))
+            })
+            .collect();
+        let rules: Vec<Value> = exceptions
             .iter()
             .map(|exception| {
                 let mut option = json!({
@@ -433,9 +567,30 @@ impl Session {
                 option
             })
             .collect();
-        self.connection
-            .request("setExceptionBreakpoints", json!({ "filters": [], "exceptionOptions": options }), REQUEST)
-            .map(drop)
+        // The adapter takes filters and rules apart: an empty `exceptionOptions` is a list of no rules, not absent.
+        let mut request = json!({ "filters": plain });
+        if !options.is_empty() {
+            request["filterOptions"] = json!(options);
+        }
+        if !rules.is_empty() {
+            request["exceptionOptions"] = json!(rules);
+        }
+        let body = self.connection.request("setExceptionBreakpoints", request, REQUEST)?;
+        let answered: protocol::Breakpoints = serde_json::from_value(body)
+            .map_err(|error| format!("The debugger's exception breakpoints did not read: {error}"))?;
+        Ok(answered.breakpoints)
+    }
+
+    /// The folder's own exception breakpoints alone, as the window's Settings keep them.
+    pub fn set_exceptions(&self, exceptions: &[ExceptionFilter]) -> Result<(), String> {
+        self.set_exception_breakpoints(&[], exceptions).map(drop)
+    }
+
+    /// The DAP exception filters alone, as Passenger's tests ask them.
+    pub fn set_exception_filters(&self, filters: &[(&str, Option<&str>)]) -> Result<Vec<Breakpoint>, String> {
+        let filters: Vec<(String, Option<String>)> =
+            filters.iter().map(|(filter, condition)| ((*filter).to_string(), condition.map(str::to_string))).collect();
+        self.set_exception_breakpoints(&filters, &[])
     }
 
     /// What the adapter made of each file's breakpoints as the session opened: whether each will be hit, and why not.
@@ -455,11 +610,7 @@ impl Session {
         let body = self.connection.request("stackTrace", json!({ "threadId": thread, "startFrame": 0 }), REQUEST)?;
         let answered: protocol::StackTrace =
             serde_json::from_value(body).map_err(|error| format!("The debugger's stack did not read: {error}"))?;
-        Ok(answered
-            .stack_frames
-            .into_iter()
-            .map(|frame| Frame { line: frame.line.saturating_sub(1), column: frame.column.saturating_sub(1), ..frame })
-            .collect())
+        Ok(answered.stack_frames.into_iter().map(placed).collect())
     }
 
     /// What the program can take of Hot Reload: the runtime's capabilities and each loaded module, editable or why not.
@@ -500,10 +651,16 @@ impl Session {
     /// What an expression is in a frame: Evaluate, and what a watch asks as it is typed. The adapter evaluates only
     /// where the program is paused, so a frame is always named.
     pub fn evaluate(&self, expression: &str, frame: i64) -> Result<Evaluated, String> {
+        self.evaluate_within(expression, frame, REQUEST)
+    }
+
+    /// As `evaluate`, waiting as long as `within` says: an expression the debugger has to stop itself takes longer to
+    /// answer than a request does.
+    pub fn evaluate_within(&self, expression: &str, frame: i64, within: Duration) -> Result<Evaluated, String> {
         let body = self.connection.request(
             "evaluate",
             json!({ "expression": expression, "frameId": frame, "context": "watch" }),
-            REQUEST,
+            within,
         )?;
         serde_json::from_value(body).map_err(|error| format!("The debugger's answer did not read: {error}"))
     }
@@ -538,6 +695,21 @@ impl Session {
     /// Set Next Statement: the thread goes on from a target [`Session::goto_targets`] gave.
     pub fn set_next_statement(&self, thread: i64, target: i64) -> Result<(), String> {
         self.connection.request("goto", json!({ "threadId": thread, "targetId": target }), REQUEST).map(drop)
+    }
+
+    /// Sends the program a line on its own console input, as the internal console does.
+    pub fn input(&self, text: &str) -> Result<(), String> {
+        self.input_with(text, false)
+    }
+
+    /// Sends `command` as it is, as the protocol's own test does: the adapter's refusal is the error.
+    pub fn request_raw(&self, command: &str, arguments: serde_json::Value) -> Result<serde_json::Value, String> {
+        self.connection.request(command, arguments, REQUEST)
+    }
+
+    /// Sends a line and, when `close` says, closes the program's input, as the internal console does at its end.
+    pub fn input_with(&self, text: &str, close: bool) -> Result<(), String> {
+        self.connection.request("input", json!({ "text": text, "close": close }), REQUEST).map(drop)
     }
 
     pub fn resume(&self, thread: i64) -> Result<(), String> {
@@ -599,6 +771,44 @@ impl Drop for Session {
     fn drop(&mut self) {
         self.connection.kill();
     }
+}
+
+/// A frame as RSharp counts places: lines and columns from 0, the ends exclusive.
+fn placed(frame: Frame) -> Frame {
+    Frame {
+        line: frame.line.saturating_sub(1),
+        column: frame.column.saturating_sub(1),
+        end_line: frame.end_line.map(|line| line.saturating_sub(1)),
+        end_column: frame.end_column.map(|column| column.saturating_sub(1)),
+        ..frame
+    }
+}
+
+/// A path of a decompiled PDB's document as both the adapter and the PDB name it, whatever separator that platform used.
+fn comparable(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/").to_lowercase()
+}
+
+/// Writes a decompiled source where a window can open it, read-only, as Passenger shows decompiled code: written again
+/// when the decompiler's text changed, its read-only mark taken off for the write.
+fn write_decompiled(path: &Path, text: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| format!("{} was not made: {error}", parent.display()))?;
+    }
+    if !std::fs::read_to_string(path).is_ok_and(|kept| kept == text) {
+        if let Ok(metadata) = std::fs::metadata(path) {
+            let mut permissions = metadata.permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            permissions.set_readonly(false);
+            let _ = std::fs::set_permissions(path, permissions);
+        }
+        std::fs::write(path, text).map_err(|error| format!("{} was not written: {error}", path.display()))?;
+    }
+    let mut permissions =
+        std::fs::metadata(path).map_err(|error| format!("{} did not read: {error}", path.display()))?.permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(path, permissions)
+        .map_err(|error| format!("{} was not made read-only: {error}", path.display()))
 }
 
 fn text(body: &Value, name: &str) -> Option<String> {
