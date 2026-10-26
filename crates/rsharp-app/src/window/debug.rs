@@ -613,9 +613,10 @@ impl MainWindow {
                 }
                 match read {
                     Ok((value, members)) => {
+                        let result = crate::debug_view::shown(&value.result).into_owned();
                         let answer = match value.r#type {
-                            Some(kind) => format!("{} ({kind})", value.result),
-                            None => value.result,
+                            Some(kind) => format!("{result} ({kind})"),
+                            None => result,
                         };
                         dialog.update(cx, |dialog, cx| {
                             dialog.set_result(answer, false, cx);
@@ -1611,6 +1612,39 @@ impl MainWindow {
         .detach();
     }
 
+    /// The value of the word the pointer rests on in the editor, while the program is paused: its card, as Rider's
+    /// debugger hover shows it, cut short as a row is.
+    pub(super) fn hover_value(
+        &mut self,
+        editor: Entity<CodeEditor>,
+        expression: String,
+        at: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if self.debug.phase != Phase::Paused {
+            return;
+        }
+        let Some(frame) = self.debug.frames.first().map(|frame| frame.id) else { return };
+        let Some(session) = self.debug.session.clone() else { return };
+        let generation = self.debug.generation;
+        let handle = self.handle;
+        cx.spawn(async move |_, cx| {
+            let asked = expression.clone();
+            let read = cx.background_executor().spawn(async move { session.evaluate(&asked, frame) }).await;
+            let Ok(value) = read else { return };
+            let card = match &value.r#type {
+                Some(kind) => format!("{expression} = {{{kind}}} {}", crate::debug_view::shown(&value.result)),
+                None => format!("{expression} = {}", crate::debug_view::shown(&value.result)),
+            };
+            let _ = handle.update(cx, |m, _, cx| {
+                if m.debug.generation == generation && m.debug.phase == Phase::Paused {
+                    editor.update(cx, |editor, cx| editor.show_value(at, card, cx));
+                }
+            });
+        })
+        .detach();
+    }
+
     /// A watch, asked as it is typed: the expression in the frame the program is stopped in.
     pub(super) fn evaluate_watch(&mut self, expression: String, cx: &mut Context<Self>) {
         let Some(frame) = self.debug.frames.first().map(|frame| frame.id) else {
@@ -2015,6 +2049,17 @@ impl MainWindow {
             return;
         }
         self.followed_edit = Some(edit);
+        // The stop's marks go with their code, as Rider's execution point and inline values do.
+        buffer.update(cx, |buffer, cx| {
+            let follow =
+                |at: Option<(usize, String)>| at.map(|(line, text)| (rsharp_text::map_line(changes, line), text));
+            let execution = buffer.execution_line.map(|line| rsharp_text::map_line(changes, line));
+            let inline = follow(buffer.inline_values.clone());
+            let exception = follow(buffer.exception.clone());
+            buffer.set_execution_line(execution, cx);
+            buffer.set_inline_values(inline, cx);
+            buffer.set_exception(exception, cx);
+        });
         let moved = self.debug.breakpoints.follow(&path, |line| rsharp_text::map_line(changes, line));
         if moved.is_empty() {
             return;
@@ -2038,18 +2083,33 @@ impl MainWindow {
         } else {
             self.debug.breakpoints.of(&path).into_iter().filter(|breakpoint| breakpoint.enabled).collect()
         };
-        let sent: Vec<SourceBreakpoint> = breakpoints
-            .iter()
-            .map(|breakpoint| SourceBreakpoint {
-                line: breakpoint.line,
-                column: breakpoint.column,
-                condition: filled(&breakpoint.condition),
-                hit_condition: filled(&breakpoint.hit_count),
-                log_message: filled(&breakpoint.log_message),
-            })
-            .collect();
-        let lines: Vec<usize> = breakpoints.iter().map(|breakpoint| breakpoint.line).collect();
         let key = rsharp_core::paths::canonical(&path);
+        // The program runs the text it was built from: a line is sent where the build has it, and one written since,
+        // with no code in the build, is refused here rather than bound to whatever the build has on that line.
+        let hunks = self.unbuilt_edits(&key, cx);
+        let mut sent = Vec::new();
+        let mut lines = Vec::new();
+        for breakpoint in &breakpoints {
+            match built_line(&hunks, breakpoint.line) {
+                Some(built) => {
+                    sent.push(SourceBreakpoint {
+                        line: built,
+                        column: breakpoint.column,
+                        condition: filled(&breakpoint.condition),
+                        hit_condition: filled(&breakpoint.hit_count),
+                        log_message: filled(&breakpoint.log_message),
+                    });
+                    lines.push(breakpoint.line);
+                }
+                None => {
+                    self.debug.verification.insert(
+                        (key.clone(), breakpoint.line),
+                        (false, Some("This line was written after the program being debugged was built".into())),
+                    );
+                }
+            }
+        }
+        self.show_breakpoints(&path, cx);
         let generation = self.debug.generation;
         let handle = self.handle;
         cx.spawn(async move |_, cx| {
@@ -2065,6 +2125,25 @@ impl MainWindow {
             });
         })
         .detach();
+    }
+
+    /// How an open file differs from the text the program being debugged was built from, while no update has given the
+    /// program its edits; none when they are one.
+    // shortcut: once Hot Reload has applied a file, its later edits are taken as in the program too; keep the text each
+    // update applied when a breakpoint set between an update and the next must be told apart.
+    fn unbuilt_edits(&self, path: &Path, cx: &App) -> Vec<rsharp_text::DiffHunk> {
+        let Some(hot_reload) = &self.debug.hot_reload else { return Vec::new() };
+        if hot_reload.applied.keys().any(|applied| rsharp_core::paths::same(applied, path)) {
+            return Vec::new();
+        }
+        let Some(original) =
+            hot_reload.originals.iter().find(|(file, _)| rsharp_core::paths::same(file, path)).map(|(_, text)| text)
+        else {
+            return Vec::new();
+        };
+        let Some(buffer) = crate::buffer::find(&path.to_path_buf(), cx) else { return Vec::new() };
+        let text = buffer.read(cx).document.text().to_string();
+        if &text == original { Vec::new() } else { rsharp_text::diff_hunks(original, &text) }
     }
 
     /// The exception breakpoints as the session is told of them, muted with every other breakpoint.
@@ -2669,6 +2748,23 @@ pub(super) enum HotReloadApply {
 const RESTART_ANSWERS: [&str; 4] = ["Never", "Always", "No", "Yes"];
 
 /// A frame as the Frames list shows it.
+/// Where a line of the text as it is now stands in the text the program was built from; none for a line written since.
+fn built_line(hunks: &[rsharp_text::DiffHunk], line: usize) -> Option<usize> {
+    let mut shift = 0isize;
+    for hunk in hunks {
+        if line < hunk.after.start {
+            break;
+        }
+        if line < hunk.after.end {
+            // A changed line keeps its place while as many lines replace it; one more is new.
+            let at = line - hunk.after.start;
+            return (at < hunk.before.len()).then_some(hunk.before.start + at);
+        }
+        shift = hunk.before.end as isize - hunk.after.end as isize;
+    }
+    Some((line as isize + shift) as usize)
+}
+
 fn frame_row(frame: &rsharp_dap::protocol::Frame) -> FrameRow {
     FrameRow {
         name: frame.short_name(),

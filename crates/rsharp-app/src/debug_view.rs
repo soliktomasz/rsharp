@@ -614,6 +614,18 @@ fn reach(rows: &[&VariableRow]) -> Option<String> {
     }
 }
 
+/// The characters of a value a row draws: a string of megabytes is shaped only as far as a row shows, its whole text
+/// kept for Copy Value.
+const SHOWN: usize = 1000;
+
+/// A value as a row or a card draws it, cut short past what any of them shows.
+pub fn shown(value: &str) -> std::borrow::Cow<'_, str> {
+    match value.char_indices().nth(SHOWN) {
+        Some((end, _)) => format!("{}…", &value[..end]).into(),
+        None => value.into(),
+    }
+}
+
 fn find<'a>(nodes: &'a mut Vec<Node>, path: &[usize]) -> Option<&'a mut Node> {
     let (first, rest) = path.split_first()?;
     let node = nodes.get_mut(*first)?;
@@ -796,7 +808,7 @@ impl Render for DebugView {
                                                     .min_w_0()
                                                     .truncate()
                                                     .text_color(theme::text_muted())
-                                                    .child(format!("= {}", row.value)),
+                                                    .child(format!("= {}", shown(&row.value))),
                                             )
                                             .children(row.r#type.clone().map(|kind| {
                                                 div()
@@ -857,7 +869,7 @@ impl Render for DebugView {
                                                     .min_w_0()
                                                     .truncate()
                                                     .text_color(theme::text_muted())
-                                                    .child(format!("= {}", row.value)),
+                                                    .child(format!("= {}", shown(&row.value))),
                                             )
                                             .children(row.r#type.clone().map(|kind| {
                                                 div()
@@ -1037,7 +1049,7 @@ impl Render for DebugView {
                                                 .min_w_0()
                                                 .truncate()
                                                 .text_color(theme::text_muted())
-                                                .child(format!("= {result}")),
+                                                .child(format!("= {}", shown(result))),
                                         )
                                 },
                             ))),

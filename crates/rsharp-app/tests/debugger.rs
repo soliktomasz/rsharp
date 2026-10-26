@@ -3204,3 +3204,156 @@ fn a_tracepoint_set_with_shift_click_logs_its_message_and_the_program_runs_on() 
         assert!(console.contains(line), "the console lacks {line:?}:\n{console}");
     }
 }
+
+#[test]
+fn a_string_of_megabytes_shows_its_start_in_variables_and_a_hover_without_holding_the_window() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-megabytes", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(
+        &run.folder,
+        "App/Program.cs",
+        "using System;\n\nclass Program\n{\n    static void Main()\n    {\n        string big = new string('x', 4_000_000);\n        int n = big.Length;\n        Console.WriteLine(n);\n    }\n}\n",
+    );
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((8, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    cx.simulate_keystrokes("f5");
+    let big = |main: &Entity<MainWindow>, cx: &mut VisualTestContext| {
+        main.read_with(cx, |main, cx| main.debug_view().read(cx).variable_value("big"))
+    };
+    assert!(pump(cx, |cx| big(&main, cx).is_some()), "the string's row never came: {:?}", output(&main, cx));
+    let drawn = Instant::now();
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("debug variable big").is_some(), "Variables does not draw the string's row");
+    assert!(
+        drawn.elapsed() < Duration::from_secs(5),
+        "drawing the row took {:?}: the string was laid out whole",
+        drawn.elapsed()
+    );
+    assert_eq!(big(&main, cx).map(|value| value.len()), Some(4_000_002), "the row does not keep the whole value");
+    right_click(cx, "debug variable big");
+    click(cx, "debug menu: Copy Value");
+    let copied = cx.update(|_, cx| cx.read_from_clipboard()).and_then(|item| item.text()).unwrap_or_default();
+    assert_eq!(copied.len(), 4_000_002, "Copy Value did not copy all of the string");
+
+    let offset =
+        main.read_with(cx, |main, cx| main.editor().unwrap().read(cx).text().to_string()).find("big.Length").unwrap()
+            + 1;
+    let at = main
+        .read_with(cx, |main, cx| main.editor().and_then(|editor| editor.read(cx).text_point(offset)))
+        .expect("the hovered word is on screen");
+    cx.simulate_mouse_move(at, None, Modifiers::default());
+    let card = |cx: &mut VisualTestContext| {
+        main.read_with(cx, |main, cx| main.editor().and_then(|editor| editor.read(cx).card_text().map(str::to_string)))
+    };
+    assert!(
+        pump(cx, |cx| card(cx).is_some_and(|card| card.starts_with("big ="))),
+        "no hover card on big: {:?}",
+        card(cx)
+    );
+    let card = card(cx).unwrap();
+    assert!(
+        card.starts_with("big = {string} \"xxx") && card.len() < 2000,
+        "the hover card says {} characters, beginning {:?}",
+        card.len(),
+        &card[..card.len().min(40)]
+    );
+    cx.simulate_keystrokes("shift-f5");
+}
+
+#[test]
+fn a_line_typed_above_a_bound_breakpoint_while_paused_leaves_it_stopping_at_its_statement() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    // Hot Reload carries the moved lines into the program as it goes on, which takes Roslyn's Edit and Continue.
+    if rsharp_lsp::roslyn_server().is_none() {
+        eprintln!("skipped: Roslyn's language server is not installed");
+        return;
+    }
+    let run = Run::new("debugger-live-follow", &[]);
+    write(&run.folder, "App.csproj", EXE_PROJECT);
+    write(&run.folder, "Program.cs", LOOP_PROGRAM);
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = run.window(&mut cx);
+    cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
+    let folder = run.folder.clone();
+    main.update_in(cx, |main, window, cx| {
+        main.open_workspace(&folder, window, cx);
+        main.open_file(&source, Some((9, 0)), window, cx);
+    });
+    let loaded = pump(cx, |cx| main.read_with(cx, |main, _| main.server_ready() || main.server_failed().is_some()));
+    assert!(loaded, "Roslyn did not load the project: {:?}", main.read_with(cx, |main, _| main.server_status()));
+    cx.simulate_keystrokes("f9");
+    cx.simulate_keystrokes("f5");
+    let value = |main: &Entity<MainWindow>, cx: &mut VisualTestContext, name: &str| {
+        main.read_with(cx, |main, cx| main.debug_view().read(cx).variable_value(name))
+    };
+    assert!(pump(cx, |cx| value(&main, cx, "i").as_deref() == Some("1")), "the program did not make its first stop");
+    let marks = |main: &Entity<MainWindow>, cx: &mut VisualTestContext| {
+        main.read_with(cx, |_, cx| {
+            rsharp_app::buffer::find(&source, cx)
+                .map(|b| (b.read(cx).execution_line, b.read(cx).inline_values.as_ref().map(|(line, _)| *line)))
+                .unwrap_or_default()
+        })
+    };
+
+    // A line broken at the top while paused: the breakpoint, the arrow and the values go down a line with their code.
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((0, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(
+        main.read_with(cx, |main, _| main.breakpoints().lines(&source)),
+        vec![10],
+        "the breakpoint left its code"
+    );
+    assert_eq!(marks(&main, cx), (Some(10), Some(10)), "the execution point and its values left their code");
+    assert!(
+        pump(cx, |cx| main.read_with(cx, |main, _| main.breakpoint_verified(&source, 10) == Some(true))),
+        "the moved breakpoint is no longer bound to its statement"
+    );
+
+    // The new line has no code in the program being debugged: a breakpoint there is refused, not bound to the next.
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((0, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    assert!(
+        pump(cx, |cx| main.read_with(cx, |main, _| main.breakpoint_verified(&source, 0) == Some(false))),
+        "the new line's breakpoint was not refused"
+    );
+    let said = main.read_with(cx, |main, _| main.breakpoint_message(&source, 0)).unwrap_or_default();
+    assert!(
+        said.contains("written after the program being debugged was built"),
+        "the refusal does not say why: {said:?}"
+    );
+
+    // Resumed, the program stops on the loop's next turn at the statement the breakpoint was bound to, shown where it
+    // now is: Hot Reload applies the moved lines as it goes on.
+    cx.simulate_keystrokes("f5");
+    assert!(
+        pump(cx, |cx| main.read_with(cx, |main, _| main.debug_phase() == Phase::Paused)
+            && value(&main, cx, "i").as_deref() == Some("2")),
+        "the loop's next turn did not stop at the breakpoint's statement: {:?}; {:?}",
+        main.read_with(cx, |main, _| main.said().map(str::to_string)),
+        output(&main, cx)
+    );
+    assert_eq!(main.read_with(cx, |main, _| main.debug_frames()[0].line), 10, "the debugger names another line");
+    assert_eq!(marks(&main, cx).0, Some(10), "the execution point is not where the statement now is");
+    cx.simulate_keystrokes("shift-f5");
+}

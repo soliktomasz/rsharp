@@ -42,6 +42,15 @@ pub struct Navigate {
 /// Something the editor says in the status bar: nothing found, or a change refused.
 pub struct Said(pub String);
 
+/// The pointer rests on a word while the program may be paused: the window answers with its value, as Rider's
+/// debugger hover does.
+pub struct ValueAsked {
+    pub expression: String,
+    pub at: usize,
+}
+
+impl gpui::EventEmitter<ValueAsked> for CodeEditor {}
+
 impl gpui::EventEmitter<Navigate> for CodeEditor {}
 impl gpui::EventEmitter<Said> for CodeEditor {}
 
@@ -480,7 +489,22 @@ impl CodeEditor {
         );
         if let Some(at) = at.filter(|_| !busy) {
             self.request_hover(at, true, cx);
+            let word = word_at(&self.text, at).range();
+            let expression = self.text.byte_slice(word).to_string();
+            if expression.chars().next().is_some_and(|first| first.is_alphabetic() || first == '_') {
+                cx.emit(ValueAsked { expression, at });
+            }
         }
+    }
+
+    /// The debugger's answer for the word the pointer rests on: its card, while the pointer is still there.
+    pub fn show_value(&mut self, at: usize, text: String, cx: &mut Context<Self>) {
+        if self.assist.hover_at != Some(at) {
+            return;
+        }
+        let word = word_at(&self.text, at).range();
+        self.assist.hover_task = None;
+        self.show(Popup::Card { text, from_mouse: true, word: word.clone() }, word.start, cx);
     }
 
     /// Go to Declaration, Implementation or Type Declaration from the caret.

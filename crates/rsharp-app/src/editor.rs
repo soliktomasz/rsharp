@@ -24,7 +24,7 @@ mod msbuild_help;
 mod refactor;
 #[path = "editor_templates.rs"]
 mod templates;
-pub use assist::{Navigate, Said};
+pub use assist::{Navigate, Said, ValueAsked};
 
 actions!(
     editor,
@@ -827,6 +827,25 @@ impl CodeEditor {
         let span = self.rows.row(text, row);
         let column = ((position.x - layout.text_origin.x) / layout.char_width).round().max(0.) as usize;
         (span.line, column_of(text, span.start) + column)
+    }
+
+    /// Where a byte of the text is drawn, the middle of its line, in the window's coordinates as last laid out; none
+    /// while its line is off screen.
+    pub fn text_point(&self, offset: usize) -> Option<Point<Pixels>> {
+        let layout = self.layout.as_ref()?;
+        let row = self.rows.row_of(&self.text, offset);
+        let shaped = layout.lines.get(row.checked_sub(layout.first_row)?)?;
+        let span = self.rows.row(&self.text, row);
+        let x = shaped.x_for_index(offset - span.start) + layout.char_width * span.indent as f32;
+        Some(point(layout.text_origin.x + x, layout.text_origin.y + self.line_height * (row as f32 + 0.5)))
+    }
+
+    /// The hover card's text, while one is shown, for a test.
+    pub fn card_text(&self) -> Option<&str> {
+        match &self.assist.popup {
+            Some(assist::Popup::Card { text, .. }) => Some(text),
+            _ => None,
+        }
     }
 
     /// The middle of a line's breakpoint column, where its dot and the execution arrow are drawn, in the window's

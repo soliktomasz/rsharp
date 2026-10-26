@@ -1598,6 +1598,10 @@ impl MainWindow {
             }
         })
         .detach();
+        cx.subscribe_in(&editor, window, |w, editor, asked: &editor::ValueAsked, _, cx| {
+            w.hover_value(editor.clone(), asked.expression.clone(), asked.at, cx);
+        })
+        .detach();
         cx.subscribe_in(&editor, window, |w, editor, moved: &editor::MoveExecution, _, cx| {
             let path = editor.read(cx).path.clone();
             w.set_next_statement_at(path, moved.line, cx);
