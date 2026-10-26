@@ -631,14 +631,20 @@ impl MainWindow {
 
     /// Set Next Statement: the paused thread goes on from the caret's line, where the debugger allows it.
     pub(super) fn set_next_statement(&mut self, cx: &mut Context<Self>) {
-        if self.debug.phase != Phase::Paused {
-            return;
-        }
-        let (Some(thread), Some(editor)) = (self.debug.thread, self.active_editor()) else { return };
+        let Some(editor) = self.active_editor() else { return };
         let (path, line) = {
             let editor = editor.read(cx);
             (editor.path.clone(), editor.caret().line)
         };
+        self.set_next_statement_at(path, line, cx);
+    }
+
+    /// The paused thread goes on from a line, as Set Next Statement and a drag of the execution arrow ask.
+    pub(super) fn set_next_statement_at(&mut self, path: PathBuf, line: usize, cx: &mut Context<Self>) {
+        if self.debug.phase != Phase::Paused {
+            return;
+        }
+        let Some(thread) = self.debug.thread else { return };
         self.ask_session(
             cx,
             move |session| {
@@ -1908,6 +1914,87 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// Shift+click in the gutter: a tracepoint, which logs where it was reached and goes on, as Rider's does; one already
+    /// on the line is cleared as a click clears it.
+    pub(super) fn toggle_tracepoint_at(&mut self, path: &Path, line: usize, cx: &mut Context<Self>) {
+        if self.debug.breakpoints.has(path, line) {
+            self.toggle_breakpoint_at(path, line, cx);
+            return;
+        }
+        self.debug.breakpoints.toggle(path, line);
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let message = format!("Breakpoint reached at {name}:{}", line + 1);
+        self.debug.breakpoints.edit(path, line, |breakpoint| breakpoint.log_message = message);
+        self.save_breakpoints(cx);
+        self.show_breakpoints(path, cx);
+        self.said = Some(format!("Tracepoint set at {name}:{}", line + 1).into());
+        self.push_breakpoints(path.to_path_buf(), cx);
+        cx.notify();
+    }
+
+    /// Alt+F9: the caret line's breakpoint popup, a breakpoint set there first when it has none, its condition ready.
+    pub(super) fn edit_breakpoint(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.active_editor() else { return };
+        let (path, line) = {
+            let editor = editor.read(cx);
+            (editor.path.clone(), editor.caret().line)
+        };
+        if !self.debug.breakpoints.has(&path, line) {
+            self.toggle_breakpoint_at(&path, line, cx);
+        }
+        self.open_breakpoint_popup(&path, line, crate::breakpoint_popup::Field::Condition, window, cx);
+    }
+
+    /// Rider's popup over a line's breakpoint: what is typed in it is the breakpoint's at once.
+    pub(super) fn open_breakpoint_popup(
+        &mut self,
+        path: &Path,
+        line: usize,
+        field: crate::breakpoint_popup::Field,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(breakpoint) = self.debug.breakpoints.breakpoint(path, line).cloned() else { return };
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let popup = cx.new(|cx| {
+            crate::breakpoint_popup::BreakpointPopup::new(
+                format!("{name}:{}", line + 1),
+                &breakpoint.condition,
+                &breakpoint.hit_count,
+                &breakpoint.log_message,
+                cx,
+            )
+        });
+        cx.subscribe_in(&popup, window, |m, _, ended: &crate::breakpoint_popup::Ended, window, cx| match ended {
+            crate::breakpoint_popup::Ended::Changed { condition, hit_count, log_message } => {
+                let Some((_, path, line)) = m.breakpoint_popup.clone() else { return };
+                m.debug.breakpoints.edit(&path, line, |breakpoint| {
+                    breakpoint.condition = condition.clone();
+                    breakpoint.hit_count = hit_count.clone();
+                    breakpoint.log_message = log_message.clone();
+                });
+                m.save_breakpoints(cx);
+                m.show_breakpoints(&path, cx);
+                m.push_breakpoints(path, cx);
+                cx.notify();
+            }
+            crate::breakpoint_popup::Ended::Dismissed => {
+                m.breakpoint_popup = None;
+                m.focus_editor(window, cx);
+                cx.notify();
+            }
+        })
+        .detach();
+        popup.update(cx, |popup, cx| popup.focus_field(field, window, cx));
+        self.breakpoint_popup = Some((popup, path.to_path_buf(), line));
+        cx.notify();
+    }
+
+    /// The breakpoint popup open, for a test to drive.
+    pub fn breakpoint_popup(&self) -> Option<Entity<crate::breakpoint_popup::BreakpointPopup>> {
+        self.breakpoint_popup.as_ref().map(|(popup, _, _)| popup.clone())
+    }
+
     /// Carries a file's breakpoints through an edit to it, as Rider does: a line moves with its code, the gutter follows,
     /// and a session that runs is told again. Two editors of one file make the move once.
     pub(super) fn follow_breakpoints(
@@ -2516,6 +2603,7 @@ impl MainWindow {
             d.on_action(cx.listener(|m, _: &ToggleDebug, window, cx| m.toggle_tool(Tool::Debug, window, cx)))
                 .on_action(cx.listener(|m, _: &ToggleBreakpoint, _, cx| m.toggle_breakpoint(cx)))
                 .on_action(cx.listener(|m, _: &ShowBreakpoints, window, cx| m.open_breakpoints(window, cx)))
+                .on_action(cx.listener(|m, _: &EditBreakpoint, window, cx| m.edit_breakpoint(window, cx)))
                 .on_action(cx.listener(|m, _: &AttachToProcess, _, cx| m.open_attach_dialog(cx)))
                 .on_action(cx.listener(|m, _: &ReattachToProcess, _, cx| m.reattach(cx)))
                 .when(self.debug.attached.is_some(), |d| {

@@ -3048,3 +3048,159 @@ fn a_value_from_the_stop_before_a_step_opens_to_an_error_never_to_another_values
     );
     cx.simulate_keystrokes("shift-f5");
 }
+
+/// Where a line's breakpoint dot and execution arrow are, in the window.
+fn gutter(main: &Entity<MainWindow>, cx: &mut VisualTestContext, line: usize) -> gpui::Point<gpui::Pixels> {
+    cx.run_until_parked();
+    main.read_with(cx, |main, cx| main.editor().and_then(|editor| editor.read(cx).gutter_point(line)))
+        .unwrap_or_else(|| panic!("line {line} is not on screen"))
+}
+
+/// The breakpoint popup's focused field, if the popup is open.
+fn popup_field(main: &Entity<MainWindow>, cx: &mut VisualTestContext) -> Option<rsharp_app::breakpoint_popup::Field> {
+    main.update_in(cx, |main, window, cx| main.breakpoint_popup().and_then(|popup| popup.read(cx).focused(window, cx)))
+}
+
+#[test]
+fn dragging_the_execution_arrow_past_the_loop_goes_on_from_there_and_skips_it() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-arrow-drag", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(&run.folder, "App/Program.cs", LOOP_PROGRAM);
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((9, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    cx.simulate_keystrokes("f5");
+    assert!(
+        pump(cx, |cx| main
+            .read_with(cx, |main, cx| main.debug_view().read(cx).variable_value("i").as_deref() == Some("1"))),
+        "the program did not stop in the loop: {:?}",
+        output(&main, cx)
+    );
+
+    // From the arrow beside `total += i;` to the Console.WriteLine after the loop.
+    let (from, to) = (gutter(&main, cx, 9), gutter(&main, cx, 11));
+    cx.simulate_mouse_down(from, gpui::MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(to, Some(gpui::MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(to, gpui::MouseButton::Left, Modifiers::default());
+    let marked = |cx: &mut VisualTestContext| {
+        main.read_with(cx, |_, cx| rsharp_app::buffer::find(&source, cx).and_then(|b| b.read(cx).execution_line))
+    };
+    assert!(
+        pump(cx, |cx| marked(cx) == Some(11)),
+        "the arrow does not stand at the line after the loop: {:?}",
+        marked(cx)
+    );
+    assert_eq!(
+        main.read_with(cx, |main, _| main.breakpoints().lines(&source)),
+        vec![9],
+        "the drag changed the breakpoints"
+    );
+
+    cx.simulate_keystrokes("f5");
+    assert!(pump(cx, |cx| output(&main, cx).contains("total ")), "the program did not go on");
+    assert!(output(&main, cx).contains("total 0"), "the loop was not skipped: {:?}", output(&main, cx));
+    assert!(pump(cx, |cx| !main.read_with(cx, |main, _| main.is_debugging())), "the program did not end");
+}
+
+#[test]
+fn a_condition_typed_into_a_breakpoints_popup_decides_where_it_stops() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-popup-condition", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(&run.folder, "App/Program.cs", LOOP_PROGRAM);
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((9, 12)), window, cx));
+    cx.run_until_parked();
+    // Alt+F9 on a line with no breakpoint sets one and opens its properties, its condition ready to type.
+    cx.simulate_keystrokes("alt-f9");
+    assert!(cx.debug_bounds("breakpoint popup").is_some(), "Alt+F9 did not open the breakpoint's popup");
+    assert_eq!(
+        popup_field(&main, cx),
+        Some(rsharp_app::breakpoint_popup::Field::Condition),
+        "the condition is not ready"
+    );
+    cx.simulate_input("i == 2");
+    cx.simulate_keystrokes("enter");
+    assert!(main.read_with(cx, |main, _| main.breakpoint_popup().is_none()), "Enter did not close the popup");
+    let breakpoints = main.read_with(cx, |main, _| main.breakpoints().of(&source));
+    assert_eq!(breakpoints.len(), 1, "Alt+F9 did not set one breakpoint: {breakpoints:?}");
+    assert_eq!(breakpoints[0].condition, "i == 2", "the condition typed is not the breakpoint's");
+
+    cx.simulate_keystrokes("f5");
+    assert!(
+        pump(cx, |cx| main.read_with(cx, |main, cx| main.debug_phase() == Phase::Paused
+            && main.debug_view().read(cx).variable_value("i").is_some())),
+        "the program did not stop where the condition allows: {:?}",
+        output(&main, cx)
+    );
+    assert_eq!(
+        main.read_with(cx, |main, cx| main.debug_view().read(cx).variable_value("i")),
+        Some("2".into()),
+        "the condition did not decide where it stopped"
+    );
+    cx.simulate_keystrokes("shift-f5");
+}
+
+#[test]
+fn a_tracepoint_set_with_shift_click_logs_its_message_and_the_program_runs_on() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-tracepoint", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(&run.folder, "App/Program.cs", LOOP_PROGRAM);
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, None, window, cx));
+    cx.run_until_parked();
+    let at = gutter(&main, cx, 9);
+    let shift = Modifiers { shift: true, ..Modifiers::default() };
+    cx.simulate_mouse_down(at, gpui::MouseButton::Left, shift);
+    cx.simulate_mouse_up(at, gpui::MouseButton::Left, shift);
+    cx.run_until_parked();
+    let set = main.read_with(cx, |main, _| main.breakpoints().of(&source));
+    assert!(set.len() == 1 && !set[0].log_message.is_empty(), "Shift+click did not set a tracepoint: {set:?}");
+
+    // A right-click on it opens its properties; the log message is two fields on from the condition.
+    cx.simulate_mouse_down(at, gpui::MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(at, gpui::MouseButton::Right, Modifiers::default());
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("breakpoint popup").is_some(), "a right-click did not open the tracepoint's popup");
+    cx.simulate_keystrokes("tab");
+    cx.simulate_keystrokes("tab");
+    assert_eq!(popup_field(&main, cx), Some(rsharp_app::breakpoint_popup::Field::LogMessage), "Tab did not reach it");
+    cx.simulate_input("i is {i}, total {total}");
+    cx.simulate_keystrokes("enter");
+    let logged = main.read_with(cx, |main, _| main.breakpoints().of(&source)[0].log_message.clone());
+    assert_eq!(logged, "i is {i}, total {total}", "the message typed is not the tracepoint's");
+
+    cx.simulate_keystrokes("f5");
+    assert!(!run_to_end(&main, cx), "the tracepoint stopped the program");
+    let console = output(&main, cx);
+    for line in ["i is 1, total 0", "i is 2, total 1", "i is 3, total 3", "total 6"] {
+        assert!(console.contains(line), "the console lacks {line:?}:\n{console}");
+    }
+}
