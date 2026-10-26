@@ -89,9 +89,15 @@ pub fn map_line(changes: &[Change], line: usize) -> usize {
         }
         // The line's start is where the edit begins, inside what it replaces, or is its last line's start.
         if line == start {
-            // A line's own start is before the edit unless the edit begins at column 0, where inserted text carries the
-            // original line down below it.
-            if change.start.column == 0 && change.new_end.offset > change.start.offset { new_end } else { start }
+            // A line's own start is before the edit unless text is inserted at column 0, where it carries the original
+            // line down below it. A replacement begins with new text of its own: the line stays where it starts, even
+            // when that text spans lines.
+            let insertion = change.old_end.offset == change.start.offset;
+            if change.start.column == 0 && insertion && change.new_end.offset > change.start.offset {
+                new_end
+            } else {
+                start
+            }
         } else if line == old_end {
             // The last line's tail is kept, on the line the new text ends on.
             new_end

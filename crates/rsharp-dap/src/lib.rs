@@ -810,8 +810,17 @@ fn write_decompiled(path: &Path, text: &str) -> Result<(), String> {
     if !std::fs::read_to_string(path).is_ok_and(|kept| kept == text) {
         if let Ok(metadata) = std::fs::metadata(path) {
             let mut permissions = metadata.permissions();
-            #[allow(clippy::permissions_set_readonly_false)]
-            permissions.set_readonly(false);
+            // The file is the person's: make it writable for its owner alone, as it was made read-only for everyone.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                permissions.set_mode(permissions.mode() | 0o200);
+            }
+            #[cfg(not(unix))]
+            {
+                #[allow(clippy::permissions_set_readonly_false)]
+                permissions.set_readonly(false);
+            }
             let _ = std::fs::set_permissions(path, permissions);
         }
         std::fs::write(path, text).map_err(|error| format!("{} was not written: {error}", path.display()))?;

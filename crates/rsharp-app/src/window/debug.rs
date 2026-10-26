@@ -243,6 +243,12 @@ impl MainWindow {
             self.refuse_debug("Nothing to debug: this folder has no run configuration", cx);
             return;
         };
+        self.debug_configuration(configuration, cx);
+    }
+
+    /// Debug: this configuration's program is built, its plan worked out, and it is started under the debugger with the
+    /// folder's breakpoints, as Rider's F5 starts it.
+    fn debug_configuration(&mut self, configuration: rsharp_core::run::RunConfiguration, cx: &mut Context<Self>) {
         if self.workspace.is_none() {
             self.refuse_debug("Nothing to debug: no folder is open", cx);
             return;
@@ -901,16 +907,16 @@ impl MainWindow {
     }
 
     /// Rider's Apply Hot Reload Changes for the debugged program: the text the editors hold, saved or not, goes to
-    /// Roslyn's Edit and Continue. `after` is the step or resume that goes on once the update lands. Whether an update
-    /// started: false when nothing changed, or the program cannot take one.
-    pub(super) fn hot_reload_apply(&mut self, after: Option<AfterApply>, cx: &mut Context<Self>) -> bool {
+    /// Roslyn's Edit and Continue. `after` is the step or resume that goes on once the update lands. What came of it:
+    /// no update when nothing changed, the program cannot take one, or only a restart takes the changes.
+    pub(super) fn hot_reload_apply(&mut self, after: Option<AfterApply>, cx: &mut Context<Self>) -> HotReloadApply {
         if self.debug.attached.is_some() || !matches!(self.debug.phase, Phase::Running | Phase::Paused) {
-            return false;
+            return HotReloadApply::Unavailable;
         }
         let applying = self.debug.hot_reload.as_ref().is_some_and(|hot| hot.applying);
         let stopped = self.debug.hot_reload.as_ref().is_some_and(|hot| hot.stopped.is_some());
         if stopped {
-            return false;
+            return HotReloadApply::Unavailable;
         }
         // Coalesce saves and keep a waiting step behind the newest text, rather than only the update already on its way.
         if applying {
@@ -920,11 +926,13 @@ impl MainWindow {
             if after.is_some() {
                 self.debug.after_apply = after;
             }
-            return true;
+            return HotReloadApply::Started;
         }
-        let Some(session) = self.debug.session.clone() else { return false };
-        let Some(server) = self.server.clone() else { return false };
-        let Some(folder) = self.workspace.as_ref().map(|workspace| workspace.folder.clone()) else { return false };
+        let Some(session) = self.debug.session.clone() else { return HotReloadApply::Unavailable };
+        let Some(server) = self.server.clone() else { return HotReloadApply::Unavailable };
+        let Some(folder) = self.workspace.as_ref().map(|workspace| workspace.folder.clone()) else {
+            return HotReloadApply::Unavailable;
+        };
         let buffers: Vec<(PathBuf, u64, String)> = self
             .workspace_buffers(cx)
             .into_iter()
@@ -936,7 +944,7 @@ impl MainWindow {
             })
             .collect();
         let breakpoints = self.session_breakpoints(&folder);
-        let Some(hot) = &mut self.debug.hot_reload else { return false };
+        let Some(hot) = &mut self.debug.hot_reload else { return HotReloadApply::Unavailable };
         if let Some(started_on) = &hot.session
             && !Arc::ptr_eq(&started_on.server, &server)
         {
@@ -945,12 +953,12 @@ impl MainWindow {
             self.debug_console.update(cx, |view, cx| view.append(&[(format!("{said}\n"), true)], cx));
             self.said = Some(said.into());
             cx.notify();
-            return false;
+            return HotReloadApply::Restart;
         }
         // A file whose text the program already runs is no edit; one never given an original was not open when the
         // program was built, and its text is no edit of that build.
         if !hot.has_changes(&buffers) {
-            return false;
+            return HotReloadApply::Nothing;
         }
         let record: Vec<(PathBuf, u64)> = buffers.iter().map(|(path, version, _)| (path.clone(), *version)).collect();
         let reload = hot.session.clone();
@@ -982,7 +990,7 @@ impl MainWindow {
             });
         })
         .detach();
-        true
+        HotReloadApply::Started
     }
 
     /// What the update came to: the session's number kept, the originals Roslyn now has marked given, the texts the
@@ -1020,7 +1028,7 @@ impl MainWindow {
         let reason = said.clone();
         self.said = Some(said.into());
         if pending {
-            if !self.hot_reload_apply(None, cx) {
+            if self.hot_reload_apply(None, cx) != HotReloadApply::Started {
                 self.continue_after_hot_reload(cx);
             }
             return;
@@ -1051,6 +1059,7 @@ impl MainWindow {
     /// skips the question, and Never skips it for the rest of the session.
     fn ask_restart(&mut self, reason: &str, window: &mut Window, cx: &mut Context<Self>) {
         let message = format!("{reason}\n\nDo you want to restart your app?");
+        let before = window.focused(cx);
         let dialog = cx.new(|cx| {
             crate::choice_dialog::ChoiceDialog::new(
                 "Hot Reload",
@@ -1060,8 +1069,13 @@ impl MainWindow {
                 cx,
             )
         });
-        cx.subscribe(&dialog, |m, _, ended: &crate::choice_dialog::Ended, cx| {
+        cx.subscribe_in(&dialog, window, move |m, _, ended: &crate::choice_dialog::Ended, window, cx| {
             m.choice_dialog = None;
+            // The question closes where it opened: the keys go back to what had them, whether the answer restarts the
+            // program or not.
+            if let Some(before) = &before {
+                window.focus(before);
+            }
             match ended {
                 crate::choice_dialog::Ended::Chosen("Never") => {
                     m.debug.never_restart = true;
@@ -1084,14 +1098,28 @@ impl MainWindow {
     }
 
     /// Restarts the program Debug launched, so the edits it could not take run: stopped, built and launched again with
-    /// its configuration and the folder's breakpoints.
+    /// its configuration and the folder's breakpoints. The configuration is the launched plan's, not the toolbar's
+    /// choice if that changed while the program ran.
     fn restart_for_hot_reload(&mut self, cx: &mut Context<Self>) {
+        let configuration = self
+            .debug
+            .plan
+            .as_ref()
+            .and_then(|plan| self.run_configs.iter().find(|configuration| configuration.name == plan.name).cloned())
+            .or_else(|| self.chosen_run_configuration().cloned());
         self.debug.after_apply = None;
         self.stop_debug(cx);
-        self.debug_program(cx);
-        self.debug_console.update(cx, |view, cx| {
-            view.append(&[("Hot Reload: restarting the program to apply the changes\n".into(), false)], cx)
-        });
+        let Some(configuration) = configuration else {
+            self.said = Some("Hot Reload: the restarted program's configuration is gone".into());
+            cx.notify();
+            return;
+        };
+        self.debug_configuration(configuration, cx);
+        if self.is_debugging() {
+            self.debug_console.update(cx, |view, cx| {
+                view.append(&[("Hot Reload: restarting the program to apply the changes\n".into(), false)], cx)
+            });
+        }
     }
 
     /// Goes on with the step or resume that waited for the update, in the code the program has.
@@ -1492,7 +1520,7 @@ impl MainWindow {
         if self.debug.phase != Phase::Paused {
             return;
         }
-        if !self.hot_reload_apply(Some(AfterApply::Resume), cx) {
+        if self.hot_reload_apply(Some(AfterApply::Resume), cx) != HotReloadApply::Started {
             self.resume_now(cx);
         }
     }
@@ -1523,7 +1551,7 @@ impl MainWindow {
         if self.debug.phase != Phase::Paused {
             return;
         }
-        if !self.hot_reload_apply(Some(AfterApply::Step(how)), cx) {
+        if self.hot_reload_apply(Some(AfterApply::Step(how)), cx) != HotReloadApply::Started {
             self.step_now(how, cx);
         }
     }
@@ -2241,6 +2269,20 @@ pub(super) enum Step {
 pub(super) enum AfterApply {
     Resume,
     Step(Step),
+}
+
+/// What Apply Hot Reload Changes came to, so a caller can say what happened rather than take an update that did not
+/// start for an empty one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum HotReloadApply {
+    /// An update is on its way, or one already on its way takes these changes in hand.
+    Started,
+    /// Nothing managed changed since the program last took the text.
+    Nothing,
+    /// The C# language server restarted since the launch: only a new program takes the changes.
+    Restart,
+    /// The program cannot take an update now.
+    Unavailable,
 }
 
 /// dotnet watch's question for an edit the runtime cannot take, and its answers in the order the dialog shows them (the

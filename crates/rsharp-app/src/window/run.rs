@@ -1,6 +1,7 @@
 //! One workspace's runs: the folder's run configurations, the plan a launch works out, the program in the Run console,
 //! and the browser a web project opens once it listens.
 
+use super::debug::HotReloadApply;
 use super::*;
 use crate::console::ConsoleView;
 use crate::settings::settings;
@@ -594,9 +595,18 @@ impl MainWindow {
     /// what it makes of them as `dotnet watch` answers.
     pub(super) fn apply_hot_reload(&mut self, cx: &mut Context<Self>) {
         if self.is_debugging() {
-            if !self.hot_reload_apply(None, cx) {
-                self.said = Some("Hot Reload: no managed code changes to apply".into());
-                cx.notify();
+            match self.hot_reload_apply(None, cx) {
+                HotReloadApply::Started => {}
+                // The update's own message stands, as the language server's restart needs the program restarted.
+                HotReloadApply::Restart => {}
+                HotReloadApply::Nothing => {
+                    self.said = Some("Hot Reload: no managed code changes to apply".into());
+                    cx.notify();
+                }
+                HotReloadApply::Unavailable => {
+                    self.said = Some("Hot Reload: the program cannot take changes now".into());
+                    cx.notify();
+                }
             }
             return;
         }

@@ -42,3 +42,11 @@ fn a_breakpoint_on_the_moved_statement_stays_with_it() {
     assert_eq!(line, 5);
     assert_eq!(map_line(&changes, 4), 5, "the statement's breakpoint follows it");
 }
+
+#[test]
+fn a_replacement_at_a_lines_start_keeps_the_breakpoint_on_that_line() {
+    // `foo` becomes `x` and then `y` on the next line: the line breaks, but its own code was replaced rather than
+    // carried down by text inserted above it, so its breakpoint stays where the replacement begins.
+    let (_, changes) = edited("foo\n", vec![(0..3, "x\ny")]);
+    assert_eq!(map_line(&changes, 0), 0, "the replaced line's breakpoint stays on that line");
+}
