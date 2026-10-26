@@ -3358,3 +3358,85 @@ fn a_line_typed_above_a_bound_breakpoint_while_paused_leaves_it_stopping_at_its_
     assert_eq!(marks(&main, cx).0, Some(10), "the execution point is not where the statement now is");
     cx.simulate_keystrokes("shift-f5");
 }
+
+/// The hover card on a word, once the debugger has answered for it; none while none is shown.
+fn hover(main: &Entity<MainWindow>, cx: &mut VisualTestContext, word: &str) -> Option<String> {
+    let offset = main.read_with(cx, |main, cx| main.editor().unwrap().read(cx).text().to_string()).find(word)? + 1;
+    let at = main.read_with(cx, |main, cx| main.editor().and_then(|editor| editor.read(cx).text_point(offset)))?;
+    // Away first, so a rest on the word is a new one.
+    cx.simulate_mouse_move(gpui::point(gpui::px(1.), gpui::px(1.)), None, Modifiers::default());
+    cx.run_until_parked();
+    cx.simulate_mouse_move(at, None, Modifiers::default());
+    pump(cx, |cx| card(main, cx).is_some_and(|card| card.contains(" = ")));
+    card(main, cx)
+}
+
+fn card(main: &Entity<MainWindow>, cx: &mut VisualTestContext) -> Option<String> {
+    main.read_with(cx, |main, cx| main.editor().and_then(|editor| editor.read(cx).card_text().map(str::to_string)))
+}
+
+#[test]
+fn a_hover_reads_the_chosen_frame_and_goes_when_the_program_leaves_its_stop() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-hover-frame", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(
+        &run.folder,
+        "App/Program.cs",
+        "using System;\n\nclass Program\n{\n    static void Main()\n    {\n        int value = 41;\n        Show(99);\n        value++;\n        Console.WriteLine(value);\n    }\n\n    static void Show(int value)\n    {\n        Console.WriteLine(value);\n    }\n}\n",
+    );
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((14, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    cx.simulate_keystrokes("f5");
+    let value = |main: &Entity<MainWindow>, cx: &mut VisualTestContext| {
+        main.read_with(cx, |main, cx| main.debug_view().read(cx).variable_value("value"))
+    };
+    assert!(pump(cx, |cx| value(&main, cx).as_deref() == Some("99")), "the program did not stop in Show");
+
+    // The caller chosen: Variables shows its value, and so does a hover on its word.
+    click(cx, "debug frame 1");
+    assert!(pump(cx, |cx| value(&main, cx).as_deref() == Some("41")), "choosing Main did not show its values");
+    let said = hover(&main, cx, "value = 41").unwrap_or_default();
+    assert!(said.starts_with("value = {int} 41"), "the hover read another frame than the one chosen: {said:?}");
+
+    // Stepped on past `value++`, the card read at the stop before goes with it, rather than showing 41 beside 42.
+    click(cx, "debug frame 0");
+    cx.simulate_keystrokes("shift-f11");
+    assert!(
+        pump(cx, |cx| main.read_with(cx, |main, _| main.debug_phase() == Phase::Paused
+            && main.debug_frames().first().is_some_and(|frame| frame.name.contains("Main")))),
+        "Step Out did not come back to Main"
+    );
+    let said = hover(&main, cx, "value = 41").unwrap_or_default();
+    assert!(said.starts_with("value = {int} 41"), "the hover in Main does not read its value: {said:?}");
+    // Each step taken once the one before has stopped, until the stop is past `value++`.
+    for _ in 0..3 {
+        if value(&main, cx).as_deref() == Some("42") {
+            break;
+        }
+        let line = main.read_with(cx, |main, _| main.debug_frames().first().map(|frame| frame.line));
+        cx.simulate_keystrokes("f10");
+        pump(cx, |cx| {
+            main.read_with(cx, |main, _| {
+                main.debug_phase() == Phase::Paused && main.debug_frames().first().map(|frame| frame.line) != line
+            })
+        });
+    }
+    assert!(pump(cx, |cx| value(&main, cx).as_deref() == Some("42")), "the steps did not run value++");
+    let left = card(&main, cx);
+    assert!(
+        left.as_ref().is_none_or(|card| !card.contains("41")),
+        "the card read at an earlier stop still shows its value: {left:?}"
+    );
+    cx.simulate_keystrokes("shift-f5");
+}

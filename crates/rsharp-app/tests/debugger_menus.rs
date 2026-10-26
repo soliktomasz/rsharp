@@ -67,3 +67,37 @@ fn a_data_breakpoint_menu_names_the_member_of_the_clicked_object(cx: &mut TestAp
         "the data breakpoint must name its parent object and member"
     );
 }
+
+/// The stop's marks are the buffer's, which every window showing the file shares: an edit moves them once, not once
+/// for each window told of it.
+#[gpui::test]
+fn the_stops_marks_move_once_with_an_edit_however_many_windows_show_the_file(cx: &mut TestAppContext) {
+    let run = Run::new("marks-two-windows", &[("Program.cs", "a\nb\nc\nd\n")]);
+    let source = rsharp_core::paths::canonical(&run.folder.join("Program.cs"));
+    for _ in 0..2 {
+        let (main, cx) = run.window(cx);
+        let (folder, source) = (run.folder.clone(), source.clone());
+        main.update_in(cx, |main, window, cx| {
+            main.open_workspace(&folder, window, cx);
+            main.open_file(&source, Some((0, 0)), window, cx);
+        });
+        cx.run_until_parked();
+    }
+    let buffer = cx.update(|cx| rsharp_app::buffer::find(&source, cx)).expect("both windows show the file");
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_execution_line(Some(2), cx);
+        buffer.set_inline_values(Some((2, "  i = 1".into())), cx);
+    });
+    // The second window's editor has the keys: a line broken at the top.
+    let window = *cx.windows().last().unwrap();
+    let cx = &mut gpui::VisualTestContext::from_window(window, cx);
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let (execution, inline) =
+        buffer.read_with(cx, |buffer, _| (buffer.execution_line, buffer.inline_values.as_ref().map(|(line, _)| *line)));
+    assert_eq!(
+        (execution, inline),
+        (Some(3), Some(3)),
+        "one line typed above the stop moved its marks by other than one line"
+    );
+}

@@ -317,6 +317,12 @@ impl Buffer {
             }
         }
         self.diagnostics.retain(|d| changes.iter().all(|c| d.range.end <= c.start.offset));
+        // The stop's marks go with their code, as Rider's execution point and inline values do. They are the buffer's,
+        // shared by every window showing it, so they move here once rather than once per window told of the edit.
+        let follow = |line: usize| rsharp_text::map_line(&changes, line);
+        self.execution_line = self.execution_line.map(follow);
+        self.inline_values = self.inline_values.take().map(|(line, text)| (follow(line), text));
+        self.exception = self.exception.take().map(|(line, text)| (follow(line), text));
         if let Some((server, uri)) = &self.server {
             let content: Vec<_> = changes
                 .iter()

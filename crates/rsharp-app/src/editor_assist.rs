@@ -22,8 +22,8 @@ pub enum Popup {
     /// Parameter info over the caret.
     Signature(Signature),
     /// The hover card or Quick Documentation, for the word at the anchor; a card the pointer opened goes when it
-    /// leaves the word.
-    Card { text: String, from_mouse: bool, word: Range<usize> },
+    /// leaves the word, and one that shows the debugger's value goes when the program leaves its stop.
+    Card { text: String, from_mouse: bool, word: Range<usize>, value: bool },
     /// Context actions (Alt+Enter), the chosen one.
     Actions { actions: Vec<CodeAction>, selected: usize },
     /// Rename's field over the word being renamed.
@@ -461,7 +461,11 @@ impl CodeEditor {
                     }
                     return;
                 }
-                e.show(Popup::Card { text: text.join("\n\n"), from_mouse, word: word.clone() }, word.start, cx);
+                e.show(
+                    Popup::Card { text: text.join("\n\n"), from_mouse, word: word.clone(), value: false },
+                    word.start,
+                    cx,
+                );
             });
         });
         if from_mouse {
@@ -504,7 +508,14 @@ impl CodeEditor {
         }
         let word = word_at(&self.text, at).range();
         self.assist.hover_task = None;
-        self.show(Popup::Card { text, from_mouse: true, word: word.clone() }, word.start, cx);
+        self.show(Popup::Card { text, from_mouse: true, word: word.clone(), value: true }, word.start, cx);
+    }
+
+    /// The program left the stop a value card was read at: the card goes, as its value may no longer be the program's.
+    pub fn clear_value(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.assist.popup, Some(Popup::Card { value: true, .. })) {
+            self.close_popup(cx);
+        }
     }
 
     /// Go to Declaration, Implementation or Type Declaration from the caret.

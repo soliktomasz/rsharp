@@ -1624,7 +1624,12 @@ impl MainWindow {
         if self.debug.phase != Phase::Paused {
             return;
         }
-        let Some(frame) = self.debug.frames.first().map(|frame| frame.id) else { return };
+        // The frame chosen in the Frames list, whose values Variables shows: a caller's word is the caller's value.
+        let (selected, tree) = {
+            let view = self.debug_view.read(cx);
+            (view.selected_frame(), view.tree())
+        };
+        let Some(frame) = self.debug.frames.get(selected).map(|frame| frame.id) else { return };
         let Some(session) = self.debug.session.clone() else { return };
         let generation = self.debug.generation;
         let handle = self.handle;
@@ -1637,7 +1642,11 @@ impl MainWindow {
                 None => format!("{expression} = {}", crate::debug_view::shown(&value.result)),
             };
             let _ = handle.update(cx, |m, _, cx| {
-                if m.debug.generation == generation && m.debug.phase == Phase::Paused {
+                // A stop, a step or another frame chosen since makes a new tree: the answer is then another frame's.
+                if m.debug.generation == generation
+                    && m.debug.phase == Phase::Paused
+                    && m.debug_view.read(cx).tree() == tree
+                {
                     editor.update(cx, |editor, cx| editor.show_value(at, card, cx));
                 }
             });
@@ -2049,17 +2058,6 @@ impl MainWindow {
             return;
         }
         self.followed_edit = Some(edit);
-        // The stop's marks go with their code, as Rider's execution point and inline values do.
-        buffer.update(cx, |buffer, cx| {
-            let follow =
-                |at: Option<(usize, String)>| at.map(|(line, text)| (rsharp_text::map_line(changes, line), text));
-            let execution = buffer.execution_line.map(|line| rsharp_text::map_line(changes, line));
-            let inline = follow(buffer.inline_values.clone());
-            let exception = follow(buffer.exception.clone());
-            buffer.set_execution_line(execution, cx);
-            buffer.set_inline_values(inline, cx);
-            buffer.set_exception(exception, cx);
-        });
         let moved = self.debug.breakpoints.follow(&path, |line| rsharp_text::map_line(changes, line));
         if moved.is_empty() {
             return;
@@ -2312,6 +2310,11 @@ impl MainWindow {
     }
 
     fn clear_execution_line(&mut self, cx: &mut App) {
+        // Every stop's end clears the marks, and with them the value cards read at it.
+        let editors: Vec<Entity<CodeEditor>> = self.area.editors().cloned().collect();
+        for editor in editors {
+            editor.update(cx, |editor, cx| editor.clear_value(cx));
+        }
         if let Some(path) = self.debug.shown_at.take()
             && let Some(buffer) = crate::buffer::find(&path, cx)
         {

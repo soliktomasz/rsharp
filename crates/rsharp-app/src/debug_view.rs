@@ -409,6 +409,11 @@ impl DebugView {
         cx.emit(DebugAction::SetValue { expression, value });
     }
 
+    /// The frame chosen in the Frames list, from 0, whose values are shown.
+    pub fn selected_frame(&self) -> usize {
+        self.selected
+    }
+
     /// The tree the values shown are, which a request for members names.
     pub fn tree(&self) -> u64 {
         self.tree
