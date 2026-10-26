@@ -1485,6 +1485,7 @@ impl MainWindow {
             view.set_threads(threads, chosen, cx);
             view.set_variables(variables, cx);
         });
+        self.refresh_watches(cx);
         self.clear_execution_line(cx);
         if let Some((path, line)) = at.filter(|_| !resolve_top) {
             self.show_stop_marks(&path, line, inline, exception, cx);
@@ -1564,6 +1565,7 @@ impl MainWindow {
             self.open_file(&path, Some((frame.line, 0)), window, cx);
         }
         self.debug_view.update(cx, |view, cx| view.select(index, cx));
+        self.refresh_watches(cx);
         let Some(session) = self.debug.session.clone() else { return };
         let generation = self.debug.generation;
         let handle = self.handle;
@@ -1654,9 +1656,13 @@ impl MainWindow {
         .detach();
     }
 
-    /// A watch, asked as it is typed: the expression in the frame the program is stopped in.
+    /// A watch, asked as it is typed: the expression in the frame chosen in the Frames list, as Rider's watches are.
     pub(super) fn evaluate_watch(&mut self, expression: String, cx: &mut Context<Self>) {
-        let Some(frame) = self.debug.frames.first().map(|frame| frame.id) else {
+        let (selected, tree) = {
+            let view = self.debug_view.read(cx);
+            (view.selected_frame(), view.tree())
+        };
+        let Some(frame) = self.debug.frames.get(selected).map(|frame| frame.id) else {
             self.debug_view.update(cx, |view, cx| view.set_watch(&expression, "Not paused", cx));
             return;
         };
@@ -1667,7 +1673,9 @@ impl MainWindow {
         cx.spawn(async move |_, cx| {
             let read = cx.background_executor().spawn(async move { session.evaluate(&asked, frame) }).await;
             let _ = handle.update(cx, |m, _, cx| {
-                if m.debug.generation != generation {
+                // Another frame chosen, a step or a stop since: the answer is no longer the frame shown's, and the
+                // watch is asked again there.
+                if m.debug.generation != generation || m.debug_view.read(cx).tree() != tree {
                     return;
                 }
                 match read {
@@ -1683,6 +1691,15 @@ impl MainWindow {
             });
         })
         .detach();
+    }
+
+    /// Every watch asked again, in the frame now shown.
+    fn refresh_watches(&mut self, cx: &mut Context<Self>) {
+        let asked: Vec<String> =
+            self.debug_view.read(cx).watches().iter().map(|(expression, _)| expression.clone()).collect();
+        for expression in asked {
+            self.evaluate_watch(expression, cx);
+        }
     }
 
     /// Resume: the paused program's edits are applied first, as Rider's "Changes will be applied on the next step or

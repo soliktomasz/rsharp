@@ -3440,3 +3440,74 @@ fn a_hover_reads_the_chosen_frame_and_goes_when_the_program_leaves_its_stop() {
     );
     cx.simulate_keystrokes("shift-f5");
 }
+
+#[test]
+fn a_watch_reads_the_chosen_frame_and_is_asked_again_at_each_stop() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-watch-frame", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(
+        &run.folder,
+        "App/Program.cs",
+        "using System;\n\nclass Program\n{\n    static void Main()\n    {\n        int value = 41;\n        Show(99);\n        value++;\n        Console.WriteLine(value);\n    }\n\n    static void Show(int value)\n    {\n        Console.WriteLine(value);\n    }\n}\n",
+    );
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((14, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    cx.simulate_keystrokes("f5");
+    let value = |main: &Entity<MainWindow>, cx: &mut VisualTestContext| {
+        main.read_with(cx, |main, cx| main.debug_view().read(cx).variable_value("value"))
+    };
+    let watched = |main: &Entity<MainWindow>, cx: &mut VisualTestContext, answer: &str| {
+        let answer = answer.to_string();
+        pump(cx, |cx| {
+            main.read_with(cx, |main, cx| {
+                main.debug_view()
+                    .read(cx)
+                    .watches()
+                    .iter()
+                    .any(|(asked, said)| asked == "value" && said.starts_with(&answer))
+            })
+        })
+    };
+    let watches = |main: &Entity<MainWindow>, cx: &mut VisualTestContext| {
+        main.read_with(cx, |main, cx| main.debug_view().read(cx).watches().to_vec())
+    };
+    assert!(pump(cx, |cx| value(&main, cx).as_deref() == Some("99")), "the program did not stop in Show");
+    right_click(cx, "debug variable value");
+    click(cx, "debug menu: Add to Watches");
+    assert!(watched(&main, cx, "99"), "the watch does not read Show's value: {:?}", watches(&main, cx));
+
+    // The caller chosen, the watch is its value; the callee chosen again, the callee's.
+    click(cx, "debug frame 1");
+    assert!(watched(&main, cx, "41"), "the watch does not follow the frame chosen: {:?}", watches(&main, cx));
+    click(cx, "debug frame 0");
+    assert!(watched(&main, cx, "99"), "the watch did not come back to the frame chosen: {:?}", watches(&main, cx));
+
+    // Each stop asks it again, so past `value++` it reads what the program now holds.
+    cx.simulate_keystrokes("shift-f11");
+    assert!(watched(&main, cx, "41"), "the watch was not asked again at the next stop: {:?}", watches(&main, cx));
+    for _ in 0..3 {
+        if value(&main, cx).as_deref() == Some("42") {
+            break;
+        }
+        let line = main.read_with(cx, |main, _| main.debug_frames().first().map(|frame| frame.line));
+        cx.simulate_keystrokes("f10");
+        pump(cx, |cx| {
+            main.read_with(cx, |main, _| {
+                main.debug_phase() == Phase::Paused && main.debug_frames().first().map(|frame| frame.line) != line
+            })
+        });
+    }
+    assert!(watched(&main, cx, "42"), "the watch kept an earlier stop's value: {:?}", watches(&main, cx));
+    cx.simulate_keystrokes("shift-f5");
+}
