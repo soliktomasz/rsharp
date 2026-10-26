@@ -325,7 +325,7 @@ fn a_project_file_saved_in_the_ide_shows_what_it_says_now(cx: &mut TestAppContex
     let project = run.folder.join("Api/Api.csproj");
     main.update_in(cx, |main, window, cx| main.open_file(&project, Some((5, 0)), window, cx));
     cx.simulate_input("    <PackageReference Include=\"Humanizer\" Version=\"2.14.1\" />\n");
-    cx.simulate_keystrokes("cmd-s");
+    cx.simulate_keystrokes("secondary-s");
     settle(&main, cx);
     open_row(&main, cx, "Api (net10.0)");
     open_row(&main, cx, "Dependencies");

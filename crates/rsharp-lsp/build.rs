@@ -5,7 +5,6 @@
 //! as a warning, and runs the person's own `roslyn-language-server` tool instead.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
@@ -15,7 +14,9 @@ fn main() {
     {
         println!("cargo:rerun-if-changed={}", passenger.join(input).display());
     }
-    println!("cargo:rerun-if-changed={}", passenger.join("../Directory.Packages.props").display());
+    for input in ["Directory.Packages.props", "Directory.Build.props", "Directory.Build.targets", "global.json"] {
+        println!("cargo:rerun-if-changed={}", passenger.join("..").join(input).display());
+    }
     let without = |why: &str| {
         println!(
             "cargo:warning=Passenger's sidecars were not built ({why}); RSharp runs the installed roslyn-language-server tool"
@@ -36,8 +37,7 @@ fn main() {
     // "MSBuild server unavailable ... Falling back to an in-process build" on stderr where a server cannot start, and
     // that line must not be read as the property asked for.
     let run = |args: &[&str], project: &Path| {
-        let output = Command::new(&dotnet)
-            .args(args)
+        let output = rsharp_core::dotnet::command(&dotnet, args, passenger.parent().unwrap())
             .arg(project)
             .args(["-nologo", "-v", "q"])
             .output()

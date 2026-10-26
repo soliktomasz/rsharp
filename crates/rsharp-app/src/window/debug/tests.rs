@@ -19,7 +19,11 @@ fn a_save_during_hot_reload_is_accepted_without_losing_the_waiting_step(cx: &mut
         main.debug.hot_reload = Some(HotReload { applying: true, ..HotReload::default() });
         main.debug.after_apply = Some(AfterApply::Step(Step::Over));
 
-        assert!(main.hot_reload_apply(None, cx), "a save during an update was dropped instead of queued");
+        assert_eq!(
+            main.hot_reload_apply(None, cx),
+            HotReloadApply::Started,
+            "a save during an update was dropped instead of queued"
+        );
         assert!(main.debug.hot_reload.as_ref().unwrap().pending, "the accepted save will never be applied");
         assert!(
             matches!(main.debug.after_apply, Some(AfterApply::Step(Step::Over))),

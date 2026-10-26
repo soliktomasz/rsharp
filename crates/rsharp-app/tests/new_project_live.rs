@@ -364,6 +364,11 @@ fn avalonia_installs_from_a_local_feed_and_creates_a_buildable_app_without_accel
     assert!(text.contains("Avalonia.Desktop"));
     assert!(!std::fs::read_to_string(folder.join("Gallery/Program.cs")).unwrap().contains("DeveloperTools"));
     let solution = main.read_with(cx, |m, _| m.opened_as().unwrap().to_path_buf());
+    // A new solution builds once after opening; the test's own build waits for that one, or MSBuild writes the
+    // same deps file twice.
+    cx.executor().advance_clock(Duration::from_millis(300));
+    cx.run_until_parked();
+    wait(cx, "the new solution's own build", |cx| !main.read_with(cx, |m, _| m.is_building()));
     command(&env, &["build", solution.to_str().unwrap()], &folder);
 }
 
@@ -402,6 +407,11 @@ fn a_solution_template_contributes_every_project_once_and_is_not_offered_when_ad
         std::fs::read_to_string(&solution).unwrap(),
         "<Solution>\n  <Project Path=\"Whole.Core/Whole.Core.csproj\" />\n  <Project Path=\"Whole.Extra/Whole.Extra.csproj\" />\n</Solution>\n"
     );
+    // A new solution builds once after opening; the test's own build waits for that one, or MSBuild writes the
+    // same deps file twice.
+    cx.executor().advance_clock(Duration::from_millis(300));
+    cx.run_until_parked();
+    wait(cx, "the new solution's own build", |cx| !main.read_with(cx, |m, _| m.is_building()));
     command(&env, &["build", solution.to_str().unwrap()], &run.folder);
     main.update_in(cx, |m, w, cx| m.show_new_project(None, w, cx));
     let (handle, _) = dialog(&main, cx);

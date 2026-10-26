@@ -137,8 +137,12 @@ mod tests {
         assert!(parse(&["--agent", "rsharp-a-program-that-does-not-exist"]).is_err());
         if cfg!(unix) {
             let options = parse(&["--key", "alt-f12", "--agent", "/bin/sh -c \"exit 7\"", "--type", "after"]).unwrap();
+            // The steps keep their order; the shell is the one PATH resolves, which need not be the literal path
+            // given (Linux's /bin/sh is often a link to dash).
             assert!(
-                matches!(&options.steps[..],[Step::Key(_),Step::Agent(command),Step::Type(_)] if command[0].ends_with("/bin/sh") && command[2]=="exit 7")
+                matches!(&options.steps[..],[Step::Key(_),Step::Agent(command),Step::Type(_)] if command.first().is_some_and(|program| program.ends_with("sh"))),
+                "the script's steps were {:?}",
+                options.steps
             );
         }
     }

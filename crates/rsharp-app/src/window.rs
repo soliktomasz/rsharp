@@ -362,6 +362,7 @@ impl MainWindow {
             let _ = owner.update(cx, |m, cx| {
                 m.cancel_build();
                 m.stop_run(cx);
+                m.leave_debug(cx);
                 m.cancel_tests();
                 m.leave_git(cx);
                 m.terminal.update(cx, |t, cx| t.close_all(cx));
@@ -403,6 +404,7 @@ impl MainWindow {
                     }
                 }
                 crate::console::ConsoleAction::Stop => m.stop_everything(cx),
+                crate::console::ConsoleAction::Input(_) => {}
             }
             cx.notify();
         })
@@ -411,6 +413,7 @@ impl MainWindow {
             match action {
                 crate::console::ConsoleAction::Rerun => m.rerun(cx),
                 crate::console::ConsoleAction::Stop => m.stop_run(cx),
+                crate::console::ConsoleAction::Input(_) => {}
             }
             cx.notify();
         })
@@ -429,6 +432,15 @@ impl MainWindow {
         let debug_view = cx.new(|cx| crate::debug_view::DebugView::new(debug_console.clone(), cx));
         cx.subscribe_in(&debug_view, window, |m, _, action: &crate::debug_view::DebugAction, window, cx| {
             m.debug_action(action.clone(), window, cx)
+        })
+        .detach();
+        cx.subscribe_in(&debug_console, window, |m, _, action: &crate::console::ConsoleAction, _, cx| {
+            match action {
+                crate::console::ConsoleAction::Input(text) => m.debug_input(text, cx),
+                crate::console::ConsoleAction::Stop => m.stop_debug(cx),
+                crate::console::ConsoleAction::Rerun => {}
+            }
+            cx.notify();
         })
         .detach();
         let debug_output = debug_console.read(cx).editor().clone();

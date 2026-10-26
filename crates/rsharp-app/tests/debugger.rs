@@ -3,7 +3,7 @@
 
 mod support;
 
-use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
+use gpui::{Entity, Focusable, Modifiers, TestAppContext, VisualTestContext};
 use rsharp_app::debug_view::Phase;
 use rsharp_app::window::MainWindow;
 use std::path::{Path, PathBuf};
@@ -373,26 +373,33 @@ fn running_program(run: &Run) -> Option<(rsharp_core::process::Child, PathBuf)> 
     let program = rsharp_core::process::spawn(command).expect("the program starts");
     // The runtime opens its debugger transport a moment after start: Attach to Process finds programs by it.
     let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        let pipe = std::fs::read_dir(std::env::temp_dir()).ok().into_iter().flatten().flatten().find(|entry| {
-            entry.file_name().to_string_lossy().starts_with(&format!("clr-debug-pipe-{}-", program.id()))
-        });
-        if pipe.is_some() {
+    while Instant::now() < deadline {
+        if transport_ready(program.id()) {
             return Some((program, rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"))));
         }
-        assert!(Instant::now() < deadline, "the program opened no debugger transport within twenty seconds");
         std::thread::sleep(Duration::from_millis(50));
     }
+    panic!("the program opened no debugger transport within twenty seconds");
+}
+
+/// Whether the runtime's debugger transport is open for a process: its temporary-folder pipe on macOS and Linux, its
+/// diagnostic port's named pipe on Windows.
+fn transport_ready(id: u32) -> bool {
+    let (folder, name) = if cfg!(windows) {
+        (r"\\.\pipe\".to_string(), format!("dotnet-diagnostic-{id}"))
+    } else {
+        (std::env::temp_dir().to_string_lossy().into_owned(), format!("clr-debug-pipe-{id}-"))
+    };
+    std::fs::read_dir(folder).ok().into_iter().flatten().flatten().any(|entry| {
+        let found = entry.file_name().to_string_lossy().into_owned();
+        if cfg!(windows) { found == name } else { found.starts_with(&name) }
+    })
 }
 
 #[test]
 fn attach_to_a_running_program_stops_at_its_breakpoint_and_detaching_lets_it_run_on() {
     if rsharp_dap::adapter().is_none() {
         eprintln!("skipped: Passenger's debug adapter is not built");
-        return;
-    }
-    if cfg!(windows) {
-        eprintln!("skipped: Attach to Process lists no programs on Windows yet");
         return;
     }
     let run = Run::new("debugger-attach", &[]);
@@ -1427,4 +1434,730 @@ fn choosing_a_frame_without_symbols_opens_its_decompiled_source() {
 
     cx.simulate_keystrokes("shift-f5");
     assert!(pump(cx, |cx| main.read_with(cx, |main, _| !main.is_debugging())), "the session stopped");
+}
+
+/// Whether the system still has a process with this id running.
+#[cfg(unix)]
+fn process_running(id: u32) -> bool {
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(id.to_string())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// Waits for a process to go, as a stopped program does when its debugger ends.
+#[cfg(unix)]
+fn gone(id: u32) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < deadline {
+        if !process_running(id) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    !process_running(id)
+}
+
+#[test]
+fn pause_stops_a_running_program_and_shows_where_it_is_in_its_loop() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-pause", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(
+        &run.folder,
+        "App/Program.cs",
+        "using System;\n\nclass Program\n{\n    static void Main()\n    {\n        long turns = 0;\n        Console.WriteLine(\"looping\");\n        while (true)\n        {\n            turns++;\n        }\n    }\n}\n",
+    );
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, None, window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f5");
+    assert!(
+        pump(cx, |cx| output(&main, cx).contains("looping")),
+        "the program did not reach its loop: {:?}",
+        output(&main, cx)
+    );
+    click(cx, "debug: Pause");
+    let paused = pump(cx, |cx| {
+        main.read_with(cx, |main, _| main.debug_phase() == Phase::Paused && !main.debug_frames().is_empty())
+    });
+    let at = main.read_with(cx, |main, _| main.debug_frames().first().map(|frame| frame.line));
+    assert!(paused, "Pause did not stop the program");
+    assert!(at.is_some_and(|line| (8..=11).contains(&line)), "the pause is at {at:?}, not in the loop");
+    let marked = main
+        .read_with(cx, |_, cx| rsharp_app::buffer::find(&source, cx).and_then(|buffer| buffer.read(cx).execution_line));
+    assert!(marked.is_some_and(|line| (8..=11).contains(&line)), "the editor marks the pause in the loop: {marked:?}");
+    cx.simulate_keystrokes("shift-f5");
+}
+
+#[test]
+fn the_breakpoints_dialog_lists_every_breakpoint_and_turns_one_off() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-breakpoints-list", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(&run.folder, "App/Program.cs", PROGRAM);
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((6, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((8, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+
+    open_breakpoints(cx);
+    assert!(cx.debug_bounds("breakpoint row: Program.cs:7").is_some(), "the dialog lists the first line breakpoint");
+    assert!(cx.debug_bounds("breakpoint row: Program.cs:9").is_some(), "the dialog lists the second line breakpoint");
+    assert!(cx.debug_bounds("breakpoint row: Any exception").is_some(), "the dialog lists Any exception");
+
+    click(cx, "breakpoint row: Program.cs:7");
+    click(cx, "check: Enabled");
+    let first = main.read_with(cx, |main, _| main.breakpoints().of(&source)[0].enabled);
+    assert!(!first, "the box turned the first line breakpoint off");
+    let marks = main.read_with(cx, |_, cx| {
+        rsharp_app::buffer::find(&source, cx).map(|buffer| buffer.read(cx).breakpoints.clone()).unwrap_or_default()
+    });
+    assert!(marks.iter().any(|mark| mark.line == 6 && !mark.enabled), "the gutter shows it turned off: {marks:?}");
+    click(cx, "button: Done");
+    assert!(main.read_with(cx, |main, _| main.breakpoints_dialog().is_none()), "Done closed the dialog");
+}
+
+#[test]
+fn the_breakpoints_dialog_adds_and_removes_exception_breakpoints_and_the_folder_keeps_them() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-breakpoints-kept", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(&run.folder, "App/Program.cs", PROGRAM);
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, None, window, cx));
+    cx.run_until_parked();
+    open_breakpoints(cx);
+    click(cx, "button: Add Exception Breakpoint");
+    click(cx, "breakpoint field: Exception types");
+    cx.simulate_keystrokes("secondary-a");
+    cx.simulate_input("System.InvalidOperationException");
+    cx.run_until_parked();
+    click(cx, "button: Done");
+    assert_eq!(
+        main.read_with(cx, |main, _| main.breakpoints().exceptions().first().map(|e| e.types.clone())),
+        Some(vec!["System.InvalidOperationException".to_string()]),
+        "the type typed in the dialog is the exception breakpoint's"
+    );
+    cx.update(|_, cx| rsharp_app::state::store(cx).flush());
+    let kept = {
+        let store = rsharp_core::state::StateStore::open(run.state.clone());
+        store.read_for::<rsharp_core::debug::Breakpoints>(&run.folder).resolved(&run.folder)
+    };
+    assert_eq!(
+        kept.exceptions().first().map(|e| e.types.clone()),
+        Some(vec!["System.InvalidOperationException".to_string()]),
+        "the folder keeps the exception breakpoint"
+    );
+
+    // Remove takes the chosen one away; Any exception stays, as Rider's cannot be removed.
+    open_breakpoints(cx);
+    click(cx, "breakpoint row: System.InvalidOperationException");
+    click(cx, "button: Remove");
+    assert!(
+        main.read_with(cx, |main, _| main.breakpoints().exceptions().is_empty()),
+        "Remove took the exception breakpoint away"
+    );
+    click(cx, "breakpoint row: Any exception");
+    click(cx, "button: Remove");
+    assert!(main.read_with(cx, |main, _| main.breakpoints().exceptions().is_empty()), "Any exception is never removed");
+    click(cx, "button: Done");
+}
+
+#[test]
+fn mute_breakpoints_lets_a_run_pass_a_line_breakpoint_and_an_exception_breakpoint_and_unmuting_stops_it_again() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-mute", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(
+        &run.folder,
+        "App/Program.cs",
+        "using System;\n\nclass Program\n{\n    static void Main()\n    {\n        for (int turn = 1; turn <= 2; turn++)\n        {\n            Console.WriteLine($\"turn {turn}\");\n            try\n            {\n                throw new InvalidOperationException($\"turn {turn}\");\n            }\n            catch (InvalidOperationException)\n            {\n            }\n            Console.WriteLine($\"passed {turn}\");\n            Console.ReadLine();\n        }\n    }\n}\n",
+    );
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    // The breakpoint on `Console.WriteLine($"turn {turn}");`, line 8 from 0.
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((8, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    open_breakpoints(cx);
+    click(cx, "button: Add Exception Breakpoint");
+    click(cx, "breakpoint field: Exception types");
+    cx.simulate_keystrokes("secondary-a");
+    cx.simulate_input("System.InvalidOperationException");
+    cx.run_until_parked();
+    click(cx, "button: Done");
+
+    // Mute Breakpoints: both stay, greyed, and the program runs past them both to its first read.
+    main.update_in(cx, |main, _, cx| main.set_breakpoints_muted(true, cx));
+    cx.run_until_parked();
+    assert!(main.read_with(cx, |main, _| main.breakpoints_muted()), "Mute Breakpoints is on");
+    cx.simulate_keystrokes("f5");
+    let passed = pump(cx, |cx| output(&main, cx).contains("passed 1"));
+    assert!(passed, "the muted program ran past both breakpoints: {:?}", output(&main, cx));
+    assert!(
+        main.read_with(cx, |main, _| main.debug_phase() == Phase::Running),
+        "a muted breakpoint stopped the program: {:?}",
+        main.read_with(cx, |main, _| main.said().map(str::to_string))
+    );
+
+    // Unmuted while it waits for its line: the next turn stops at the line, then at the exception.
+    main.update_in(cx, |main, _, cx| main.set_breakpoints_muted(false, cx));
+    // The adapter is told again in the background: the line breakpoint bound says the exception rule is in too.
+    assert!(
+        pump(cx, |cx| main.read_with(cx, |main, _| main.breakpoint_verified(&source, 8) == Some(true))),
+        "the line breakpoint bound again once unmuted"
+    );
+    main.update_in(cx, |main, _, cx| main.debug_input("\n", cx));
+    let stopped = pump(cx, |cx| {
+        main.read_with(cx, |main, cx| {
+            main.debug_phase() == Phase::Paused
+                && main.debug_view().read(cx).variable_value("turn").as_deref() == Some("2")
+        })
+    });
+    assert!(stopped, "the unmuted line breakpoint did not stop the second turn: {:?}", output(&main, cx));
+    assert_eq!(
+        main.read_with(cx, |main, _| main.debug_frames().first().map(|frame| frame.line)),
+        Some(8),
+        "the stop is on the line breakpoint's statement"
+    );
+    cx.simulate_keystrokes("f5");
+    let exception = pump(cx, |cx| {
+        main.read_with(cx, |main, _| {
+            main.debug_phase() == Phase::Paused && main.debug_frames().first().is_some_and(|frame| frame.line == 11)
+        })
+    });
+    assert!(exception, "the unmuted exception breakpoint did not stop the next throw: {:?}", output(&main, cx));
+    cx.simulate_keystrokes("shift-f5");
+}
+
+#[test]
+fn an_exception_stop_lists_the_exception_as_exception_and_a_watch_reads_its_message() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-exception-watch", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(
+        &run.folder,
+        "App/Program.cs",
+        "using System;\n\nclass Program\n{\n    static void Main()\n    {\n        int index = 5;\n        throw new InvalidOperationException($\"bad index {index}\");\n    }\n}\n",
+    );
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, None, window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f5");
+    let stopped = pump(cx, |cx| {
+        main.read_with(cx, |main, cx| {
+            main.debug_phase() == Phase::Paused
+                && main.debug_view().read(cx).variable_names().iter().any(|name| name == "$exception")
+        })
+    });
+    let (phase, names, said) = main.read_with(cx, |main, cx| {
+        (main.debug_phase(), main.debug_view().read(cx).variable_names(), main.said().map(str::to_string))
+    });
+    assert!(
+        stopped,
+        "the exception stop does not list $exception: phase {phase:?}, values {names:?}, said {said:?}; console {:?}",
+        output(&main, cx)
+    );
+    let value = main.read_with(cx, |main, cx| main.debug_view().read(cx).variable_value("$exception"));
+    assert!(
+        value.as_deref().is_some_and(|value| value.contains("InvalidOperationException")),
+        "the exception's own value names its type: {value:?}"
+    );
+
+    click(cx, "debug field: Watch");
+    cx.simulate_input("$exception.Message");
+    let watched = pump(cx, |cx| {
+        main.read_with(cx, |main, cx| {
+            main.debug_view().read(cx).watches().iter().any(|(_, answer)| answer.contains("bad index 5"))
+        })
+    });
+    let watches = main.read_with(cx, |main, cx| main.debug_view().read(cx).watches().to_vec());
+    assert!(watched, "a watch of $exception.Message did not answer: {watches:?}");
+    cx.simulate_keystrokes("shift-f5");
+}
+
+#[test]
+fn what_is_typed_into_the_debug_console_is_the_programs_input() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-console-input", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(
+        &run.folder,
+        "App/Program.cs",
+        "using System;\n\nclass Program\n{\n    static void Main()\n    {\n        Console.Write(\"Name? \");\n        string? name = Console.ReadLine();\n        Console.WriteLine($\"read: {name}\");\n    }\n}\n",
+    );
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, None, window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f5");
+    assert!(pump(cx, |cx| output(&main, cx).contains("Name? ")), "the program did not ask for its line");
+    main.update_in(cx, |main, window, cx| {
+        let editor = main.debug_console().read(cx).editor().clone();
+        window.focus(&editor.focus_handle(cx));
+    });
+    cx.run_until_parked();
+    cx.simulate_input("Ada");
+    cx.update(|_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(" Lovelace".into())));
+    cx.dispatch_action(rsharp_app::editor::Paste);
+    cx.simulate_keystrokes("enter");
+    let read = pump(cx, |cx| output(&main, cx).contains("read: Ada Lovelace"));
+    assert!(read, "what was typed and pasted did not reach the program: {:?}", output(&main, cx));
+    assert!(pump(cx, |cx| main.read_with(cx, |main, _| !main.is_debugging())), "the program read the line and ended");
+}
+
+#[test]
+fn debugging_a_program_that_prints_100000_coloured_lines_leaves_the_console_free_of_colour_codes() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-coloured-output", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(
+        &run.folder,
+        "App/Program.cs",
+        "using System;\n\nclass Program\n{\n    static void Main()\n    {\n        for (int i = 0; i < 100_000; i++)\n        {\n            Console.WriteLine($\"\\u001b[3{i % 7 + 1}mline {i}\\u001b[0m\");\n        }\n        Console.WriteLine(\"printed\");\n    }\n}\n",
+    );
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, None, window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f5");
+    let printed = pump(cx, |cx| output(&main, cx).contains("printed"));
+    let text = output(&main, cx);
+    assert!(printed, "the program did not print its last line; the console has {} characters", text.len());
+    assert!(!text.contains('\u{1b}'), "the console kept the program's colour codes");
+    assert!(!text.contains("[0m"), "the console kept the program's colour codes");
+    assert!(text.contains("line 99999"), "the console kept the program's last numbered line");
+    assert!(
+        text.len() <= rsharp_app::console::OUTPUT_LIMIT,
+        "the console kept {} characters, past its limit",
+        text.len()
+    );
+}
+
+#[test]
+fn attach_to_process_lists_dotnet_programs_alone() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-attach-list", &[]);
+    let Some((mut program, _source)) = running_program(&run) else { return };
+    let id = program.id();
+    // A program with no .NET in it, running beside the one a debugger can attach to.
+    let mut other = std::process::Command::new("sleep")
+        .arg("30")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("sleep starts");
+    let other_id = other.id();
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+
+    cx.simulate_keystrokes("secondary-shift-a");
+    cx.simulate_input("attach to process");
+    cx.simulate_keystrokes("enter");
+    assert!(pump(cx, |cx| cx.debug_bounds("attach dialog").is_some()), "Find Action did not open Attach to Process");
+    click(cx, "attach field: Search processes");
+    cx.simulate_input(&id.to_string());
+    assert!(pump(cx, |cx| cx.debug_bounds("attach row: AttachApp").is_some()), "the .NET program is not listed");
+    let shown =
+        main.read_with(cx, |main, cx| main.attach_dialog().map(|dialog| dialog.read(cx).shown(cx)).unwrap_or_default());
+    assert!(shown.iter().any(|process| process.id == id && process.program() == "AttachApp"), "the program is listed");
+    assert!(!shown.iter().any(|process| process.id == other_id), "a program with no .NET was listed");
+    assert!(!shown.iter().any(|process| process.id == std::process::id()), "RSharp itself was listed");
+
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(main.read_with(cx, |main, _| main.attach_dialog().is_none()), "Escape closed the dialog");
+    program.kill();
+    let _ = other.kill();
+}
+
+#[cfg(unix)]
+#[test]
+fn closing_the_window_while_debugging_leaves_no_program_or_debugger_running() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-window-close", &[]);
+    let started = run.folder.join("program.pid");
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(
+        &run.folder,
+        "App/Program.cs",
+        &format!(
+            "using System;\nusing System.IO;\nusing System.Threading;\n\nclass Program\n{{\n    static void Main()\n    {{\n        File.WriteAllText(@\"{}\", Environment.ProcessId.ToString());\n        Thread.Sleep(Timeout.Infinite);\n    }}\n}}\n",
+            started.display()
+        ),
+    );
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, None, window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f5");
+    assert!(
+        pump(cx, |_| std::fs::read_to_string(&started).is_ok()),
+        "the program did not start: {:?}",
+        output(&main, cx)
+    );
+    let program: u32 = std::fs::read_to_string(&started).unwrap().trim().parse().expect("the program wrote its id");
+    let adapter = main.read_with(cx, |main, _| main.debug_adapter_process());
+    assert!(process_running(program), "the program was not running under the debugger");
+
+    assert!(cx.simulate_close(), "the window closes as a person closes it");
+    assert!(gone(program), "after the window closed, the program being debugged went on running");
+    if let Some(adapter) = adapter {
+        assert!(gone(adapter), "after the window closed, the debugger went on running");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_debugger_killed_while_its_program_is_paused_takes_the_program_with_it() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-killed", &[]);
+    let started = run.folder.join("program.pid");
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(
+        &run.folder,
+        "App/Program.cs",
+        &format!(
+            "using System;\nusing System.IO;\nusing System.Threading;\n\nclass Program\n{{\n    static void Main()\n    {{\n        File.WriteAllText(@\"{}\", Environment.ProcessId.ToString());\n        Console.WriteLine(\"stopped here\");\n        Thread.Sleep(Timeout.Infinite);\n    }}\n}}\n",
+            started.display()
+        ),
+    );
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    // The breakpoint on the WriteLine after the file is written, so the program's id is there when it stops.
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((9, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    cx.simulate_keystrokes("f5");
+    assert!(
+        pump(cx, |cx| main.read_with(cx, |main, _| main.debug_phase() == Phase::Paused)),
+        "the program did not stop at its breakpoint: {:?}",
+        output(&main, cx)
+    );
+    let program: u32 = std::fs::read_to_string(&started).unwrap().trim().parse().expect("the program wrote its id");
+    let adapter = main.read_with(cx, |main, _| main.debug_adapter_process()).expect("the debugger's process");
+    assert!(process_running(program), "the program was not running while paused");
+
+    // The debugger alone, as a crash ends it: what it started is left to whatever ends it next.
+    let _ = std::process::Command::new("kill").arg("-9").arg(adapter.to_string()).status();
+    assert!(
+        pump(cx, |cx| main.read_with(cx, |main, _| !main.is_debugging())),
+        "the session did not end with its debugger"
+    );
+    assert!(gone(program), "the debugger died and the program it launched was left running");
+}
+
+#[test]
+fn an_exception_stop_names_the_exception_at_the_line_that_threw_it() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-exception-line", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(
+        &run.folder,
+        "App/Program.cs",
+        "using System;\n\nclass Program\n{\n    static void Main()\n    {\n        int[] values = { 1, 2 };\n        int index = 5;\n        Console.WriteLine(values[index]);\n    }\n}\n",
+    );
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, None, window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f5");
+    let stopped = pump(cx, |cx| main.read_with(cx, |main, _| main.debug_phase() == Phase::Paused));
+    assert!(stopped, "the unhandled exception stopped the program: {:?}", output(&main, cx));
+    let (exception, inline) = main.read_with(cx, |_, cx| {
+        rsharp_app::buffer::find(&source, cx)
+            .map(|buffer| (buffer.read(cx).exception.clone(), buffer.read(cx).inline_values.clone()))
+            .unwrap_or_default()
+    });
+    let (line, said) = exception.clone().unwrap_or_default();
+    assert_eq!(line, 8, "the exception is named at the line that threw it: {exception:?}");
+    assert!(said.contains("IndexOutOfRangeException"), "the exception's annotation names its type: {said:?}");
+    assert!(
+        inline.as_ref().is_some_and(|(at, values)| *at == 8 && values.contains("index = 5")),
+        "the frame's values are set in on the throwing line: {inline:?}"
+    );
+    let status = main.read_with(cx, |main, _| main.said().map(str::to_string)).unwrap_or_default();
+    assert!(status.contains("IndexOutOfRangeException"), "the status bar names the exception: {status:?}");
+    cx.simulate_keystrokes("shift-f5");
+}
+
+/// Right-clicks what a debug selector names, opening its menu.
+fn right_click(cx: &mut VisualTestContext, selector: &'static str) {
+    cx.run_until_parked();
+    let at = cx.debug_bounds(selector).unwrap_or_else(|| panic!("nothing on screen is {selector}")).center();
+    cx.simulate_mouse_down(at, gpui::MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(at, gpui::MouseButton::Right, Modifiers::default());
+    cx.run_until_parked();
+}
+
+#[test]
+fn the_variables_and_frames_menus_copy_values_add_watches_and_copy_the_stack() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-menus", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(&run.folder, "App/Program.cs", PROGRAM);
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    // The breakpoint on "int b = a + 1;", where a is 41.
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((7, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    cx.simulate_keystrokes("f5");
+    assert!(
+        pump(cx, |cx| main.read_with(cx, |main, cx| {
+            main.debug_phase() == Phase::Paused
+                && main.debug_view().read(cx).variable_value("a").as_deref() == Some("41")
+        })),
+        "the program stopped where a is 41: {:?}",
+        output(&main, cx)
+    );
+
+    right_click(cx, "debug variable a");
+    assert!(main.read_with(cx, |main, cx| main.debug_view().read(cx).menu_open()), "a variable's menu opens");
+    click(cx, "debug menu: Copy Value");
+    let copied = cx.update(|_, cx| cx.read_from_clipboard()).and_then(|item| item.text()).unwrap_or_default();
+    assert_eq!(copied, "41", "the variable's menu copied its value");
+
+    right_click(cx, "debug variable a");
+    assert!(main.read_with(cx, |main, cx| main.debug_view().read(cx).menu_open()), "the variable's menu opens again");
+    assert!(
+        cx.debug_bounds("debug menu: Set Data Breakpoint").is_none(),
+        "a top-level local has no parent object for a data breakpoint"
+    );
+    click(cx, "debug menu: Add to Watches");
+    let watched = pump(cx, |cx| {
+        main.read_with(cx, |main, cx| {
+            main.debug_view()
+                .read(cx)
+                .watches()
+                .iter()
+                .any(|(expression, answer)| expression == "a" && answer.starts_with("41"))
+        })
+    });
+    let watches = main.read_with(cx, |main, cx| main.debug_view().read(cx).watches().to_vec());
+    assert!(watched, "the variable's menu watched it: {watches:?}");
+
+    right_click(cx, "debug frame 0");
+    click(cx, "debug menu: Copy Stack");
+    let stack = cx.update(|_, cx| cx.read_from_clipboard()).and_then(|item| item.text()).unwrap_or_default();
+    assert!(stack.contains("Program.Main"), "the frames' menu copied the stack: {stack:?}");
+    assert!(stack.contains("Program.cs:8"), "the stack names where each frame is: {stack:?}");
+    cx.simulate_keystrokes("shift-f5");
+}
+
+/// The program with a loop, whose second breakpoint is after the first's statement.
+const LOOP_PROGRAM: &str = "using System;\n\nclass Program\n{\n    static void Main()\n    {\n        var total = 0;\n        for (int i = 1; i <= 3; i++)\n        {\n            total += i;\n        }\n        Console.WriteLine($\"total {total}\");\n    }\n}\n";
+
+#[test]
+fn a_hit_count_the_debugger_cannot_read_is_refused_and_the_loop_goes_on_to_the_next_breakpoint() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-hit-count", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(&run.folder, "App/Program.cs", LOOP_PROGRAM);
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((9, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((11, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+
+    open_breakpoints(cx);
+    click(cx, "breakpoint row: Program.cs:10");
+    click(cx, "breakpoint field: Hit count");
+    cx.simulate_input("3 times");
+    cx.run_until_parked();
+    click(cx, "button: Done");
+    assert_eq!(
+        main.read_with(cx, |main, _| main.breakpoints().of(&source)[0].hit_count.clone()),
+        "3 times",
+        "the hit count typed in the dialog is kept with the breakpoint"
+    );
+
+    cx.simulate_keystrokes("f5");
+    let stopped = pump(cx, |cx| {
+        main.read_with(cx, |main, _| {
+            main.debug_phase() == Phase::Paused && main.debug_frames().first().is_some_and(|frame| frame.line == 11)
+        })
+    });
+    assert!(stopped, "the loop ran past the unreadable hit count to the next breakpoint: {:?}", output(&main, cx));
+    assert_eq!(
+        main.read_with(cx, |main, _| main.breakpoint_verified(&source, 9)),
+        Some(false),
+        "the breakpoint with the unreadable hit count is refused"
+    );
+    let said = main.read_with(cx, |main, _| main.breakpoint_message(&source, 9)).unwrap_or_default();
+    assert!(
+        said.starts_with("The hit count \"3 times\" is not one the debugger can read"),
+        "the debugger's words say what it could not read: {said:?}"
+    );
+    cx.simulate_keystrokes("shift-f5");
+}
+
+/// ICorDebug offers data breakpoints on Windows x64 alone, so this is the one place they can be proven.
+#[cfg(all(windows, target_arch = "x86_64"))]
+#[test]
+fn a_data_breakpoint_stops_the_program_when_the_value_it_watches_is_written() {
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return;
+    }
+    let run = Run::new("debugger-data-breakpoint", &[]);
+    write(&run.folder, "App/App.csproj", EXE_PROJECT);
+    write(
+        &run.folder,
+        "App/Program.cs",
+        "using System;\n\nclass Counter { public int Count; }\n\nclass Program\n{\n    static void Main()\n    {\n        var counter = new Counter();\n        int total = 0;\n        for (int i = 1; i <= 3; i++)\n        {\n            total += i;\n            counter.Count = total;\n        }\n        Console.WriteLine(counter.Count);\n    }\n}\n",
+    );
+    if !offline(&run) {
+        return;
+    }
+    let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    // Paused on `total += i;`, before the value watched is written on the line after.
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((12, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    cx.simulate_keystrokes("f5");
+    assert!(
+        pump(cx, |cx| main.read_with(cx, |main, cx| {
+            main.debug_phase() == Phase::Paused && main.debug_view().read(cx).variable_value("counter").is_some()
+        })),
+        "the program stopped where counter is: {:?}",
+        output(&main, cx)
+    );
+
+    // counter's own row opens to its fields; Count's row sets the data breakpoint.
+    click(cx, "debug variable counter");
+    assert!(pump(cx, |cx| cx.debug_bounds("debug variable Count").is_some()), "counter's members are listed");
+    right_click(cx, "debug variable Count");
+    click(cx, "debug menu: Set Data Breakpoint");
+    let watching = pump(cx, |cx| {
+        main.read_with(cx, |main, cx| {
+            main.debug_view().read(cx).data_breakpoints().iter().any(|location| location.contains("Count"))
+        })
+    });
+    let listed = main.read_with(cx, |main, cx| main.debug_view().read(cx).data_breakpoints());
+    assert!(
+        watching,
+        "the debugger watches counter.Count: {listed:?}; it said {:?}",
+        main.read_with(cx, |main, _| main.said().map(str::to_string))
+    );
+
+    cx.simulate_keystrokes("f5");
+    let stopped = pump(cx, |cx| {
+        main.read_with(cx, |main, _| {
+            main.debug_phase() == Phase::Paused
+                && main.debug_frames().first().is_some_and(|frame| frame.line == 13)
+                && main.said().is_some_and(|said| said.contains("data breakpoint"))
+        })
+    });
+    let frame = main.read_with(cx, |main, _| main.debug_frames().first().map(|frame| frame.line));
+    assert!(
+        stopped,
+        "the write to counter.Count stopped the program: frame {frame:?}, said {:?}",
+        main.read_with(cx, |main, _| main.said().map(str::to_string))
+    );
+    cx.simulate_keystrokes("shift-f5");
 }

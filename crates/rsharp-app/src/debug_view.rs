@@ -40,6 +40,19 @@ pub enum DebugAction {
     },
     /// A thread of the paused program chosen: its frames and values are shown.
     SelectThread(i64),
+    /// Copy a value to the clipboard, as the Variables menu does.
+    CopyValue(String),
+    /// Watch an expression, as the Variables menu does.
+    AddWatch(String),
+    /// Copy the stopped thread's stack, as the Frames menu does.
+    CopyStack,
+    /// Watch a value for a write that changes it, as Rider's Set Data Breakpoint does.
+    SetDataBreakpoint {
+        reference: i64,
+        name: String,
+    },
+    /// Remove the data breakpoint with this id.
+    RemoveDataBreakpoint(String),
 }
 
 impl EventEmitter<DebugAction> for DebugView {}
@@ -111,8 +124,19 @@ pub struct DebugView {
     console: Entity<ConsoleView>,
     /// Whether every breakpoint is muted, as the folder has it.
     muted: bool,
+    /// The data breakpoints of the session: each one's id and the member it watches.
+    data_breakpoints: Vec<(String, String)>,
+    /// The Variables or Frames menu open, and what it acts on.
+    menu: Option<Menu>,
     focus: FocusHandle,
     _watch_subscription: Subscription,
+}
+
+/// A menu a row of the Debug window opens: a value's, or the frames'.
+#[derive(Clone)]
+enum Menu {
+    Variable { name: String, value: String, evaluate: Option<String>, parent: Option<i64> },
+    Frames,
 }
 
 impl Focusable for DebugView {
@@ -149,6 +173,8 @@ impl DebugView {
             set_expression: None,
             console,
             muted: false,
+            data_breakpoints: Vec::new(),
+            menu: None,
             focus: cx.focus_handle(),
             _watch_subscription: subscription,
         }
@@ -277,6 +303,35 @@ impl DebugView {
     /// The values a step over returned, as the Return values group shows them.
     pub fn return_values(&self) -> &[VariableRow] {
         &self.return_values
+    }
+
+    /// The watches and what they answered, for a test.
+    pub fn watches(&self) -> &[(String, String)] {
+        &self.watches
+    }
+
+    /// A row's Add to Watches: the watch stands at once, its answer when the debugger gives it.
+    pub fn add_watch(&mut self, expression: &str, cx: &mut Context<Self>) {
+        if !expression.trim().is_empty() && !self.watches.iter().any(|(asked, _)| asked == expression) {
+            self.watches.push((expression.to_string(), String::new()));
+        }
+        cx.notify();
+    }
+
+    /// Whether a row's menu is open, for a test.
+    pub fn menu_open(&self) -> bool {
+        self.menu.is_some()
+    }
+
+    /// The session's data breakpoints, as the window's own list shows them.
+    pub fn set_data_breakpoints(&mut self, breakpoints: Vec<(String, String)>, cx: &mut Context<Self>) {
+        self.data_breakpoints = breakpoints;
+        cx.notify();
+    }
+
+    /// The data breakpoints' members, for a test.
+    pub fn data_breakpoints(&self) -> Vec<String> {
+        self.data_breakpoints.iter().map(|(_, location)| location.clone()).collect()
     }
 
     /// The names in the Variables tree, for a test.
@@ -410,6 +465,60 @@ impl DebugView {
             }))
     }
 
+    /// A row's menu, in the column it was opened from, so every item is laid out where it is drawn.
+    fn menu_panel(&self, menu: Menu, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let mut panel = div()
+            .id("debug menu")
+            .debug_selector(|| "debug menu".into())
+            .mx(px(4.))
+            .mb(px(4.))
+            .flex()
+            .flex_col()
+            .py(px(4.))
+            .rounded(px(4.))
+            .bg(theme::popup())
+            .border_1()
+            .border_color(theme::popup_border());
+        match menu {
+            Menu::Variable { name, value, evaluate, parent } => {
+                // A local the debugger names nothing to evaluate is watched by the name its row shows.
+                let expression = evaluate.filter(|expression| !expression.is_empty()).unwrap_or_else(|| name.clone());
+                panel = panel
+                    .child(self.menu_item("Copy Value", DebugAction::CopyValue(value), cx))
+                    .child(self.menu_item("Copy Name", DebugAction::CopyValue(name.clone()), cx))
+                    .child(self.menu_item("Add to Watches", DebugAction::AddWatch(expression), cx));
+                if let Some(reference) = parent {
+                    panel = panel.child(self.menu_item(
+                        "Set Data Breakpoint",
+                        DebugAction::SetDataBreakpoint { reference, name },
+                        cx,
+                    ));
+                }
+            }
+            Menu::Frames => {
+                panel = panel.child(self.menu_item("Copy Stack", DebugAction::CopyStack, cx));
+            }
+        }
+        panel.into_any_element()
+    }
+
+    fn menu_item(&self, label: &'static str, action: DebugAction, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        div()
+            .id(gpui::ElementId::Name(format!("debug menu item {label}").into()))
+            .debug_selector(move || format!("debug menu: {label}"))
+            .h(px(26.))
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .hover(|d| d.bg(theme::row_hover()))
+            .child(label)
+            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                view.menu = None;
+                cx.emit(action.clone());
+                cx.notify();
+            }))
+    }
+
     fn rows(&self) -> Vec<(Vec<usize>, usize, VariableRow, bool)> {
         fn walk(
             nodes: &[Node],
@@ -456,6 +565,7 @@ impl Render for DebugView {
             .debug_selector(|| "debug window".into())
             .key_context("DebugWindow")
             .on_action(cx.listener(|view, _: &ApplySetValue, _, cx| view.apply_set_value(cx)))
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -527,6 +637,10 @@ impl Render for DebugView {
                                 div().flex().flex_col().child(label("Threads")).children(rows)
                             }))
                             .child(label("Frames"))
+                            .children(match &self.menu {
+                                Some(menu @ Menu::Frames) => Some(self.menu_panel(menu.clone(), cx)),
+                                _ => None,
+                            })
                             .child(
                                 div()
                                     .id("debug frames")
@@ -534,6 +648,13 @@ impl Render for DebugView {
                                     .min_h_0()
                                     .overflow_y_scroll()
                                     .px(px(4.))
+                                    .on_mouse_down(
+                                        gpui::MouseButton::Right,
+                                        cx.listener(|view, _: &gpui::MouseDownEvent, _, cx| {
+                                            view.menu = Some(Menu::Frames);
+                                            cx.notify();
+                                        }),
+                                    )
                                     .children(frames.is_empty().then(|| {
                                         div()
                                             .px(px(6.))
@@ -615,6 +736,10 @@ impl Render for DebugView {
                                 div().flex().flex_col().child(label("Return values")).children(rows)
                             }))
                             .child(label("Variables"))
+                            .children(match &self.menu {
+                                Some(menu @ Menu::Variable { .. }) => Some(self.menu_panel(menu.clone(), cx)),
+                                _ => None,
+                            })
                             .child(
                                 div()
                                     .id("debug variables")
@@ -672,6 +797,29 @@ impl Render for DebugView {
                                             .when(self.selected_variable.as_ref() == Some(&path), |d| {
                                                 d.bg(theme::selection())
                                             })
+                                            .on_mouse_down(
+                                                gpui::MouseButton::Right,
+                                                cx.listener({
+                                                    let name = row.name.clone();
+                                                    let value = row.value.clone();
+                                                    let evaluate = row.evaluate_name.clone();
+                                                    let path = path.clone();
+                                                    move |view, _: &gpui::MouseDownEvent, _, cx| {
+                                                        let parent = path
+                                                            .split_last()
+                                                            .and_then(|(_, parent)| find(&mut view.variables, parent))
+                                                            .map(|node| node.row.reference)
+                                                            .filter(|reference| *reference > 0);
+                                                        view.menu = Some(Menu::Variable {
+                                                            name: name.clone(),
+                                                            value: value.clone(),
+                                                            evaluate: evaluate.clone(),
+                                                            parent,
+                                                        });
+                                                        cx.notify();
+                                                    }
+                                                }),
+                                            )
                                             .on_click(cx.listener({
                                                 let path = path.clone();
                                                 let row = row.clone();
@@ -747,9 +895,39 @@ impl Render for DebugView {
                                             ),
                                     )
                             }))
+                            .children((!self.data_breakpoints.is_empty()).then(|| {
+                                let rows: Vec<gpui::AnyElement> = self
+                                    .data_breakpoints
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(index, (data_id, location))| {
+                                        let id = data_id.clone();
+                                        div()
+                                            .id(("debug data breakpoint", index))
+                                            .debug_selector(move || format!("debug data breakpoint {index}"))
+                                            .h(px(24.))
+                                            .px(px(6.))
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(4.))
+                                            .hover(|d| d.bg(theme::row_hover()))
+                                            .child(div().flex_1().min_w_0().truncate().child(location.clone()))
+                                            .child(div().flex_none().text_color(theme::text_secondary()).child("×"))
+                                            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                                                view.menu = None;
+                                                cx.emit(DebugAction::RemoveDataBreakpoint(id.clone()));
+                                                cx.notify();
+                                            }))
+                                            .into_any_element()
+                                    })
+                                    .collect();
+                                div().flex().flex_col().child(label("Data breakpoints")).children(rows)
+                            }))
                             .child(label("Watches"))
                             .child(
                                 div()
+                                    .id("watch box")
+                                    .debug_selector(|| "debug field: Watch".into())
                                     .h(px(28.))
                                     .mx(px(6.))
                                     .px(px(6.))
@@ -757,11 +935,28 @@ impl Render for DebugView {
                                     .bg(theme::search_field())
                                     .flex()
                                     .items_center()
+                                    .track_focus(&self.watch.focus_handle(cx))
+                                    .on_mouse_down(gpui::MouseButton::Left, {
+                                        let focus = self.watch.focus_handle(cx);
+                                        move |_, window, _| {
+                                            window.focus(&focus);
+                                            window.prevent_default();
+                                        }
+                                    })
+                                    .on_click({
+                                        let focus = self.watch.focus_handle(cx);
+                                        move |_, window, _| {
+                                            window.focus(&focus);
+                                            window.prevent_default();
+                                        }
+                                    })
                                     .child(self.watch.clone()),
                             )
                             .child(div().id("debug watches").max_h(px(110.)).overflow_y_scroll().px(px(4.)).children(
-                                self.watches.iter().map(|(expression, result)| {
+                                self.watches.iter().enumerate().map(|(index, (expression, result))| {
                                     div()
+                                        .id(("debug watch", index))
+                                        .debug_selector(move || format!("debug watch {index}"))
                                         .h(px(24.))
                                         .px(px(6.))
                                         .flex()
@@ -797,7 +992,13 @@ impl Render for DebugView {
                             .text_color(theme::text_secondary())
                             .child("Console"),
                     )
-                    .child(div().flex_1().min_h_0().child(self.console.read(cx).editor().clone())),
+                    .child(
+                        div()
+                            .debug_selector(|| "debug console".into())
+                            .flex_1()
+                            .min_h_0()
+                            .child(self.console.read(cx).editor().clone()),
+                    ),
             )
     }
 }

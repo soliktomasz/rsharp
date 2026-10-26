@@ -135,8 +135,67 @@ pub fn arguments(target: &Path, kind: Kind, windows_targeting: bool) -> Vec<OsSt
     arguments
 }
 
+/// A program's output as a person reads it, without the colour and cursor codes it wrote for a terminal. The codes
+/// may be split across the chunks a program's writes arrive in, so the reader keeps its state between chunks.
+#[derive(Default)]
+pub struct Ansi {
+    state: u8,
+}
+
+impl Ansi {
+    /// The text with the codes taken out, and the state a code left open kept for the next chunk.
+    pub fn feed(&mut self, text: &str) -> String {
+        let mut plain = String::with_capacity(text.len());
+        for c in text.chars() {
+            match self.state {
+                0 => {
+                    if c == '\u{1b}' {
+                        self.state = 1;
+                    } else {
+                        plain.push(c);
+                    }
+                }
+                1 => match c {
+                    '[' => self.state = 2,
+                    ']' => self.state = 3,
+                    _ => self.state = 0,
+                },
+                2 => {
+                    if ('@'..='~').contains(&c) {
+                        self.state = 0;
+                    }
+                }
+                3 => match c {
+                    '\u{7}' => self.state = 0,
+                    '\u{1b}' => self.state = 4,
+                    _ => {}
+                },
+                4 => match c {
+                    '\\' => self.state = 0,
+                    _ => self.state = 3,
+                },
+                _ => self.state = 0,
+            }
+        }
+        plain
+    }
+}
+
+/// The codes taken out of a whole text: an output that arrived in one piece.
+pub fn strip_ansi(text: &str) -> String {
+    Ansi::default().feed(text)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ansi_codes_are_taken_out_even_when_split_across_chunks() {
+        let mut ansi = super::Ansi::default();
+        assert_eq!(ansi.feed("\u{1b}"), "", "an escape alone is kept for what follows");
+        assert_eq!(ansi.feed("[31mred\u{1b}[0m plain"), "red plain");
+        assert_eq!(super::strip_ansi("\u{1b}]0;title\u{7}name"), "name");
+    }
+
     use super::*;
 
     #[test]

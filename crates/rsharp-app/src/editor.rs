@@ -173,6 +173,8 @@ pub struct CodeEditor {
     assist: assist::Assist,
     /// A console uses the editor's selection and visible-line drawing, without a file or undo history.
     console: Option<Console>,
+    /// A console whose program reads its input: what is typed goes to the program rather than into the text.
+    console_input: bool,
 }
 
 struct GitPopup {
@@ -208,6 +210,11 @@ pub struct ToggleBreakpoint {
 }
 
 impl gpui::EventEmitter<ToggleBreakpoint> for CodeEditor {}
+
+/// Text typed into a console whose program reads its input: the program's own, not the console's text.
+pub struct ConsoleInput(pub String);
+
+impl gpui::EventEmitter<ConsoleInput> for CodeEditor {}
 
 /// An edit refused because the file is read-only: the window asks to clear that.
 pub struct ReadOnlyEdit;
@@ -335,12 +342,18 @@ impl CodeEditor {
             pending: None,
             assist: assist::Assist::default(),
             console: None,
+            console_input: false,
         }
     }
 
     pub(crate) fn console(&mut self, folder: PathBuf) {
         self.console = Some(Console { folder, errors: Vec::new(), follow: true });
         self.soft_wrap = true;
+    }
+
+    /// Whether what is typed goes to the program reading the console's input.
+    pub(crate) fn console_input(&mut self, on: bool) {
+        self.console_input = on;
     }
 
     pub(crate) fn output(&mut self, text: Rope, errors: Vec<Range<usize>>, removed: usize, cx: &mut Context<Self>) {
@@ -1158,7 +1171,7 @@ moves! {
     SelectAll => |e, cx| { let len = e.text.len_bytes(); e.set_selections(vec![Selection { anchor: 0, head: len }]); cx.notify() };
     Backspace => |e, cx| { let plan = backspace(&e.text, e.carets.as_slice()); e.apply(plan, cx); e.backspaced(cx) };
     Delete => |e, cx| { let plan = delete(&e.text, e.carets.as_slice()); e.apply(plan, cx) };
-    Newline => |e, cx| { if e.popup_choose(cx) { return } let indent = e.buffer.read(cx).indent; let plan = newline(&e.text, e.carets.as_slice(), &indent); e.apply(plan, cx) };
+    Newline => |e, cx| { if e.popup_choose(cx) { return } if e.console_input { cx.emit(ConsoleInput("\n".into())); return } let indent = e.buffer.read(cx).indent; let plan = newline(&e.text, e.carets.as_slice(), &indent); e.apply(plan, cx) };
     Tab => |e, cx| { if e.popup_choose(cx) || e.next_template_stop(cx) || e.expand_template(cx) { return } let indent = e.buffer.read(cx).indent; let plan = tab(&e.text, e.carets.as_slice(), &indent); e.apply(plan, cx) };
     Undo => |e, cx| e.undo(false, cx);
     Redo => |e, cx| e.undo(true, cx);
@@ -1174,6 +1187,10 @@ moves! {
     Paste => |e, cx| {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
             let text = text.replace("\r\n", "\n");
+            if e.console_input {
+                cx.emit(ConsoleInput(text));
+                return;
+            }
             let lines: Vec<&str> = text.split('\n').collect();
             let carets = e.carets.as_slice();
             let plan = if carets.len() > 1 && lines.len() == carets.len() {
@@ -1330,6 +1347,11 @@ impl EntityInputHandler for CodeEditor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A console whose program reads its input takes what is typed as the program's, not as its own text.
+        if self.console_input {
+            cx.emit(ConsoleInput(text.to_string()));
+            return;
+        }
         let range = range.map(|r| self.range_from_utf16(&r)).or(self.marked.take());
         let plan = match range {
             Some(range) => {
@@ -1531,6 +1553,7 @@ impl Element for EditorElement {
             let breakpoints = buffer.breakpoints.clone();
             let execution_line = buffer.execution_line;
             let inline_values = buffer.inline_values.clone();
+            let exception = buffer.exception.clone();
             let syntax: Vec<Highlight> =
                 buffer.tree.as_ref().map(|tree| highlights(tree, text, byte_range.clone())).unwrap_or_default();
             // Roslyn's colours win where it named a word; the syntax's fill the rest.
@@ -1572,10 +1595,16 @@ impl Element for EditorElement {
                     .filter(|(at, _)| (row.start..row.end).contains(at) || (*at == row.end && row.last))
                     .map(|(at, label)| (at - row.start, label.as_str()))
                     .collect();
+                // The exception a stop is on is named first, then the frame's values.
+                if let Some((line, said)) = &exception
+                    && *line == row.line
+                    && row.last
+                {
+                    hints.push((row.end - row.start, said.as_str()));
+                }
                 if let Some((line, values)) = &inline_values
                     && *line == row.line
                     && row.last
-                    && !hints.iter().any(|(at, _)| *at == row.end - row.start)
                 {
                     hints.push((row.end - row.start, values.as_str()));
                 }
@@ -2024,6 +2053,60 @@ fn runs_for(content: &str, line_start: usize, colours: &[(Range<usize>, Hsla)], 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn open<'a>(
+        name: &str,
+        text: &'static [u8],
+        cx: &'a mut gpui::TestAppContext,
+    ) -> (Entity<CodeEditor>, &'a mut gpui::VisualTestContext) {
+        cx.update(|cx| {
+            crate::init(std::env::temp_dir().join(format!("rsharp-editor-{name}-{}", std::process::id())), cx);
+            cx.global_mut::<crate::state::Ide>().servers = false;
+            cx.global_mut::<crate::templates::Templates>().enabled = false;
+        });
+        let (editor, cx) = cx.add_window_view(|_, cx| {
+            let buffer = cx.new(|cx| Buffer::new(PathBuf::from("Program.cs"), text, cx));
+            CodeEditor::new(buffer, cx)
+        });
+        editor.update_in(cx, |editor, window, _| window.focus(&editor.focus));
+        (editor, cx)
+    }
+
+    #[gpui::test]
+    fn pasting_into_a_console_sends_the_clipboard_to_the_program(cx: &mut gpui::TestAppContext) {
+        let (editor, cx) = open("paste-input", b"", cx);
+        editor.update(cx, |editor, _| {
+            editor.console(PathBuf::new());
+            editor.console_input(true);
+        });
+        let inputs = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received = inputs.clone();
+        cx.update(|_, cx| {
+            cx.subscribe(&editor, move |_, input: &ConsoleInput, _| received.lock().unwrap().push(input.0.clone()))
+                .detach();
+            cx.write_to_clipboard(ClipboardItem::new_string("Ada\r\nLovelace".into()));
+        });
+        cx.dispatch_action(Paste);
+        cx.dispatch_action(Newline);
+        cx.run_until_parked();
+        assert_eq!(*inputs.lock().unwrap(), ["Ada\nLovelace", "\n"], "Paste lost the program's input");
+        assert_eq!(editor.read_with(cx, |editor, _| editor.text.to_string()), "", "input changed the console's output");
+    }
+
+    #[gpui::test]
+    fn an_exception_and_its_local_values_are_both_drawn_on_the_stopped_line(cx: &mut gpui::TestAppContext) {
+        let (editor, cx) = open("exception-values", b"values[index];", cx);
+        editor.update(cx, |editor, cx| {
+            editor.buffer.update(cx, |buffer, cx| {
+                buffer.set_exception(Some((0, "  IndexOutOfRangeException".into())), cx);
+                buffer.set_inline_values(Some((0, "  index = 5".into())), cx);
+            });
+        });
+        cx.run_until_parked();
+        let shown = editor.read_with(cx, |editor, _| editor.layout.as_ref().unwrap().lines[0].line.text.to_string());
+        assert!(shown.contains("IndexOutOfRangeException"), "the exception is missing from the drawn line: {shown}");
+        assert!(shown.contains("index = 5"), "the exception hid the stopped frame's values: {shown}");
+    }
 
     #[test]
     fn a_place_on_a_hinted_line_is_its_byte_past_the_hints_before_it() {
