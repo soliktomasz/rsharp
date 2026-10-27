@@ -60,6 +60,7 @@ pub struct Assist {
     /// Where the popup hangs: the word's start, or the caret.
     pub popup_at: usize,
     pub(super) popup_task: Option<Task<()>>,
+    pub(super) xaml_word_characters: String,
     /// The usages of what the caret is on, each written or only read; asked for the text's version and caret.
     pub usages: Vec<(Range<usize>, bool)>,
     usages_for: Option<(u64, usize)>,
@@ -224,6 +225,10 @@ impl CodeEditor {
             self.msbuild_typed(c, cx);
             return;
         }
+        if self.is_xaml() {
+            self.xaml_typed(c, cx);
+            return;
+        }
         let completing = matches!(self.assist.popup, Some(Popup::Completion { .. }));
         match c {
             c if is_word(c) => {
@@ -257,6 +262,10 @@ impl CodeEditor {
     pub(super) fn request_completion(&mut self, trigger: Option<char>, explicit: bool, cx: &mut Context<Self>) {
         if self.is_msbuild() {
             self.msbuild_complete(explicit, cx);
+            return;
+        }
+        if self.is_xaml() {
+            self.xaml_complete(explicit, cx);
             return;
         }
         let Some((server, uri)) = self.server(cx) else { return };
@@ -384,6 +393,11 @@ impl CodeEditor {
             },
             cx,
         );
+        // A XAML property goes in with its quotes, and its values are offered between them at once.
+        if item.raw["reopen"] == true {
+            self.request_completion(None, false, cx);
+            return;
+        }
         let Some((server, _)) = self.server(cx) else { return };
         let version = self.version;
         let resolved = ask(&server, "completionItem/resolve", item.raw.clone(), cx);
@@ -437,6 +451,7 @@ impl CodeEditor {
             .collect();
         let word = word_at(&self.text, at).range();
         let own = if self.is_msbuild() { self.msbuild_hover(at, cx) } else { None };
+        let xaml = if self.is_xaml() { self.xaml_card(at, cx) } else { None };
         let server = self.server(cx).filter(|_| !self.is_msbuild());
         let answer = server.map(|(server, uri)| {
             ask(&server, "textDocument/hover", lsp::at(&uri, language::point(&self.text, at)), cx)
@@ -446,9 +461,10 @@ impl CodeEditor {
             if from_mouse {
                 cx.background_executor().timer(Duration::from_millis(500)).await;
             }
-            let hover = match answer {
-                Some(answer) => answer.await.and_then(|a| lsp::hover(&a)),
-                None => None,
+            let hover = match (answer, xaml) {
+                (Some(answer), _) => answer.await.and_then(|a| lsp::hover(&a)),
+                (None, Some(card)) => card.await,
+                (None, None) => None,
             };
             let text: Vec<String> = problems.into_iter().chain(own).chain(hover).collect();
             let _ = this.update(cx, |e, cx| {
@@ -522,6 +538,10 @@ impl CodeEditor {
     pub(super) fn go_to(&mut self, method: &'static str, title: &'static str, cx: &mut Context<Self>) {
         if self.is_msbuild() && method == "textDocument/definition" {
             self.msbuild_declaration(cx);
+            return;
+        }
+        if self.is_xaml() && method == "textDocument/definition" {
+            self.xaml_declaration(cx);
             return;
         }
         let Some((server, uri)) = self.server(cx) else { return };

@@ -1,0 +1,7 @@
+<Project>
+  <!-- Passenger's own settings, so Passenger.Xaml and this host build alike; its output under target/, never here. -->
+  <Import Project="../../../vendor/passenger/Directory.Build.props" />
+  <PropertyGroup>
+    <ArtifactsPath>$(MSBuildThisFileDirectory)../../../target/xaml-host</ArtifactsPath>
+  </PropertyGroup>
+</Project>

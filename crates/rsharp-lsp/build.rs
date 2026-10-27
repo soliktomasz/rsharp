@@ -2,7 +2,8 @@
 //! (MSBuild's design-time builds in a process of their own) and its extension to Roslyn's server, compiled against the
 //! very server version Passenger pins, whose folder this finds in the NuGet cache. Where they went is compiled in
 //! (RSHARP_SIDECARS, RSHARP_ROSLYN_SERVER). A machine without dotnet or the submodule's checkout builds without them, said
-//! as a warning, and runs the person's own `roslyn-language-server` tool instead.
+//! as a warning, and runs the person's own `roslyn-language-server` tool instead. RSharp's own XAML host (`xaml-host/`,
+//! Passenger.Xaml behind JSON lines) is published beside them into `sidecars/xaml`.
 
 use std::path::{Path, PathBuf};
 
@@ -13,6 +14,11 @@ fn main() {
         ["Passenger.Host", "Passenger.Roslyn.Extension", "Passenger.Lsp/RoslynServer.targets", "Publicize.targets"]
     {
         println!("cargo:rerun-if-changed={}", passenger.join(input).display());
+    }
+    println!("cargo:rerun-if-changed={}", passenger.join("Passenger.Xaml").display());
+    println!("cargo:rerun-if-changed={}", passenger.join("Passenger.Text").display());
+    for input in ["Program.cs", "RSharp.XamlHost.csproj", "packages.lock.json"] {
+        println!("cargo:rerun-if-changed={}", manifest.join("xaml-host").join(input).display());
     }
     for input in ["Directory.Packages.props", "Directory.Build.props", "Directory.Build.targets", "global.json"] {
         println!("cargo:rerun-if-changed={}", passenger.join("..").join(input).display());
@@ -51,6 +57,11 @@ fn main() {
     let extension_out = sidecars.join("roslyn-extension");
     run(&["publish", "-c", "Release", "-o", host_out.to_str().unwrap()], &host);
     run(&["publish", "-c", "Release", "-o", extension_out.to_str().unwrap()], &extension);
+    let xaml_out = sidecars.join("xaml");
+    run(
+        &["publish", "-c", "Release", "-o", xaml_out.to_str().unwrap()],
+        &manifest.join("xaml-host/RSharp.XamlHost.csproj"),
+    );
     let server = run(&["msbuild", "-t:FindRoslynServer", "-getProperty:RoslynServerFolder"], &extension);
     let server = server.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or_default().to_string();
     assert!(

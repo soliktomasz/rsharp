@@ -46,7 +46,9 @@ impl Replies {
     }
 }
 
-struct Connection {
+/// A sidecar speaking Passenger.Host's JSON lines: Passenger's Host, or RSharp's XAML host (`xaml.rs`).
+pub(crate) struct Connection {
+    name: &'static str,
     input: Sender<Value>,
     replies: Arc<Mutex<Replies>>,
     pins: AtomicUsize,
@@ -59,7 +61,89 @@ struct Request {
 }
 
 impl Connection {
-    fn failed(&self) -> Option<ServerFailed> {
+    /// Starts `command` and waits for its first line, which says it is ready or why it is not.
+    pub(crate) fn start(
+        mut command: Command,
+        name: &'static str,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<Arc<Self>, ServerFailed> {
+        rsharp_core::dotnet::prepare(&mut command);
+        let mut child = process::spawn(command).map_err(|e| ServerFailed(format!("{name} did not start: {e}")))?;
+        let mut input = child.process.stdin.take().expect("stdin was piped");
+        let output = BufReader::new(child.process.stdout.take().expect("stdout was piped"));
+        let (sender, ready) = mpsc::channel();
+        let replies = Arc::new(Mutex::new(Replies { pending: HashMap::from([(0, sender)]), ..Replies::default() }));
+        let (input_tx, requests) = mpsc::channel();
+        let connection = Arc::new(Connection {
+            name,
+            input: input_tx,
+            replies: replies.clone(),
+            pins: AtomicUsize::new(0),
+            child: Mutex::new(child),
+        });
+        let writing_replies = replies.clone();
+        std::thread::spawn(move || {
+            for request in requests {
+                if let Err(error) = writeln!(input, "{request}").and_then(|_| input.flush()) {
+                    writing_replies.lock().unwrap().fail(ServerFailed(format!("{name} could not be asked: {error}")));
+                    break;
+                }
+            }
+        });
+        std::thread::spawn(move || {
+            let read = || -> Result<(), ServerFailed> {
+                for line in output.lines() {
+                    let line = line.map_err(|e| ServerFailed(format!("{name} could not be read: {e}")))?;
+                    let reply: Value = serde_json::from_str(&line)
+                        .map_err(|e| ServerFailed(format!("{name} said what is not JSON: {e}")))?;
+                    let id = reply["id"]
+                        .as_i64()
+                        .ok_or_else(|| ServerFailed(format!("{name}'s reply has no request id")))?;
+                    let terminal = reply.get("result").is_some() || reply["error"].is_string();
+                    if !terminal && reply.get("partial").is_none() {
+                        return Err(ServerFailed(format!("{name}'s reply has no result")));
+                    }
+                    let mut state = replies.lock().unwrap();
+                    if terminal {
+                        if let Some(sender) = state.pending.remove(&id) {
+                            let _ = sender.send(Ok(reply));
+                        }
+                    } else if let Some(sender) = state.pending.get(&id) {
+                        let _ = sender.send(Ok(reply));
+                    }
+                }
+                Err(ServerFailed(format!("{name} stopped")))
+            };
+            if let Err(error) = read() {
+                replies.lock().unwrap().fail(error);
+            }
+        });
+        let began = std::time::Instant::now();
+        loop {
+            if cancel.is_some_and(|c| c.load(Ordering::Acquire)) {
+                return Err(ServerFailed("cancelled".into()));
+            }
+            if began.elapsed() > READY_TIMEOUT {
+                return Err(ServerFailed(format!(
+                    "{name} did not say it was ready within {} seconds",
+                    READY_TIMEOUT.as_secs()
+                )));
+            }
+            match ready.recv_timeout(POLL) {
+                Ok(Ok(reply)) => {
+                    if let Some(error) = reply["error"].as_str() {
+                        return Err(ServerFailed(format!("{name} did not start: {error}")));
+                    }
+                    return Ok(connection);
+                }
+                Ok(Err(error)) => return Err(error),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return Err(ServerFailed(format!("{name} stopped"))),
+            }
+        }
+    }
+
+    pub(crate) fn failed(&self) -> Option<ServerFailed> {
         self.replies.lock().unwrap().failed.clone()
     }
 
@@ -77,17 +161,17 @@ impl Connection {
         };
         let request = json!({ "id": id, "method": method, "params": params });
         if let Err(error) = self.input.send(request) {
-            let error = ServerFailed(format!("the project host could not be asked: {error}"));
+            let error = ServerFailed(format!("{} could not be asked: {error}", self.name));
             self.replies.lock().unwrap().fail(error.clone());
             return Err(error);
         }
         Ok(Request { id, replies })
     }
 
-    fn ask(&self, method: &str, params: Value, mut partial: impl FnMut(&Value)) -> Result<Value, String> {
+    pub(crate) fn ask(&self, method: &str, params: Value, mut partial: impl FnMut(&Value)) -> Result<Value, String> {
         let request = self.request(method, params).map_err(|e| e.0)?;
         loop {
-            let reply = request.replies.recv().map_err(|_| "the project host stopped".to_string())?.map_err(|e| e.0)?;
+            let reply = request.replies.recv().map_err(|_| format!("{} stopped", self.name))?.map_err(|e| e.0)?;
             if let Some(error) = reply["error"].as_str() {
                 return Err(error.to_string());
             }
@@ -130,84 +214,8 @@ impl ProjectHost {
         Self::start_command(command, cancel)
     }
 
-    fn start_command(mut command: Command, cancel: Option<&AtomicBool>) -> Result<Self, ServerFailed> {
-        rsharp_core::dotnet::prepare(&mut command);
-        let mut child =
-            process::spawn(command).map_err(|e| ServerFailed(format!("the project host did not start: {e}")))?;
-        let mut input = child.process.stdin.take().expect("stdin was piped");
-        let output = BufReader::new(child.process.stdout.take().expect("stdout was piped"));
-        let (sender, ready) = mpsc::channel();
-        let replies = Arc::new(Mutex::new(Replies { pending: HashMap::from([(0, sender)]), ..Replies::default() }));
-        let (input_tx, requests) = mpsc::channel();
-        let connection = Arc::new(Connection {
-            input: input_tx,
-            replies: replies.clone(),
-            pins: AtomicUsize::new(0),
-            child: Mutex::new(child),
-        });
-        let writing_replies = replies.clone();
-        std::thread::spawn(move || {
-            for request in requests {
-                if let Err(error) = writeln!(input, "{request}").and_then(|_| input.flush()) {
-                    writing_replies
-                        .lock()
-                        .unwrap()
-                        .fail(ServerFailed(format!("the project host could not be asked: {error}")));
-                    break;
-                }
-            }
-        });
-        std::thread::spawn(move || {
-            let read = || -> Result<(), ServerFailed> {
-                for line in output.lines() {
-                    let line = line.map_err(|e| ServerFailed(format!("the project host could not be read: {e}")))?;
-                    let reply: Value = serde_json::from_str(&line)
-                        .map_err(|e| ServerFailed(format!("the project host said what is not JSON: {e}")))?;
-                    let id = reply["id"]
-                        .as_i64()
-                        .ok_or_else(|| ServerFailed("the project host's reply has no request id".into()))?;
-                    let terminal = reply.get("result").is_some() || reply["error"].is_string();
-                    if !terminal && reply.get("partial").is_none() {
-                        return Err(ServerFailed("the project host's reply has no result".into()));
-                    }
-                    let mut state = replies.lock().unwrap();
-                    if terminal {
-                        if let Some(sender) = state.pending.remove(&id) {
-                            let _ = sender.send(Ok(reply));
-                        }
-                    } else if let Some(sender) = state.pending.get(&id) {
-                        let _ = sender.send(Ok(reply));
-                    }
-                }
-                Err(ServerFailed("the project host stopped".into()))
-            };
-            if let Err(error) = read() {
-                replies.lock().unwrap().fail(error);
-            }
-        });
-        let began = std::time::Instant::now();
-        loop {
-            if cancel.is_some_and(|c| c.load(Ordering::Acquire)) {
-                return Err(ServerFailed("cancelled".into()));
-            }
-            if began.elapsed() > READY_TIMEOUT {
-                return Err(ServerFailed(format!(
-                    "the project host did not name its SDK within {} seconds",
-                    READY_TIMEOUT.as_secs()
-                )));
-            }
-            match ready.recv_timeout(POLL) {
-                Ok(Ok(reply)) => {
-                    if let Some(error) = reply["error"].as_str() {
-                        return Err(ServerFailed(format!("the project host loaded no SDK: {error}")));
-                    }
-                    return Ok(Self { connection });
-                }
-                Ok(Err(error)) => return Err(error),
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => return Err(ServerFailed("the project host stopped".into())),
-            }
-        }
+    fn start_command(command: Command, cancel: Option<&AtomicBool>) -> Result<Self, ServerFailed> {
+        Ok(Self { connection: Connection::start(command, "the project host", cancel)? })
     }
 
     /// One project's design-time builds, with the global properties a build of its solution gives it.

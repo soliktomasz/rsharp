@@ -138,6 +138,12 @@ terminal and takes focus for a moment.
   `hold` keeps generating design-time builds away from an explicit build until it ends), a
   build's problem passed on as the project's error. Without dotnet or the submodule at build time it warns and runs
   the person's `roslyn-language-server` tool, which opens the solution (`solution/open`) or finds the projects.
+- `crates/rsharp-lsp/xaml-host`: RSharp's own C#, the one sidecar not Passenger's: Passenger.Xaml (from the submodule)
+  behind JSON lines in Passenger.Host's shape, published by `rsharp-lsp`'s build.rs into `sidecars/xaml` with
+  Passenger's build props imported (its output under `target/xaml-host`). `rsharp_lsp::xaml` is its client, over the
+  same `host::Connection` as the Host: `check`, `complete` and `symbol` take a XAML file's text as typed and its project,
+  `changed` the files written on disk. `window/xaml.rs` starts it with the first XAML file and gives each XAML buffer
+  its project (`msbuild_project`'s search); `editor_xaml.rs` is completion, the card and Go to Declaration there.
 - `crates/rsharp-dap`: the Debug Adapter Protocol client and Passenger's debug adapter it runs. `build.rs`
   publishes Passenger's `Passenger.DebugAdapter` from the same submodule into `target/<profile>/sidecars/debugger`
   (its engine, ICorDebug behind DAP, with ILSpy's decompiler). `Session` starts it through `process::spawn` — so it

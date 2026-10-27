@@ -24,6 +24,8 @@ mod msbuild_help;
 mod refactor;
 #[path = "editor_templates.rs"]
 mod templates;
+#[path = "editor_xaml.rs"]
+mod xaml_help;
 pub use assist::{Navigate, Said, ValueAsked};
 
 actions!(

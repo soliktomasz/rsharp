@@ -143,6 +143,7 @@ mod run;
 mod solution_actions;
 mod terminal;
 mod tests;
+mod xaml;
 
 pub use build::{BuildOutcome, BuildStatus};
 pub use run::{RunOutcome, RunStatus};
@@ -279,6 +280,8 @@ pub struct MainWindow {
     _server_task: Option<Task<()>>,
     /// The folder's one Passenger Host, which Roslyn's builds and the Solution view's evaluations share.
     host: Option<rsharp_lsp::SharedHost>,
+    /// The XAML host, started as the first XAML file opens.
+    xaml: Option<rsharp_lsp::xaml::XamlHost>,
     /// A round of evaluations is running; `evaluate_again` asks for one more after it.
     evaluating: bool,
     evaluate_again: bool,
@@ -561,6 +564,7 @@ impl MainWindow {
             main_menu: None,
             _server_task: None,
             host: None,
+            xaml: None,
             evaluating: false,
             evaluate_again: false,
             _evaluate_task: None,
@@ -572,6 +576,7 @@ impl MainWindow {
     }
 
     pub fn open_workspace(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        self.xaml = None;
         self.leave_tests(cx);
         self.leave_git(cx);
         self.leave_build(cx);
@@ -1455,6 +1460,7 @@ impl MainWindow {
                     buffer.update(cx, |b, cx| b.attach_server(server, cx));
                 }
                 self.attach_msbuild(&buffer, cx);
+                self.attach_xaml(&buffer, cx);
                 self.attach_git_buffer(&buffer, cx);
                 self.note_hot_reload_original(&buffer, cx);
                 self.show_breakpoints(&path, cx);
@@ -1797,6 +1803,7 @@ impl MainWindow {
 
     /// Back to the Welcome screen, the folder's state kept, as Rider's File | Close Solution.
     pub fn close_solution(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.xaml = None;
         self.leave_tests(cx);
         self.leave_git(cx);
         self.leave_build(cx);

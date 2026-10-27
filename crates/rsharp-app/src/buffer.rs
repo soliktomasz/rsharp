@@ -3,6 +3,7 @@
 //! scroll and folds, and is told of each change made through another so its carets keep their place.
 
 use crate::editor::Diagnostic;
+use futures::StreamExt;
 use gpui::{App, AppContext, Context, Entity, EntityId, EventEmitter, Global, Task, WeakEntity};
 use rsharp_core::editorconfig::EditorConfig;
 use rsharp_core::encodings::{Charset, decode, encode};
@@ -88,6 +89,10 @@ pub struct Buffer {
     msbuild: Option<(rsharp_lsp::SharedHost, PathBuf, Option<PathBuf>)>,
     pub insight: Option<Arc<rsharp_core::msbuild::insight::ProjectInsight>>,
     inspecting: Option<Task<()>>,
+    /// A XAML file's host and the project it is read against.
+    pub xaml: Option<(rsharp_lsp::xaml::XamlHost, PathBuf)>,
+    checking_xaml: Option<Task<()>>,
+    xaml_changes: Option<Task<()>>,
 }
 
 impl EventEmitter<BufferEvent> for Buffer {}
@@ -238,6 +243,9 @@ impl Buffer {
             asking_contexts: None,
             msbuild: None,
             insight: None,
+            xaml: None,
+            checking_xaml: None,
+            xaml_changes: None,
             inspecting: None,
         };
         buffer.on_disk = stamp(&buffer.path);
@@ -347,6 +355,7 @@ impl Buffer {
         self.reparse(cx);
         self.check(Duration::from_millis(400), cx);
         self.inspect(Duration::from_millis(500), cx);
+        self.check_xaml(Duration::from_millis(300), cx);
         cx.emit(BufferEvent::Edited { changes, by });
         cx.notify();
     }
@@ -650,6 +659,69 @@ impl Buffer {
                     })
                     .collect();
                 b.insight = Some(Arc::new(insight));
+                cx.notify();
+            });
+        }));
+    }
+
+    /// A XAML file's code help: read against `project` in the XAML host, now and once typing pauses.
+    pub fn attach_xaml(&mut self, host: rsharp_lsp::xaml::XamlHost, project: PathBuf, cx: &mut Context<Self>) {
+        if self.xaml.is_none() {
+            cx.on_release(|b, cx| {
+                if let Some((host, _)) = b.xaml.take() {
+                    let path = b.path.clone();
+                    cx.background_executor()
+                        .spawn(async move {
+                            if let Err(failed) = host.closed(&path) {
+                                log::info!("XAML file closed: {failed}");
+                            }
+                        })
+                        .detach();
+                }
+            })
+            .detach();
+        }
+        let mut changes = host.subscribe();
+        self.xaml = Some((host, project));
+        self.xaml_changes = Some(cx.spawn(async move |this, cx| {
+            while let Some(except) = changes.next().await {
+                let _ = this.update(cx, |b, cx| {
+                    if Some(&b.path) != except.as_ref() {
+                        b.check_xaml(Duration::ZERO, cx);
+                    }
+                });
+            }
+        }));
+        self.check_xaml(Duration::ZERO, cx);
+    }
+
+    /// The file checked as typed; what the host finds becomes the file's problems.
+    fn check_xaml(&mut self, after: Duration, cx: &mut Context<Self>) {
+        let Some((host, project)) = self.xaml.clone() else { return };
+        let (version, path, text) = (self.document.version(), self.path.clone(), self.document.text().to_string());
+        self.checking_xaml = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(after).await;
+            let found = cx.background_executor().spawn(async move { host.check(&project, &path, &text) }).await;
+            let problems = match found {
+                Ok(problems) => problems.unwrap_or_default(),
+                Err(failed) => {
+                    log::info!("XAML code help: {failed}");
+                    return;
+                }
+            };
+            let _ = this.update(cx, |b, cx| {
+                if b.document.version() != version {
+                    return;
+                }
+                let at = |p: rsharp_lsp::Point| b.document.offset_of_utf16(p.line, p.character);
+                b.diagnostics = problems
+                    .iter()
+                    .map(|p| Diagnostic {
+                        range: at(p.span.start)..at(p.span.end),
+                        error: p.error,
+                        message: p.message.clone(),
+                    })
+                    .collect();
                 cx.notify();
             });
         }));

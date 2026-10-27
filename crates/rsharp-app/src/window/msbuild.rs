@@ -28,7 +28,7 @@ impl MainWindow {
 
     /// The project an MSBuild file is evaluated through: itself, else the solution's project whose evaluation read
     /// it, else the nearest project above it (a Directory.Build.props's), else the file itself.
-    fn msbuild_project(&self, file: &Path) -> PathBuf {
+    pub(super) fn msbuild_project(&self, file: &Path) -> PathBuf {
         let extension = file.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
         if extension.ends_with("proj") {
             return file.to_path_buf();
