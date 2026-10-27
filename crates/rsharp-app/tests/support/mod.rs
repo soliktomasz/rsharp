@@ -61,6 +61,28 @@ impl Drop for Run {
                 }
             }
             walk(&self.folder.join("obj"));
+            if self.folder.join("Gallery.csproj").is_file() {
+                let out = std::process::Command::new("dotnet")
+                    .args(["msbuild", "-nologo", "-v:n", "-t:Compile;CoreCompile;DesignTimeMarkupCompilation"])
+                    .args(["-p:DesignTimeBuild=true", "-p:BuildingProject=false", "-p:SkipCompilerExecution=true"])
+                    .args(["-p:ProvideCommandLineArgs=true"])
+                    .current_dir(&self.folder)
+                    .output();
+                if let Ok(out) = out {
+                    let text = String::from_utf8_lossy(&out.stdout);
+                    let lines: Vec<_> = text
+                        .lines()
+                        .filter(|l| {
+                            l.contains("MarkupCompile")
+                                || l.contains("error")
+                                || l.contains("warning")
+                                || l.contains("MC")
+                        })
+                        .collect();
+                    eprintln!("=== CLI design-time build ({})\n{}", out.status, lines.join("\n"));
+                }
+                walk(&self.folder.join("obj"));
+            }
         }
         let _ = std::fs::remove_dir_all(self.folder.parent().unwrap());
     }

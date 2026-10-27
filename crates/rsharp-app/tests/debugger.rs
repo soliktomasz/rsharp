@@ -2154,7 +2154,9 @@ fn a_data_breakpoint_stops_the_program_when_the_value_it_watches_is_written() {
     write(
         &run.folder,
         "App/Program.cs",
-        "using System;\n\nclass Counter { public int Count; }\n\nclass Program\n{\n    static void Main()\n    {\n        var counter = new Counter();\n        int total = 0;\n        for (int i = 1; i <= 3; i++)\n        {\n            total += i;\n            counter.Count = total;\n            Console.WriteLine(total);\n        }\n        Console.WriteLine(counter.Count);\n    }\n}\n",
+        // As Passenger's DataBreakpointTests: the field written in a method, a statement after the write, since the
+        // runtime stops only where the thread can be.
+        "using System;\n\nclass Counter\n{\n    public int Count;\n\n    public void Set(int value)\n    {\n        Count = value;\n        Console.WriteLine($\"set {value}\");\n    }\n}\n\nclass Program\n{\n    static void Main()\n    {\n        var counter = new Counter();\n        Console.WriteLine(\"ready\");\n        counter.Set(2);\n        counter.Set(3);\n        Console.WriteLine(counter.Count);\n    }\n}\n",
     );
     if !offline(&run) {
         return;
@@ -2162,8 +2164,8 @@ fn a_data_breakpoint_stops_the_program_when_the_value_it_watches_is_written() {
     let source = rsharp_core::paths::canonical(&run.folder.join("App/Program.cs"));
     let mut cx = TestAppContext::single();
     let (main, cx) = open(&run, &mut cx);
-    // Paused on `total += i;`, before the value watched is written on the line after.
-    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((12, 0)), window, cx));
+    // Paused on `Console.WriteLine("ready");`, counter made and its field not yet written.
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((18, 0)), window, cx));
     cx.run_until_parked();
     cx.simulate_keystrokes("f9");
     cx.simulate_keystrokes("f5");
@@ -2203,7 +2205,7 @@ fn a_data_breakpoint_stops_the_program_when_the_value_it_watches_is_written() {
 
     // The line breakpoint cleared, as Passenger's test has none: only the watched write stops the program, and the
     // runtime stops it at the statement after the write, which a line breakpoint there would also claim.
-    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((12, 0)), window, cx));
+    main.update_in(cx, |main, window, cx| main.open_file(&source, Some((18, 0)), window, cx));
     cx.run_until_parked();
     cx.simulate_keystrokes("f9");
     assert!(main.read_with(cx, |main, _| main.breakpoints().lines(&source).is_empty()), "the line breakpoint stayed");
@@ -2211,7 +2213,7 @@ fn a_data_breakpoint_stops_the_program_when_the_value_it_watches_is_written() {
     let stopped = pump(cx, |cx| {
         main.read_with(cx, |main, _| {
             main.debug_phase() == Phase::Paused
-                && main.debug_frames().first().is_some_and(|frame| (13..=14).contains(&frame.line))
+                && main.debug_frames().first().is_some_and(|frame| (8..=9).contains(&frame.line))
                 && main.said().is_some_and(|said| said.contains("data breakpoint"))
         })
     });

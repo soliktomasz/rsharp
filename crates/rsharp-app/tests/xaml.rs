@@ -1447,8 +1447,14 @@ fn a_wpf_elements_x_name_renames_with_its_code_behinds_uses_and_the_code_goes_to
     while landed.as_ref() != Some(&xaml) {
         assert!(
             Instant::now() < deadline,
-            "Go to Declaration on the field never reached the XAML's name: it went to {landed:?}, saying {:?}",
-            main.read_with(cx, |m, _| m.said().map(str::to_string))
+            "Go to Declaration on the field never reached the XAML's name: it went to {landed:?}, saying {:?}; the code-behind's problems: {:?}",
+            main.read_with(cx, |m, _| m.said().map(str::to_string)),
+            cx.update(|_, cx| rsharp_app::buffer::find(&behind, cx).map(|b| b
+                .read(cx)
+                .diagnostics
+                .iter()
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()))
         );
         place_after(&main, &behind, "        G", cx);
         cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-b" } else { "f12" });

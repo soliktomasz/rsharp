@@ -82,10 +82,14 @@ jobs:
           RSHARP_DIAG: 1
           RSHARP_ENGINE_LOG: ${{ runner.temp }}/engine.log
         run: |
-          cargo test -p rsharp-app --test xaml --no-fail-fast -- resources_follow wpf_elements_x_name || true
-          cargo test -p rsharp-app --test debugger --no-fail-fast -- terminal data_breakpoint --test-threads=1 || true
-          RSHARP_ENGINE_LOG= cargo test -p rsharp-app --test debugger_crash || true
-          echo "=== engine log"; tail -c 400000 "$RUNNER_TEMP/engine.log" || true
+          cargo test -p rsharp-app --test xaml --no-fail-fast -- wpf_elements_x_name || true
+          case "$RUNNER_OS" in
+            Linux) cargo test -p rsharp-app --test debugger --no-fail-fast || true ;;
+            Windows) cargo test -p rsharp-app --test debugger --no-fail-fast -- data_breakpoint || true ;;
+            macOS) cargo test -p rsharp-dap --test passenger --no-fail-fast || true ;;
+          esac
+          echo "=== engine log"
+          grep -aE "Starting$|Launching|ConfigurationDone|Attach|Let process|handshake|terminal|Terminal|xception|ailed|rror|Data|write|Continue|Disconnect|Terminat" "$RUNNER_TEMP/engine.log" | grep -avE "Module loaded|symbols" | tail -c 900000 || true
 
       - name: Tests
         if: false
