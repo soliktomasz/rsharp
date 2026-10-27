@@ -24,6 +24,7 @@ pub struct XamlField {
 
 impl gpui::EventEmitter<CodeBehind> for CodeEditor {}
 impl gpui::EventEmitter<XamlField> for CodeEditor {}
+impl gpui::EventEmitter<crate::xaml_dialog::OpenExtract> for CodeEditor {}
 
 /// The class whose generated field a definition answer names: Avalonia's generator's document is `<Class>.g.cs`.
 pub fn generated_field(answer: &serde_json::Value) -> Option<String> {
@@ -149,7 +150,14 @@ impl CodeEditor {
         let Some((host, project)) = self.buffer.read(cx).xaml.clone() else { return };
         let (path, text, head) = (self.path.clone(), self.text.to_string(), self.primary().head);
         let line = self.text.byte_to_line(head);
-        let found = cx.background_executor().spawn(async move { host.fixes(&project, &path, &text, line) });
+        // A fix's edits to another open file (its view model) are made from that file as typed, not as saved.
+        let folder = project.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+        let texts: std::collections::HashMap<PathBuf, String> = crate::buffer::in_folders(&[folder], cx)
+            .into_iter()
+            .filter(|b| b.read(cx).is_modified())
+            .map(|b| (b.read(cx).path.clone(), b.read(cx).document.text().to_string()))
+            .collect();
+        let found = cx.background_executor().spawn(async move { host.fixes(&project, &path, &text, line, &texts) });
         self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
             let actions = found.await.map(|a| rsharp_lsp::code_actions(&a)).unwrap_or_default();
             let _ = this.update(cx, |e, cx| {
@@ -158,6 +166,79 @@ impl CodeEditor {
                 } else if e.primary().head == head {
                     e.show(Popup::Actions { actions, selected: 0 }, head, cx);
                 }
+            });
+        }));
+    }
+
+    /// Reformat Code in XAML: the selection's lines, or the whole file, by Rider's XAML code style with the file's
+    /// .editorconfig over it (read as it is now), as one undo step.
+    // shortcut: Rider's defaults stand under the .editorconfig, with no Settings page of their own (Passenger's Code
+    // Style: XAML); add it once someone wants a style without an .editorconfig.
+    pub(super) fn xaml_reformat(&mut self, cx: &mut Context<Self>) {
+        let Some((host, _)) = self.buffer.read(cx).xaml.clone() else { return };
+        let (path, text, version) = (self.path.clone(), self.text.to_string(), self.version);
+        let indent = self.buffer.read(cx).indent;
+        let selection = self.primary();
+        let range = (!selection.is_empty()).then(|| rsharp_lsp::Span {
+            start: language::point(&self.text, selection.start()),
+            end: language::point(&self.text, selection.end()),
+        });
+        let found = cx.background_executor().spawn(async move {
+            // shortcut: values come lower case from RSharp's .editorconfig reading, so a custom
+            // xaml_attribute_ordering_rule_groups loses its letter case; keep values' case once someone sets one.
+            let config: serde_json::Map<String, serde_json::Value> =
+                rsharp_core::editorconfig::EditorConfig::for_file(&path)
+                    .properties()
+                    .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
+                    .collect();
+            host.format(&text, &config, (indent.size, indent.tabs), range)
+        });
+        self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
+            let formatted = match found.await {
+                Ok(formatted) => formatted,
+                Err(failed) => Err(failed.0),
+            };
+            let _ = this.update(cx, |e, cx| match formatted {
+                Err(problem) => cx.emit(Said(format!("Reformat Code was not applied: {problem}"))),
+                Ok(edits) if edits.is_empty() => cx.emit(Said("Already formatted".into())),
+                Ok(_) if e.version != version => {
+                    cx.emit(Said("Reformat Code was not applied: the file was edited meanwhile".into()))
+                }
+                Ok(edits) => {
+                    let edits = language::edits(&e.text, &edits);
+                    e.apply_server_edits(edits, cx);
+                    cx.emit(Said("Reformatted".into()));
+                }
+            });
+        }));
+    }
+
+    /// Extract Resource or Extract Style: what is at the caret asked of the host, then its dialog over the window, or
+    /// why there is nothing to extract.
+    // shortcut: no Refactor This list (Rider's Ctrl+T) offers them; add one once a second XAML refactoring needs it.
+    pub(super) fn xaml_extract(&mut self, extract: crate::xaml_dialog::Extract, cx: &mut Context<Self>) {
+        if !self.is_xaml() {
+            cx.emit(Said(format!("{} is for XAML files", extract.title())));
+            return;
+        }
+        let Some((host, project)) = self.buffer.read(cx).xaml.clone() else { return };
+        let (path, text) = (self.path.clone(), self.text.to_string());
+        let at = language::point(&self.text, self.primary().head);
+        let asked = (host.clone(), project.clone(), path.clone(), text.clone());
+        let found = cx
+            .background_executor()
+            .spawn(async move { host.extract(&project, &path, &text, at, extract.kind(), serde_json::json!({})) });
+        self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
+            let found = found.await;
+            let _ = this.update(cx, |_, cx| match found {
+                Ok(found) if found["why"].is_string() => {
+                    cx.emit(Said(found["why"].as_str().unwrap_or_default().into()))
+                }
+                Ok(found) => {
+                    let (host, project, path, text) = asked;
+                    cx.emit(crate::xaml_dialog::OpenExtract { extract, host, project, path, text, at, found })
+                }
+                Err(failed) => cx.emit(Said(format!("{} is not available: {}", extract.title(), failed.0))),
             });
         }));
     }

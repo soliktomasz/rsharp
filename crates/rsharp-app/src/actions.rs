@@ -7,7 +7,9 @@ use crate::editor::{
     CaretPerLine, CloneCaretAbove, CloneCaretBelow, Copy, Cut, Paste, Redo, Save, SelectAll, SelectAllOccurrences,
     SelectNextOccurrence, ToggleColumnMode, Undo, UnselectOccurrence,
 };
-use crate::editor::{ChangeSignature, ExtractInterface, MoveType, PullMembersUp, PushMembersDown};
+use crate::editor::{
+    ChangeSignature, ExtractInterface, ExtractResource, ExtractStyle, MoveType, PullMembersUp, PushMembersDown,
+};
 use crate::editor::{
     CollapseAll, CollapseRegion, DecreaseFontSize, ExpandAll, ExpandRegion, IncreaseFontSize, MatchBrace,
     ResetFontSize, ToggleFold, ToggleSoftWrap, ToggleWhitespace,
@@ -184,6 +186,8 @@ pub static ALL: &[IdeAction] = &[
     ide!("Move…", "Refactor", ["move type", "move to file", "move to namespace"], MoveType),
     ide!("Pull Members Up…", "Refactor", ["move to base class"], PullMembersUp),
     ide!("Push Members Down…", "Refactor", ["move to derived classes"], PushMembersDown),
+    ide!("Extract Resource…", "Refactor", ["xaml resource", "static resource"], ExtractResource),
+    ide!("Extract Style…", "Refactor", ["xaml style", "setters"], ExtractStyle),
     ide!("Introduce Variable…", "Refactor", ["extract variable", "introduce local"], IntroduceVariable),
     ide!("Introduce Field…", "Refactor", ["extract field", "introduce constant"], IntroduceField),
     ide!("Introduce Parameter…", "Refactor", ["extract parameter"], IntroduceParameter),

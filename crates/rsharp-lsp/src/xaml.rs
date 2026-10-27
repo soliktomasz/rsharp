@@ -2,7 +2,7 @@
 //! completes, warns of and where a name in it leads, asked with the file's text as typed and the project it belongs to.
 
 use crate::host::Connection;
-use crate::{Location, Point, Problem, ServerFailed, Span};
+use crate::{Location, Point, Problem, ServerFailed, Span, TextEdit};
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -179,8 +179,68 @@ impl XamlHost {
 
     /// The fixes of the problems on `line`, as LSP's code actions with their edits in them. Blocks, so call it off the
     /// UI thread.
-    pub fn fixes(&self, project: &Path, path: &Path, text: &str, line: usize) -> Result<Value, ServerFailed> {
-        self.ask("fixes", json!({ "project": project, "path": path, "text": text, "line": line }))
+    /// `texts` are the open files' unsaved texts, which a fix's edits to them are made from.
+    pub fn fixes(
+        &self,
+        project: &Path,
+        path: &Path,
+        text: &str,
+        line: usize,
+        texts: &std::collections::HashMap<PathBuf, String>,
+    ) -> Result<Value, ServerFailed> {
+        self.ask("fixes", json!({ "project": project, "path": path, "text": text, "line": line, "texts": texts }))
+    }
+
+    /// Reformat Code: the edits that lay `text` out by Rider's XAML code style with `editorconfig`'s properties over it,
+    /// only those in `range`'s lines when given; or why it was left as it is. Blocks, so call it off the UI thread.
+    pub fn format(
+        &self,
+        text: &str,
+        editorconfig: &serde_json::Map<String, Value>,
+        indent: (usize, bool),
+        range: Option<Span>,
+    ) -> Result<Result<Vec<TextEdit>, String>, ServerFailed> {
+        let found = self.ask(
+            "format",
+            json!({
+                "text": text, "editorconfig": editorconfig, "indentSize": indent.0, "tabs": indent.1, "eol": "\n",
+                "range": range.map(Span::to_json),
+            }),
+        )?;
+        Ok(match found["problem"].as_str() {
+            Some(problem) => Err(problem.to_string()),
+            None => Ok(crate::text_edits(&found["edits"])),
+        })
+    }
+
+    /// What Surround With wraps for `selection` in `text`: the element at a caret, or the elements a selection touches
+    /// under one parent, and how many. Blocks, so call it off the UI thread.
+    pub fn surround_target(&self, text: &str, selection: Span) -> Result<Option<(Span, usize)>, ServerFailed> {
+        let found = self.ask(
+            "surround",
+            json!({ "text": text, "start": selection.start.to_json(), "end": selection.end.to_json() }),
+        )?;
+        Ok((!found.is_null()).then(|| (Span::from(&found), found["count"].as_u64().unwrap_or(1) as usize)))
+    }
+
+    /// Extract Resource (`kind` "resource") or Extract Style ("style") at `at`: what is there and where it can go, or
+    /// with `more`'s `name` why that name will not do, or with `make` the changes (`edit`). Blocks, so call it off the UI
+    /// thread.
+    pub fn extract(
+        &self,
+        project: &Path,
+        path: &Path,
+        text: &str,
+        at: Point,
+        kind: &str,
+        more: Value,
+    ) -> Result<Value, ServerFailed> {
+        let mut asked = params(project, path, text, at);
+        asked["kind"] = json!(kind);
+        if let (Some(asked), Value::Object(more)) = (asked.as_object_mut(), more) {
+            asked.extend(more);
+        }
+        self.ask("extract", asked)
     }
 
     /// Where the XAML of `class` (its full name) names the element `name`. Blocks, so call it off the UI thread.

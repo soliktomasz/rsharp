@@ -250,6 +250,7 @@ pub struct MainWindow {
     find_action: Option<Entity<FindActionPopup>>,
     go_to: Option<Entity<crate::goto::GoToPopup>>,
     refactoring: Option<Entity<crate::refactor_dialog::RefactorDialog>>,
+    extracting: Option<Entity<crate::xaml_dialog::XamlDialog>>,
     problems_tab: ProblemsTab,
     /// Roslyn's errors and warnings in every file of the solution, as last asked.
     solution_problems: Vec<(PathBuf, Vec<rsharp_lsp::Problem>)>,
@@ -548,6 +549,7 @@ impl MainWindow {
             find_action: None,
             go_to: None,
             refactoring: None,
+            extracting: None,
             problems_tab: ProblemsTab::File,
             solution_problems: Vec::new(),
             solution_asked: 0,
@@ -1419,6 +1421,44 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// Extract Resource's or Extract Style's dialog over the window, the keys back with the editor once it closes.
+    fn open_extract(
+        &mut self,
+        open: &crate::xaml_dialog::OpenExtract,
+        editor: Entity<CodeEditor>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::xaml_dialog::{OpenExtract, XamlDialog};
+        let open = OpenExtract {
+            extract: open.extract,
+            host: open.host.clone(),
+            project: open.project.clone(),
+            path: open.path.clone(),
+            text: open.text.clone(),
+            at: open.at,
+            found: open.found.clone(),
+        };
+        let dialog = cx.new(|cx| XamlDialog::new(open, cx));
+        cx.subscribe_in(&dialog, window, move |w, _, closed: &crate::refactor_dialog::Closed, window, cx| {
+            w.extracting = None;
+            if let Some(said) = &closed.0 {
+                w.said = Some(said.clone().into());
+            }
+            window.focus(&editor.focus_handle(cx));
+            cx.notify();
+        })
+        .detach();
+        window.focus(&dialog.focus_handle(cx));
+        self.extracting = Some(dialog);
+        cx.notify();
+    }
+
+    /// Extract Resource's or Extract Style's dialog open, for a test to set its options and press Next.
+    pub fn extracting(&self) -> Option<Entity<crate::xaml_dialog::XamlDialog>> {
+        self.extracting.clone()
+    }
+
     /// The refactoring dialog open, for a test to set its options and press OK.
     pub fn refactoring(&self) -> Option<Entity<crate::refactor_dialog::RefactorDialog>> {
         self.refactoring.clone()
@@ -1621,6 +1661,10 @@ impl MainWindow {
         cx.subscribe_in(&editor, window, |w, editor, field: &editor::XamlField, window, cx| {
             let from = editor.read(cx).path.clone();
             w.open_xaml_field(field, &from, window, cx)
+        })
+        .detach();
+        cx.subscribe_in(&editor, window, |w, editor, open: &crate::xaml_dialog::OpenExtract, window, cx| {
+            w.open_extract(open, editor.clone(), window, cx)
         })
         .detach();
         cx.subscribe_in(&editor, window, |w, editor, open: &crate::refactor_dialog::OpenRefactoring, window, cx| {
@@ -2308,6 +2352,9 @@ impl Render for MainWindow {
             .children(self.tab_menu.map(|at| self.tab_menu_view(at, window, cx)))
             .children(self.status_menu.map(|kind| self.status_menu_view(kind, cx)))
             .children(self.refactoring.clone().map(|dialog| {
+                div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(dialog)
+            }))
+            .children(self.extracting.clone().map(|dialog| {
                 div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(dialog)
             }))
             .children(self.run_dialog.clone().map(|dialog| {

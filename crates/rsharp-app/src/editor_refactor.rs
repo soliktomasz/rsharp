@@ -24,6 +24,37 @@ pub const SURROUNDS: &[(&str, &str)] = &[
     ("{ }", "{\n$@\n}"),
 ];
 
+/// A Surround With construct: its name in the list, its template (a `$` line is what it goes around, each `@` a caret
+/// placed there, before the word after it selected), and the digit that chooses it.
+#[derive(Clone)]
+pub struct Surround {
+    pub name: &'static str,
+    pub template: &'static str,
+    pub digit: Option<char>,
+    /// Holds one child alone, so it is offered around one element only.
+    one_child: bool,
+    avalonia_only: bool,
+}
+
+const fn layout(name: &'static str, template: &'static str, digit: char) -> Surround {
+    Surround { name, template, digit: Some(digit), one_child: false, avalonia_only: false }
+}
+
+/// XAML's: Rider's `tag`, its name typed in both tags, and the layout elements a view is wrapped in (Passenger's
+/// LiveTemplates.Xaml), each with the caret in its start tag once made.
+const XAML_SURROUNDS: &[Surround] = &[
+    layout("tag", "<@>\n$\n</@>", '1'),
+    layout("Grid", "<Grid@>\n$\n</Grid>", '2'),
+    layout("StackPanel", "<StackPanel@>\n$\n</StackPanel>", '3'),
+    Surround { one_child: true, ..layout("Border", "<Border@>\n$\n</Border>", '4') },
+    Surround { one_child: true, ..layout("ScrollViewer", "<ScrollViewer@>\n$\n</ScrollViewer>", '5') },
+    layout("DockPanel", "<DockPanel@>\n$\n</DockPanel>", '6'),
+    layout("WrapPanel", "<WrapPanel@>\n$\n</WrapPanel>", '7'),
+    layout("Canvas", "<Canvas@>\n$\n</Canvas>", '8'),
+    Surround { one_child: true, ..layout("Viewbox", "<Viewbox@>\n$\n</Viewbox>", '9') },
+    Surround { avalonia_only: true, ..layout("Panel", "<Panel@>\n$\n</Panel>", '0') },
+];
+
 /// The code actions that are a named refactoring: their titles start so, Roslyn's Fix All left out.
 fn named<'a>(actions: &'a [CodeAction], prefixes: &[&str]) -> Vec<&'a CodeAction> {
     actions.iter().filter(|a| prefixes.iter().any(|p| a.title.starts_with(p))).collect()
@@ -215,22 +246,64 @@ impl CodeEditor {
         Ok((edit, uses, removal.kind))
     }
 
-    /// Surround With: its constructs listed over the selection.
+    /// Surround With: its constructs listed over the selection; in XAML, the layout elements over the element at the
+    /// caret or the elements the selection touches, those holding one child left out around several.
     pub(super) fn open_surround(&mut self, cx: &mut Context<Self>) {
         let at = self.primary().start();
-        self.show(Popup::Surround { selected: 0 }, at, cx);
+        if !self.is_xaml() {
+            let items = SURROUNDS
+                .iter()
+                .map(|(name, template)| Surround {
+                    name,
+                    template,
+                    digit: None,
+                    one_child: false,
+                    avalonia_only: false,
+                })
+                .collect();
+            self.show(Popup::Surround { items, selected: 0, target: None }, at, cx);
+            return;
+        }
+        let Some((host, _)) = self.buffer.read(cx).xaml.clone() else { return };
+        let selection = self.primary();
+        let span = rsharp_lsp::Span {
+            start: language::point(&self.text, selection.start()),
+            end: language::point(&self.text, selection.end()),
+        };
+        // shortcut: Avalonia's Panel is offered by the file's extension (.axaml, .paml), not its project's dialect; ask
+        // the host's dialect once an Avalonia project's .xaml file is seen.
+        let avalonia = self.path.extension().is_some_and(|e| e == "axaml" || e == "paml");
+        let text = self.text.to_string();
+        let found = cx.background_executor().spawn(async move { host.surround_target(&text, span) });
+        self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
+            let target = found.await.ok().flatten();
+            let _ = this.update(cx, |e, cx| {
+                let Some((span, count)) = target else {
+                    cx.emit(Said("Surround With in XAML wraps elements: put the caret in one".into()));
+                    return;
+                };
+                let target = language::offset(&e.text, span.start)..language::offset(&e.text, span.end);
+                let items = XAML_SURROUNDS
+                    .iter()
+                    .filter(|s| (count == 1 || !s.one_child) && (avalonia || !s.avalonia_only))
+                    .cloned()
+                    .collect();
+                e.show(Popup::Surround { items, selected: 0, target: Some(target) }, at, cx);
+            });
+        }));
     }
 
-    /// The selected lines (or the caret's) written inside a construct at their indent, its placeholder selected.
-    pub(super) fn surround(&mut self, chosen: usize, cx: &mut Context<Self>) {
-        let Some((_, template)) = SURROUNDS.get(chosen) else { return };
+    /// The selected lines (or the caret's, or a XAML element's) written inside a construct at their indent, its
+    /// placeholders become carets, the word after the first selected.
+    pub(super) fn surround(&mut self, chosen: &Surround, target: Option<Range<usize>>, cx: &mut Context<Self>) {
+        let template = chosen.template;
         let text = self.text.clone();
         let selection = self.primary();
-        let first = text.byte_to_line(selection.start());
+        let (from, to) = target.map_or((selection.start(), selection.end()), |t| (t.start, t.end));
+        let first = text.byte_to_line(from);
         // A selection ending at a line's start does not take that line in.
-        let end_line = text.byte_to_line(selection.end());
-        let last =
-            if end_line > first && selection.end() == text.line_to_byte(end_line) { end_line - 1 } else { end_line };
+        let end_line = text.byte_to_line(to);
+        let last = if end_line > first && to == text.line_to_byte(end_line) { end_line - 1 } else { end_line };
         let start = text.line_to_byte(first);
         let end = line_end(&text, last);
         let lines: Vec<String> = text.byte_slice(start..end).to_string().split('\n').map(str::to_string).collect();
@@ -239,7 +312,7 @@ impl CodeEditor {
         let inner: Vec<String> =
             lines.iter().map(|l| if l.trim().is_empty() { String::new() } else { format!("{unit}{l}") }).collect();
         let mut written = String::new();
-        let mut placeholder = None;
+        let mut placeholders = Vec::new();
         for (i, line) in template.split('\n').enumerate() {
             if i > 0 {
                 written.push('\n');
@@ -247,25 +320,27 @@ impl CodeEditor {
             if line.starts_with('$') {
                 written.push_str(&inner.join("\n"));
                 if line.contains('@') {
-                    placeholder = Some((written.len(), 0));
+                    placeholders.push((written.len(), 0));
                 }
                 continue;
             }
-            let line_start = written.len() + outer.len();
             written.push_str(&outer);
-            match line.find('@') {
-                Some(at) => {
-                    let word: String = line[at + 1..].chars().take_while(|c| c.is_alphanumeric()).collect();
-                    placeholder = Some((line_start + at, word.len()));
-                    written.push_str(&line.replacen('@', "", 1));
-                }
-                None => written.push_str(line),
+            let mut rest = line;
+            while let Some(at) = rest.find('@') {
+                written.push_str(&rest[..at]);
+                let word: usize = rest[at + 1..].chars().take_while(|c| c.is_alphanumeric()).map(char::len_utf8).sum();
+                placeholders.push((written.len(), word));
+                rest = &rest[at + 1..];
             }
+            written.push_str(rest);
         }
-        let (at, len) = placeholder.unwrap_or((written.len(), 0));
+        if placeholders.is_empty() {
+            placeholders.push((written.len(), 0));
+        }
+        let selections = placeholders.iter().map(|&(at, len)| Selection { anchor: start + at, head: start + at + len });
         let plan = EditPlan {
             edits: vec![Edit { range: start..end, text: written }],
-            selections: vec![Selection { anchor: start + at, head: start + at + len }],
+            selections: selections.collect(),
             ..Default::default()
         };
         self.apply(plan, cx);

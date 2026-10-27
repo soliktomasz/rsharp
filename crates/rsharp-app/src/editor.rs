@@ -111,6 +111,8 @@ actions!(
         MoveType,
         PullMembersUp,
         PushMembersDown,
+        ExtractResource,
+        ExtractStyle,
     ]
 );
 
@@ -1327,6 +1329,8 @@ moves! {
     MoveType => |e, cx| e.open_refactoring(crate::refactor_dialog::Kind::Move, cx);
     PullMembersUp => |e, cx| e.open_refactoring(crate::refactor_dialog::Kind::PullMembersUp, cx);
     PushMembersDown => |e, cx| e.open_refactoring(crate::refactor_dialog::Kind::PushMembersDown, cx);
+    ExtractResource => |e, cx| e.xaml_extract(crate::xaml_dialog::Extract::Resource, cx);
+    ExtractStyle => |e, cx| e.xaml_extract(crate::xaml_dialog::Extract::Style, cx);
 }
 
 /// An offset carried through a change: before it, kept; after it, moved by what it added; inside it, to its end.
@@ -1429,6 +1433,14 @@ impl EntityInputHandler for CodeEditor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Surround With's list takes the digit that chooses an item, as Rider's does.
+        if let Some(assist::Popup::Surround { items, .. }) = &self.assist.popup
+            && let Some(chosen) = items.iter().position(|i| i.digit.is_some_and(|d| text.chars().eq([d])))
+            && let Some(assist::Popup::Surround { items, target, .. }) = self.assist.popup.take()
+        {
+            self.surround(&items[chosen], target, cx);
+            return;
+        }
         // A console whose program reads its input takes what is typed as the program's, not as its own text.
         if self.console_input {
             cx.emit(ConsoleInput(text.to_string()));

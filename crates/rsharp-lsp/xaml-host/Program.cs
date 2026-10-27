@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Passenger.Text;
 using Passenger.Xaml;
+using Passenger.Xaml.Dialects;
 using Passenger.Xaml.Features;
 using Passenger.Xaml.Projects;
 using Passenger.Xaml.Syntax;
@@ -63,6 +64,9 @@ public static class Program
                 "symbol" => Symbol(asked),
                 "element" => Element(asked),
                 "fixes" => Fixes(asked),
+                "format" => Format(asked),
+                "surround" => Surround(asked),
+                "extract" => Extract(asked),
                 "changed" => Changed(asked),
                 "closed" => Closed(asked),
                 var method => throw new InvalidOperationException($"the XAML host has no method {method}"),
@@ -187,6 +191,8 @@ public static class Program
     }
 
     /// <summary>The fixes of the problems on a line that edit an existing XAML file, as LSP code actions.</summary>
+    /// <para>Each file's edits are made from <c>texts</c>' copy of it where the editor sent one (an open file with unsaved
+    /// edits, C# included), else from the host's or the disk's.</para>
     private static JsonNode Fixes(JsonNode asked)
     {
         JsonArray actions = [];
@@ -199,22 +205,125 @@ public static class Program
         {
             foreach (XamlFix fix in diagnostic.Fixes)
             {
-                // shortcut: hide fixes that edit C# or make other files, until create from usage reads current target buffers.
-                if (!file.Project.Files.ContainsKey(fix.Path) || fix.Others.Count != 0)
-                {
-                    continue;
-                }
-                string text = TextOf(fix.Path, file);
-                JsonArray changes = [Edits(new Uri(fix.Path).AbsoluteUri, text, fix.Edits(text))];
                 actions.Add(new JsonObject
                 {
                     ["title"] = fix.Title,
                     ["kind"] = "quickfix",
-                    ["edit"] = new JsonObject { ["documentChanges"] = changes },
+                    ["edit"] = WorkspaceEdit(fix.Others.Prepend(new XamlFileChange(fix.Path, fix.Edits)), file, asked["texts"]?.AsObject()),
                 });
             }
         }
         return actions;
+    }
+
+    /// <summary>Reformat Code: Rider's XAML code style at its defaults with the file's .editorconfig over it, the file's
+    /// own indent and line breaks, only the lines of a range when given; or why it was left as it is.</summary>
+    private static JsonNode Format(JsonNode asked)
+    {
+        string text = asked["text"]!.GetValue<string>();
+        JsonObject config = asked["editorconfig"]!.AsObject();
+        XamlFormatSettings settings = new XamlFormatSettings().Over(key => config[key]?.GetValue<string>());
+        IndentOptions indent = new(asked["indentSize"]!.GetValue<int>(), asked["tabs"]!.GetValue<bool>());
+        TextRange? within = asked["range"] is { } range
+            ? TextRange.FromBounds(Offset(text, range["start"]!), Offset(text, range["end"]!))
+            : null;
+        XamlFormatted formatted = XamlFormatter.Format(text, settings, indent, asked["eol"]!.GetValue<string>(), within);
+        JsonArray edits = [.. formatted.Edits.Select(e => (JsonNode)new JsonObject { ["range"] = Range(text, e.Start, e.End), ["newText"] = e.Text })];
+        return new JsonObject { ["edits"] = edits, ["problem"] = formatted.Problem };
+    }
+
+    /// <summary>What Surround With wraps: the element at a caret, or the elements a selection touches under one parent,
+    /// and how many; null where none can be wrapped.</summary>
+    private static JsonNode? Surround(JsonNode asked)
+    {
+        string text = asked["text"]!.GetValue<string>();
+        TextRange selection = TextRange.FromBounds(Offset(text, asked["start"]!), Offset(text, asked["end"]!));
+        if (XamlRefactorings.SurroundTarget(XmlTree.Parse(text), selection) is not { } target)
+        {
+            return null;
+        }
+        JsonObject found = Range(text, target.Range.Start, target.Range.End);
+        found["count"] = target.Count;
+        return found;
+    }
+
+    /// <summary>Extract Resource or Extract Style at a caret, by <c>kind</c>: without <c>name</c>, what is there (or why
+    /// nothing is) and where it can go; with it, why that name will not do, or with <c>make</c> the changes as a workspace
+    /// edit.</summary>
+    private static JsonNode? Extract(JsonNode asked)
+    {
+        if (Read(asked) is not { File: var file })
+        {
+            return new JsonObject { ["why"] = "The project's XAML is not read" };
+        }
+        bool style = asked["kind"]!.GetValue<string>() == "style";
+        int offset = Offset(file.Text, asked);
+        string? name = asked["name"]?.GetValue<string>();
+        bool make = asked["make"]?.GetValue<bool>() == true;
+        IReadOnlyList<ResourcePlace> places = XamlRefactorings.Places(file, style && file.Dialect is AvaloniaDialect, p => TextOf(p, file));
+        if (style)
+        {
+            (StyleSource? source, string? why) = XamlRefactorings.StyleAt(file, offset);
+            if (source is null)
+            {
+                return new JsonObject { ["why"] = why };
+            }
+            if (name is null)
+            {
+                JsonArray properties = [.. source.Properties.Select(p => (JsonNode)new JsonObject { ["name"] = p.Name, ["written"] = p.Written, ["binding"] = p.IsBinding })];
+                return new JsonObject { ["suggested"] = source.Suggested, ["properties"] = properties, ["places"] = Titles(places) };
+            }
+            string? problem = XamlRefactorings.StyleNameProblem(file, source, name);
+            if (problem is not null || !make)
+            {
+                return new JsonObject { ["problem"] = problem };
+            }
+            List<string> chosen = [.. asked["chosen"]!.AsArray().Select(c => c!.GetValue<string>())];
+            ResourcePlace place = places[asked["place"]!.GetValue<int>()];
+            return new JsonObject { ["edit"] = WorkspaceEdit(XamlRefactorings.ExtractStyle(file, source, name, chosen, place), file), ["title"] = place.Title };
+        }
+        (ExtractableValue? value, string? whyNot) = XamlRefactorings.ValueAt(file, offset);
+        if (value is null)
+        {
+            return new JsonObject { ["why"] = whyNot };
+        }
+        if (name is null)
+        {
+            return new JsonObject { ["suggested"] = value.Suggested, ["others"] = value.Others, ["places"] = Titles(places) };
+        }
+        string? keyProblem = XamlRefactorings.KeyProblem(file, name);
+        if (keyProblem is not null || !make)
+        {
+            return new JsonObject { ["problem"] = keyProblem };
+        }
+        bool everywhere = asked["everywhere"]!.GetValue<bool>();
+        ResourcePlace into = places[asked["place"]!.GetValue<int>()];
+        IReadOnlyList<XamlFileChange> changes = XamlRefactorings.ExtractResource(file, value, name, into, everywhere);
+        return new JsonObject { ["edit"] = WorkspaceEdit(changes, file), ["title"] = into.Title, ["uses"] = everywhere ? value.Uses.Count : 1 };
+    }
+
+    private static JsonArray Titles(IReadOnlyList<ResourcePlace> places) => [.. places.Select(p => (JsonNode)p.Title)];
+
+    /// <summary>XAML changes as LSP's workspace edit: each file's edits made from its text as it stands (an open file's as
+    /// typed), a file made as a create and its text.</summary>
+    private static JsonObject WorkspaceEdit(IEnumerable<XamlFileChange> changes, XamlFile file, JsonObject? texts = null)
+    {
+        JsonArray made = [];
+        foreach (XamlFileChange change in changes)
+        {
+            string uri = new Uri(change.Path).AbsoluteUri;
+            if (change.Made is not null)
+            {
+                made.Add(new JsonObject { ["kind"] = "create", ["uri"] = uri });
+                made.Add(Edits(uri, string.Empty, [new TextEdit(0, 0, change.Made)]));
+            }
+            if (change.Edits is not null)
+            {
+                string text = texts?[change.Path]?.GetValue<string>() ?? TextOf(change.Path, file);
+                made.Add(Edits(uri, text, change.Edits(text)));
+            }
+        }
+        return new JsonObject { ["documentChanges"] = made };
     }
 
     private static JsonObject Edits(string uri, string text, IEnumerable<TextEdit> edits) => new()

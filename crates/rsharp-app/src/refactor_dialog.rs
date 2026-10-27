@@ -98,7 +98,7 @@ pub struct RefactorDialog {
 
 impl EventEmitter<Closed> for RefactorDialog {}
 
-fn field(text: &str, cx: &mut App) -> Entity<TextField> {
+pub(crate) fn field(text: &str, cx: &mut App) -> Entity<TextField> {
     cx.new(|cx| {
         let mut field = TextField::new("", cx);
         field.set_text(text, cx);
@@ -340,7 +340,7 @@ impl Focusable for RefactorDialog {
     }
 }
 
-fn boxed(field: &Entity<TextField>, width: f32) -> gpui::Div {
+pub(crate) fn boxed(field: &Entity<TextField>, width: f32) -> gpui::Div {
     div()
         .w(px(width))
         .h(px(26.))
@@ -352,7 +352,7 @@ fn boxed(field: &Entity<TextField>, width: f32) -> gpui::Div {
         .child(field.clone())
 }
 
-fn labelled(label: &str, content: impl IntoElement) -> gpui::Div {
+pub(crate) fn labelled(label: &str, content: impl IntoElement) -> gpui::Div {
     div()
         .flex()
         .items_center()
@@ -361,7 +361,7 @@ fn labelled(label: &str, content: impl IntoElement) -> gpui::Div {
         .child(content)
 }
 
-fn small_button(id: impl Into<gpui::ElementId>, text: &str) -> gpui::Stateful<gpui::Div> {
+pub(crate) fn small_button(id: impl Into<gpui::ElementId>, text: &str) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
         .h(px(24.))
