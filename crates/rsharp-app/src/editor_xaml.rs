@@ -144,6 +144,24 @@ impl CodeEditor {
         }));
     }
 
+    /// Alt+Enter in XAML: the fixes of the problems on the caret's line, the file read as it stands.
+    pub(super) fn xaml_fixes(&mut self, cx: &mut Context<Self>) {
+        let Some((host, project)) = self.buffer.read(cx).xaml.clone() else { return };
+        let (path, text, head) = (self.path.clone(), self.text.to_string(), self.primary().head);
+        let line = self.text.byte_to_line(head);
+        let found = cx.background_executor().spawn(async move { host.fixes(&project, &path, &text, line) });
+        self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
+            let actions = found.await.map(|a| rsharp_lsp::code_actions(&a)).unwrap_or_default();
+            let _ = this.update(cx, |e, cx| {
+                if actions.is_empty() {
+                    cx.emit(Said("No fixes here".into()));
+                } else if e.primary().head == head {
+                    e.show(Popup::Actions { actions, selected: 0 }, head, cx);
+                }
+            });
+        }));
+    }
+
     /// Go to Declaration in a XAML file: a type's or member's C#, a resource's definition, a named element, a file.
     pub(super) fn xaml_declaration(&mut self, cx: &mut Context<Self>) {
         let Some((host, project)) = self.buffer.read(cx).xaml.clone() else { return };

@@ -147,6 +147,7 @@ terminal and takes focus for a moment.
   An element's name (`symbol`'s `named`) goes to the window as `CodeBehind`, which finds the code-behind's uses through
   Roslyn and lists or renames them; C#'s Go to Declaration on Avalonia's generated field (`generated_field`, its
   `hintName`) goes to the window as `XamlField`, which asks the host's `element` where the class's XAML names it.
+  Alt+Enter asks the host's `fixes` for the line's Passenger.Xaml fixes, code actions whose `edit` is applied as is.
 - `crates/rsharp-dap`: the Debug Adapter Protocol client and Passenger's debug adapter it runs. `build.rs`
   publishes Passenger's `Passenger.DebugAdapter` from the same submodule into `target/<profile>/sidecars/debugger`
   (its engine, ICorDebug behind DAP, with ILSpy's decompiler). `Session` starts it through `process::spawn` — so it

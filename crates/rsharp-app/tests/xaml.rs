@@ -450,3 +450,92 @@ fn an_elements_name_renames_with_its_code_behinds_uses_and_the_code_goes_to_it(c
     assert!(renamed.contains("<Button Name=\"Start\""), "the element's name was not renamed:\n{renamed}");
     assert!(renamed.contains("{Binding #Start.Content}"), "the binding naming it was not renamed:\n{renamed}");
 }
+
+const PALETTE: &str = "<ResourceDictionary xmlns=\"https://github.com/avaloniaui\"\n                    xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\">\n    <ResourceDictionary.ThemeDictionaries>\n        <ResourceDictionary x:Key=\"Dark\">\n            <SolidColorBrush x:Key=\"Accent\" Color=\"#3D7BF5\" />\n            <SolidColorBrush x:Key=\"Muted\" Color=\"#868A91\" />\n        </ResourceDictionary>\n        <ResourceDictionary x:Key=\"Light\">\n            <SolidColorBrush x:Key=\"Accent\" Color=\"#3574F0\" />\n            <SolidColorBrush x:Key=\"Muted\" Color=\"#6C707E\" />\n        </ResourceDictionary>\n    </ResourceDictionary.ThemeDictionaries>\n</ResourceDictionary>\n";
+const APP: &str = "<Application xmlns=\"https://github.com/avaloniaui\"\n             xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"\n             x:Class=\"Demo.App\">\n  <Application.Resources>\n    <ResourceDictionary>\n      <ResourceDictionary.MergedDictionaries>\n        <ResourceInclude Source=\"avares://Demo/Styles/Palette.axaml\" />\n      </ResourceDictionary.MergedDictionaries>\n    </ResourceDictionary>\n  </Application.Resources>\n</Application>\n";
+
+#[test]
+fn xaml_fixes_do_not_offer_to_change_or_create_csharp_from_disk_text() {
+    let Some(run) = restored(
+        "xaml-fixes-csharp",
+        &[
+            ("Demo.csproj", PROJECT),
+            ("MainWindow.axaml", WINDOW),
+            ("MainWindow.axaml.cs", CODE),
+            ("MainViewModel.cs", VIEW_MODEL),
+        ],
+    ) else {
+        return;
+    };
+    let host = rsharp_lsp::xaml::XamlHost::carried().unwrap();
+    let project = run.folder.join("Demo.csproj");
+    let path = run.folder.join("MainWindow.axaml");
+    for (binding, problem) in [
+        ("{Binding Missing}", "Cannot resolve property 'Missing' on MainViewModel"),
+        ("{Binding Greeting, Converter={StaticResource MissingConverter}}", "Resource 'MissingConverter' is not found"),
+    ] {
+        let text = WINDOW.replace("{Binding Greeting}", binding);
+        let problems = host.check(&project, &path, &text).unwrap().unwrap();
+        assert!(problems.iter().any(|p| p.message == problem), "the missing member or converter was not diagnosed");
+        let actions = rsharp_lsp::code_actions(&host.fixes(&project, &path, &text, 6).unwrap());
+        assert!(actions.is_empty(), "a fix could change unsaved C# using disk positions: {actions:?}");
+    }
+}
+
+#[gpui::test]
+fn a_key_one_theme_variant_lacks_is_warned_of_and_the_fix_adds_it_to_that_variant(cx: &mut TestAppContext) {
+    let window_text = "<Window xmlns=\"https://github.com/avaloniaui\"\n        xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"\n        x:Class=\"Demo.MainWindow\">\n  <Button Content=\"Go\" Foreground=\"{DynamicResource Danger}\" />\n</Window>\n";
+    let Some(run) = restored(
+        "xaml-variants",
+        &[
+            ("Demo.csproj", PROJECT),
+            ("App.axaml", APP),
+            ("App.axaml.cs", "namespace Demo;\n\npublic partial class App : Avalonia.Application { }\n"),
+            ("Styles/Palette.axaml", PALETTE),
+            ("MainWindow.axaml", window_text),
+            ("MainWindow.axaml.cs", CODE),
+        ],
+    ) else {
+        return;
+    };
+    let (main, cx) = run.window(cx);
+    cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
+    let (view, palette) = (run.folder.join("MainWindow.axaml"), run.folder.join("Styles/Palette.axaml"));
+    main.update_in(cx, |m, window, cx| {
+        m.open_workspace(&run.folder, window, cx);
+        m.open_file(&view, None, window, cx);
+        m.open_file(&palette, None, window, cx);
+    });
+    let buffer_of = |path: &std::path::PathBuf, cx: &mut VisualTestContext| {
+        cx.update(|_, cx| rsharp_app::buffer::find(path, cx)).unwrap()
+    };
+    let messages = |path: &std::path::PathBuf, cx: &mut VisualTestContext| {
+        let buffer = buffer_of(path, cx);
+        buffer.read_with(cx, |b, _| b.diagnostics.iter().map(|d| d.message.clone()).collect::<Vec<_>>())
+    };
+
+    // Dark gets a key Light lacks, as typed: warned where it is defined and, from the palette as typed, where it is used.
+    let added = "\n            <SolidColorBrush x:Key=\"Danger\" Color=\"#E55765\" />";
+    let dark_muted = "<SolidColorBrush x:Key=\"Muted\" Color=\"#868A91\" />";
+    buffer_of(&palette, cx)
+        .update(cx, |b, cx| b.replace_all(PALETTE.replace(dark_muted, &format!("{dark_muted}{added}")), cx));
+    wait(cx, "the warning on the key only Dark defines", |cx| !messages(&palette, cx).is_empty());
+    assert_eq!(messages(&palette, cx), ["'Danger' is defined for Dark but not for Light"]);
+    wait(cx, "the warning on the window's use of it", |cx| !messages(&view, cx).is_empty());
+    assert_eq!(messages(&view, cx), ["'Danger' is not defined for Light"]);
+
+    // Alt+Enter on the key's line offers the fix, which adds it to Light; both warnings go.
+    main.update_in(cx, |m, window, cx| m.open_file(&palette, Some((6, 40)), window, cx));
+    let editor = main.read_with(cx, |m, _| m.editor().unwrap());
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "alt-enter" } else { "ctrl-." });
+    wait(cx, "the fix offered", |cx| editor.read_with(cx, |e, _| e.actions_shown().is_some()));
+    assert_eq!(editor.read_with(cx, |e, _| e.actions_shown()).unwrap(), ["Add 'Danger' to Light"]);
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    let fixed = buffer_of(&palette, cx).read_with(cx, |b, _| b.document.text().to_string());
+    assert!(
+        fixed.contains("<SolidColorBrush x:Key=\"Muted\" Color=\"#6C707E\" />\n            <SolidColorBrush x:Key=\"Danger\" Color=\"#E55765\" />\n        </ResourceDictionary>"),
+        "the fix did not add the key to Light:\n{fixed}"
+    );
+    wait(cx, "both warnings gone", |cx| messages(&palette, cx).is_empty() && messages(&view, cx).is_empty());
+}

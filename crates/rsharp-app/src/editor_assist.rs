@@ -702,6 +702,10 @@ impl CodeEditor {
 
     /// Alt+Enter: the context actions and quick fixes for the selection, or the caret's place.
     pub(super) fn request_actions(&mut self, cx: &mut Context<Self>) {
+        if self.is_xaml() {
+            self.xaml_fixes(cx);
+            return;
+        }
         let Some((server, uri)) = self.server(cx) else { return };
         let selection = self.primary();
         let span = lsp::Span {
@@ -734,6 +738,16 @@ impl CodeEditor {
 
     /// A code action resolved and made; one that holds others (Roslyn's nested actions) lists them instead.
     pub(super) fn run_action(&mut self, action: CodeAction, cx: &mut Context<Self>) {
+        // An action that carries its edit (a XAML fix) needs no resolving.
+        if action.raw["edit"].is_object() {
+            let server = self.server(cx).map(|(server, _)| server);
+            if let Err(why) =
+                language::apply_workspace_edit(&lsp::workspace_edit(&action.raw["edit"]), server.as_deref(), cx)
+            {
+                cx.emit(Said(why));
+            }
+            return;
+        }
         let Some((server, _)) = self.server(cx) else { return };
         let answer = ask(&server, "codeAction/resolve", action.raw.clone(), cx);
         let head = self.primary().head;

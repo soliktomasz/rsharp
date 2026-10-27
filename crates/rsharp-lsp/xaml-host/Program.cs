@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Passenger.Text;
 using Passenger.Xaml;
 using Passenger.Xaml.Features;
 using Passenger.Xaml.Projects;
@@ -61,6 +62,7 @@ public static class Program
                 "complete" => Complete(asked),
                 "symbol" => Symbol(asked),
                 "element" => Element(asked),
+                "fixes" => Fixes(asked),
                 "changed" => Changed(asked),
                 "closed" => Closed(asked),
                 var method => throw new InvalidOperationException($"the XAML host has no method {method}"),
@@ -183,6 +185,43 @@ public static class Program
         }
         return answer;
     }
+
+    /// <summary>The fixes of the problems on a line that edit an existing XAML file, as LSP code actions.</summary>
+    private static JsonNode Fixes(JsonNode asked)
+    {
+        JsonArray actions = [];
+        if (Read(asked) is not { File: var file })
+        {
+            return actions;
+        }
+        int line = asked["line"]!.GetValue<int>();
+        foreach (XamlDiagnostic diagnostic in XamlDiagnostics.Of(file).Where(d => Point(file.Text, d.Range.Start)["line"]!.GetValue<int>() == line))
+        {
+            foreach (XamlFix fix in diagnostic.Fixes)
+            {
+                // shortcut: hide fixes that edit C# or make other files, until create from usage reads current target buffers.
+                if (!file.Project.Files.ContainsKey(fix.Path) || fix.Others.Count != 0)
+                {
+                    continue;
+                }
+                string text = TextOf(fix.Path, file);
+                JsonArray changes = [Edits(new Uri(fix.Path).AbsoluteUri, text, fix.Edits(text))];
+                actions.Add(new JsonObject
+                {
+                    ["title"] = fix.Title,
+                    ["kind"] = "quickfix",
+                    ["edit"] = new JsonObject { ["documentChanges"] = changes },
+                });
+            }
+        }
+        return actions;
+    }
+
+    private static JsonObject Edits(string uri, string text, IEnumerable<TextEdit> edits) => new()
+    {
+        ["textDocument"] = new JsonObject { ["uri"] = uri },
+        ["edits"] = new JsonArray([.. edits.Select(e => (JsonNode)new JsonObject { ["range"] = Range(text, e.Start, e.End), ["newText"] = e.Text })]),
+    };
 
     /// <summary>Where the XAML of a class names an element: what the field Avalonia's generator makes for it leads to.</summary>
     private static JsonNode? Element(JsonNode asked)
