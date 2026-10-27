@@ -38,6 +38,37 @@ pub fn generated_field(answer: &serde_json::Value) -> Option<String> {
     })
 }
 
+/// WPF's MarkupCompile output for a XAML file, `obj/…/File.g.cs` (`.g.i.cs` at design time).
+pub fn is_markup_compiled(path: &std::path::Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    (name.ends_with(".g.cs") || name.ends_with(".g.i.cs")) && path.components().any(|c| c.as_os_str() == "obj")
+}
+
+/// Where a named element's XAML names it, for MarkupCompile's field of it: the file and line of the `#line` before the
+/// field, the caret on the name's value there; None for any other place.
+pub(super) fn markup_compiled_name(field: &rsharp_lsp::Location, name: &str, cx: &App) -> Option<rsharp_lsp::Location> {
+    if !is_markup_compiled(&field.path) {
+        return None;
+    }
+    let generated = std::fs::read_to_string(&field.path).ok()?;
+    let (line, file) =
+        generated.lines().take(field.span.start.line + 1).collect::<Vec<_>>().into_iter().rev().find_map(|l| {
+            let (line, file) = l.trim().strip_prefix("#line ")?.split_once(' ')?;
+            Some((line.parse::<usize>().ok()?, file.trim().trim_matches('"').to_string()))
+        })?;
+    let xaml = rsharp_core::paths::canonical(&field.path.parent()?.join(file.replace('\\', "/")));
+    let text = match crate::buffer::find(&xaml, cx) {
+        Some(open) => open.read(cx).document.text().to_string(),
+        None => std::fs::read_to_string(&xaml).ok()?,
+    };
+    let written = text.lines().nth(line.checked_sub(1)?)?;
+    let quoted = format!("Name=\"{name}\"");
+    let column =
+        written.find(&quoted).map_or(0, |at| written[..at + quoted.len() - name.len() - 1].encode_utf16().count());
+    let at = rsharp_lsp::Point::new(line - 1, column);
+    Some(rsharp_lsp::Location { path: xaml, span: rsharp_lsp::Span { start: at, end: at } })
+}
+
 impl CodeEditor {
     pub(super) fn is_xaml(&self) -> bool {
         rsharp_lsp::xaml::is_xaml(&self.path)

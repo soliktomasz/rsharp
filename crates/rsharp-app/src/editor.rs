@@ -27,7 +27,7 @@ mod templates;
 #[path = "editor_xaml.rs"]
 mod xaml_help;
 pub use assist::{Navigate, Said, ValueAsked};
-pub use xaml_help::{CodeBehind, XamlField, generated_field};
+pub use xaml_help::{CodeBehind, XamlField, generated_field, is_markup_compiled};
 
 actions!(
     editor,
