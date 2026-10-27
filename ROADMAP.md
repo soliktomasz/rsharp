@@ -454,9 +454,10 @@ into `sidecars/xaml`; `rsharp_lsp::xaml::XamlHost` starts it on the first XAML f
 its problems marked; completion opens as Passenger's does (a tag's `<`, a start tag's space, a value's quote or brace,
 a path's dot, a word's first letter), a property goes in with its quotes and offers its values, F1 shows the name's
 card, and Go to Declaration opens a type's or member's C#, a resource's definition, a named element or an asset.
+After a build, the XAML compiler's problems (AVLN, MarkupCompile's MC) are marked in each open XAML file on the name
+their place points at, with their code, where the host finds nothing on that line, until the line is edited.
 `tests/xaml.rs` holds the first of XamlTests' cases on a restored Avalonia app. Not yet: a library's type decompiled
-or a theme's XAML through Source Link, a restore seen while the file is open (the watcher passes over obj/), the
-build's AVLN errors on their lines, rename, theme variants, assets and colours, formatting, the refactorings and
+or a theme's XAML through Source Link, a restore seen while the file is open (the watcher passes over obj/), rename, theme variants, assets and colours, formatting, the refactorings and
 create from usage, WPF's cases, the previewers, the inspector and the MCP `app_*` tools.
 - A XAML host: `Passenger.Xaml` behind a thin JSON-lines (or LSP) process, giving completion, diagnostics,
   navigation, formatting, Extract Resource and Style, and create from usage.

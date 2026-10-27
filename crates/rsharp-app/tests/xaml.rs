@@ -344,3 +344,52 @@ fn avalonia_xaml_completes_marks_and_goes_to_what_its_project_declares(cx: &mut 
     let caret = main.read_with(cx, |m, cx| m.editor().unwrap().read(cx).caret());
     assert_eq!(caret.line, 4, "Go to Declaration did not land on the Greeting property");
 }
+
+#[gpui::test]
+fn after_a_build_the_xaml_compilers_error_is_marked_on_its_line_until_that_line_is_edited(cx: &mut TestAppContext) {
+    // A library, so the build reaches Avalonia's XAML compiler with no entry point to write.
+    let project = PROJECT.replace("<OutputType>WinExe</OutputType>", "<OutputType>Library</OutputType>");
+    let text = WINDOW.replace("<TextBlock Text", "<TextBlock Width=\"wide\" Text");
+    let Some(run) = restored(
+        "xaml-built",
+        &[
+            ("Demo.csproj", &project),
+            ("MainWindow.axaml", &text),
+            ("MainWindow.axaml.cs", CODE),
+            ("MainViewModel.cs", VIEW_MODEL),
+        ],
+    ) else {
+        return;
+    };
+    let (main, cx) = run.window(cx);
+    cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
+    let window = run.folder.join("MainWindow.axaml");
+    main.update_in(cx, |m, window_, cx| {
+        m.open_workspace(&run.folder, window_, cx);
+        m.open_file(&window, Some((6, 23)), window_, cx);
+    });
+    let buffer = main.read_with(cx, |m, cx| m.editor().unwrap().read(cx).buffer.clone());
+
+    // A number only the compiler reads: marked once the build says so, on the attribute's name.
+    cx.simulate_keystrokes("secondary-shift-b");
+    wait(cx, "the build's AVLN1000 marked", |cx| {
+        buffer.read_with(cx, |b, _| b.diagnostics.iter().any(|d| d.message.starts_with("AVLN1000")))
+    });
+    let (marked, word) = buffer.read_with(cx, |b, _| {
+        let d = b.diagnostics.iter().find(|d| d.message.starts_with("AVLN1000")).unwrap().clone();
+        let word = b.document.text().byte_slice(d.range.clone()).to_string();
+        (d, word)
+    });
+    assert!(marked.error, "the compiler's error is not marked as an error");
+    assert_eq!(
+        marked.message, "AVLN1000: The input string 'wide' was not in a correct format.",
+        "the editor displayed the wrong build error text"
+    );
+    assert_eq!(word, "Width", "the build's problem is not on the attribute its place points at");
+
+    // The line edited, the build's word on it is the build's, no longer this text's.
+    cx.simulate_input("x");
+    wait(cx, "the build's problem gone from the edited line", |cx| {
+        buffer.read_with(cx, |b, _| b.diagnostics.iter().all(|d| !d.message.starts_with("AVLN")))
+    });
+}

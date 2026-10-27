@@ -11,7 +11,7 @@ use rsharp_languages::{edit as edit_tree, parse};
 use rsharp_lsp::LanguageServer;
 use rsharp_text::{Change, Document, Edit, EditPlan, Indent, LineEnding, Rope, Selection, detect_indent, line_end};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -92,6 +92,10 @@ pub struct Buffer {
     /// A XAML file's host and the project it is read against.
     pub xaml: Option<(rsharp_lsp::xaml::XamlHost, PathBuf)>,
     checking_xaml: Option<Task<()>>,
+    /// A XAML file's problems as the host last found them, and the last build's with the line each is on: the build's
+    /// is shown where the host finds nothing on its line, and goes once that line is edited.
+    xaml_live: Vec<Diagnostic>,
+    xaml_built: Vec<(usize, Diagnostic)>,
     xaml_changes: Option<Task<()>>,
 }
 
@@ -245,6 +249,8 @@ impl Buffer {
             insight: None,
             xaml: None,
             checking_xaml: None,
+            xaml_live: Vec::new(),
+            xaml_built: Vec::new(),
             xaml_changes: None,
             inspecting: None,
         };
@@ -325,6 +331,24 @@ impl Buffer {
             }
         }
         self.diagnostics.retain(|d| changes.iter().all(|c| d.range.end <= c.start.offset));
+        if !self.xaml_built.is_empty() {
+            self.xaml_live.retain(|d| changes.iter().all(|c| d.range.end <= c.start.offset));
+            for c in &changes {
+                let delta = c.new_end.offset as isize - c.old_end.offset as isize;
+                self.xaml_built.retain_mut(|(line, d)| {
+                    if *line < c.start.line {
+                        return true;
+                    }
+                    if *line <= c.old_end.line {
+                        return false;
+                    }
+                    *line = *line + c.new_end.line - c.old_end.line;
+                    d.range = d.range.start.saturating_add_signed(delta)..d.range.end.saturating_add_signed(delta);
+                    true
+                });
+            }
+            self.show_xaml();
+        }
         // The stop's marks go with their code, as Rider's execution point and inline values do. They are the buffer's,
         // shared by every window showing it, so they move here once rather than once per window told of the edit.
         let follow = |line: usize| rsharp_text::map_line(&changes, line);
@@ -714,7 +738,7 @@ impl Buffer {
                     return;
                 }
                 let at = |p: rsharp_lsp::Point| b.document.offset_of_utf16(p.line, p.character);
-                b.diagnostics = problems
+                b.xaml_live = problems
                     .iter()
                     .map(|p| Diagnostic {
                         range: at(p.span.start)..at(p.span.end),
@@ -722,9 +746,51 @@ impl Buffer {
                         message: p.message.clone(),
                     })
                     .collect();
+                b.show_xaml();
                 cx.notify();
             });
         }));
+    }
+
+    /// The XAML compiler's problems in this file from the build that just ended, each on the name its place points at
+    /// (a tag's or an attribute's), else the rest of its line.
+    pub fn built(&mut self, problems: &[rsharp_core::build::Problem], cx: &mut Context<Self>) {
+        let me = rsharp_core::paths::canonical(&self.path);
+        let text = self.document.text().clone();
+        self.xaml_built = problems
+            .iter()
+            .filter(|p| p.path.as_ref().is_some_and(|path| rsharp_core::paths::canonical(path) == me))
+            .filter(|p| p.line < text.len_lines())
+            .map(|p| {
+                let (start, end) = (text.line_to_byte(p.line), line_end(&text, p.line));
+                let line = text.byte_slice(start..end).to_string();
+                let column = line.char_indices().nth(p.column).map_or(line.len(), |(i, _)| i);
+                let name = column + usize::from(line[column..].starts_with('<'));
+                let name = name + usize::from(line[name..].starts_with('/'));
+                let length = line[name..]
+                    .find(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '.' | ':' | '-')))
+                    .unwrap_or(line.len() - name);
+                let range = if length > 0 { start + name..start + name + length } else { start + column..end };
+                let code = if p.code.is_empty() { String::new() } else { format!("{}: ", p.code) };
+                let message = Diagnostic {
+                    range,
+                    error: p.severity == rsharp_core::build::Severity::Error,
+                    message: code + compiler_message(&p.message),
+                };
+                (p.line, message)
+            })
+            .collect();
+        self.show_xaml();
+        cx.notify();
+    }
+
+    /// The host's problems, and the build's on the lines without a host error.
+    fn show_xaml(&mut self) {
+        let text = self.document.text();
+        let line = |d: &Diagnostic| text.byte_to_line(d.range.start.min(text.len_bytes()));
+        let lines: HashSet<usize> = self.xaml_live.iter().filter(|d| d.error).map(line).collect();
+        let built = self.xaml_built.iter().filter(|(l, _)| !lines.contains(l)).map(|(_, d)| d.clone());
+        self.diagnostics = self.xaml_live.iter().cloned().chain(built).collect();
     }
 
     /// Whether the file on disk differs: its text, its line separator or its encoding.
@@ -795,5 +861,77 @@ impl Buffer {
         }
         cx.notify();
         Ok(())
+    }
+}
+
+/// A compiler's message without the place it repeats at its end: Avalonia's "Line 8, position 6.", WPF's MarkupCompile's
+/// "Line 8 Position 6.".
+fn compiler_message(message: &str) -> &str {
+    match message.rfind(" Line ") {
+        Some(at) if message[at..].to_ascii_lowercase().contains(" position ") => message[..at].trim_end(),
+        _ => message,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rsharp_core::build::{Problem, Severity};
+
+    #[gpui::test]
+    fn xaml_build_errors_on_either_closing_tag_delimiter_mark_the_name(cx: &mut gpui::TestAppContext) {
+        let path = std::env::temp_dir().join("rsharp-closing-tag.axaml");
+        let buffer = cx.new(|cx| Buffer::new(path.clone(), b"  </local:Window>\n", cx));
+        for column in [2, 3] {
+            buffer.update(cx, |b, cx| {
+                b.built(
+                    &[Problem {
+                        severity: Severity::Error,
+                        message: "Mismatched tag".into(),
+                        code: "AVLN1000".into(),
+                        path: Some(path.clone()),
+                        project: None,
+                        line: 0,
+                        column,
+                    }],
+                    cx,
+                );
+                let marked = b.document.text().byte_slice(b.diagnostics[0].range.clone()).to_string();
+                assert_eq!(
+                    marked, "local:Window",
+                    "the build error at column {column} did not mark the closing tag's name"
+                );
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn xaml_live_warnings_keep_build_errors_while_live_errors_take_precedence(cx: &mut gpui::TestAppContext) {
+        let path = std::env::temp_dir().join("rsharp-live-warning.axaml");
+        let buffer = cx.new(|cx| Buffer::new(path.clone(), b"<Window />\n", cx));
+        for error in [true, false] {
+            buffer.update(cx, |b, cx| {
+                b.xaml_live = vec![Diagnostic { range: 1..7, error, message: "Live diagnostic".into() }];
+                b.built(
+                    &[Problem {
+                        severity: Severity::Error,
+                        message: "Build error".into(),
+                        code: "AVLN1000".into(),
+                        path: Some(path.clone()),
+                        project: None,
+                        line: 0,
+                        column: 0,
+                    }],
+                    cx,
+                );
+                let messages: Vec<_> = b.diagnostics.iter().map(|d| d.message.as_str()).collect();
+                let expected =
+                    if error { vec!["Live diagnostic"] } else { vec!["Live diagnostic", "AVLN1000: Build error"] };
+                assert_eq!(
+                    messages, expected,
+                    "a live diagnostic with error={error} gave the build error the wrong precedence"
+                );
+            });
+        }
     }
 }

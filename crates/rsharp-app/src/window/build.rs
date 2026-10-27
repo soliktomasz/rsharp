@@ -263,6 +263,7 @@ impl MainWindow {
         let implicit = std::mem::take(&mut self.implicit_build);
         self.build_cancel = None;
         self.build_problems = outcome.problems.clone();
+        self.xaml_built(cx);
         let failed = matches!(outcome.status, BuildStatus::Failed | BuildStatus::NotStarted);
         let warned = outcome.problems.iter().any(|problem| problem.severity == Severity::Warning);
         let show = match settings(cx).build_results {
