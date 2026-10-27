@@ -692,8 +692,9 @@ impl MainWindow {
         self.area.groups[group].active = Some(index);
         let path = self.area.groups[group].tabs[index].editor.read(cx).path.clone();
         self.recent.retain(|p| *p != path);
-        self.recent.insert(0, path);
+        self.recent.insert(0, path.clone());
         self.recent.truncate(HISTORY);
+        self.follow_preview(&path, cx);
         window.focus(&self.area.groups[group].tabs[index].editor.focus_handle(cx));
         self.follow_find_bar(cx);
         self.save_state(cx);
@@ -1508,7 +1509,6 @@ impl MainWindow {
                 }
                 self.attach_msbuild(&buffer, cx);
                 self.attach_xaml(&buffer, cx);
-                self.follow_preview(&path, cx);
                 self.attach_git_buffer(&buffer, cx);
                 self.note_hot_reload_original(&buffer, cx);
                 self.show_breakpoints(&path, cx);
@@ -2823,6 +2823,10 @@ impl MainWindow {
         }
         let had_focus = self.tool_area(tool, cx).contains_focused(window, cx);
         self.dock.toggle(tool);
+        // A preview no one sees ends, its previewer with it.
+        if tool == Tool::XamlPreview && !self.dock.is_open(tool) {
+            self.stop_preview(cx);
+        }
         if self.dock.is_open(tool) {
             window.focus(&self.tool_focus(tool, cx));
         } else if had_focus {

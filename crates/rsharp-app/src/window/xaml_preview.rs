@@ -152,7 +152,7 @@ impl MainWindow {
         }));
     }
 
-    fn stop_preview(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn stop_preview(&mut self, cx: &mut Context<Self>) {
         let Some(preview) = self.preview.take() else { return };
         if let (Some(session), Some(host)) = (preview.session, self.xaml.clone()) {
             cx.background_executor()

@@ -2054,4 +2054,14 @@ fn the_preview_draws_a_window_from_the_last_build_follows_its_text_and_draws_sty
                 .is_some_and(|(width, height)| (0..width).step_by(4).any(|x| m.preview_pixel(x, height / 2) == orange))
         })
     });
+
+    // Back to the window's tab, open already: the preview follows it.
+    main.update_in(cx, |m, window_, cx| m.open_file(&window, None, window_, cx));
+    wait(cx, "the preview back on the window", |cx| {
+        main.read_with(cx, |m, _| m.preview_frame() == Some((800, 450)) && m.preview_pixel(400, 300) == orange)
+    });
+
+    // Closed, the preview ends, its previewer with it.
+    main.update_in(cx, |m, window_, cx| m.toggle_tool(rsharp_app::dock::Tool::XamlPreview, window_, cx));
+    assert_eq!(status(cx), "", "the preview went on with its tool window closed");
 }
