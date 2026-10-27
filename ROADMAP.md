@@ -461,11 +461,12 @@ included) and where its code-behind uses the field made for it, Roslyn's referen
 Avalonia's generated field; Go to Declaration on that field in C# opens the XAML's name. Alt+Enter lists the fixes
 of the problems on the caret's line (the host's `fixes`, LSP code actions with their edits in them), among them a
 theme variant's missing key added as a copy of the other variant's definition. Fixes that edit C# or create files
-are hidden until create from usage reads current target buffers.
+are hidden until create from usage reads current target buffers. An `avares://` path completes from the project's
+assets, a missing one is warned of, and Go to Declaration opens the file it names.
 `tests/xaml.rs` holds the first of XamlTests' cases on a restored Avalonia app. Not yet: a library's type decompiled
 or a theme's XAML through Source Link, a restore seen while the file is open (the watcher passes over obj/), a rename
-undone whole across its files, assets and colours, formatting, the refactorings and create from usage,
-WPF's cases, the previewers, the inspector and the MCP `app_*` tools.
+undone whole across its files, a typed quote closed (RSharp's editor pairs none), colours, formatting, the
+refactorings and create from usage, WPF's cases, the previewers, the inspector and the MCP `app_*` tools.
 - A XAML host: `Passenger.Xaml` behind a thin JSON-lines (or LSP) process, giving completion, diagnostics,
   navigation, formatting, Extract Resource and Style, and create from usage.
 - The previewers: Avalonia.Designer.HostApp, and Passenger's WpfPreview.
