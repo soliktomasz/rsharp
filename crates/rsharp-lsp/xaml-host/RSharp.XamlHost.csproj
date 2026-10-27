@@ -9,6 +9,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- The previewer's own entry, a project of its own (build.rs publishes it into preview/). -->
+    <Compile Remove="preview/**" />
     <ProjectReference Include="../../../vendor/passenger/src/Passenger.Xaml/Passenger.Xaml.csproj" />
     <!-- Avalonia's previewer protocol (MIT), which the preview speaks to the project's Avalonia.Designer.HostApp. -->
     <PackageReference Include="Avalonia.Remote.Protocol" />

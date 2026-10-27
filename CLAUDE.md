@@ -161,7 +161,12 @@ terminal and takes focus for a moment.
   The XAML Preview (`window/xaml_preview.rs`, the `XamlPreview` tool on the right) is the host's `preview` request
   (`Preview.cs`: Avalonia.Remote.Protocol to the project's own Avalonia.Designer.HostApp, frames streamed back as
   partial replies until `preview_stop`); RSharp starts the HostApp the host names through `process::spawn`, sends the
-  text 300 ms after typing pauses (`preview_update`) and starts again after a build. The session waits on a thread of
+  text 300 ms after typing pauses (`preview_update`) and starts again after a build. On Avalonia 12 the HostApp runs
+  under `xaml-host/preview/` (RSharp.Preview, published into `sidecars/xaml/preview`, compiled against Avalonia 12.0.0
+  and carrying none of it): HostApp's own Main with its loader wrapped through a DispatchProxy (the loader interface is
+  internal) so CreateSourceInfo is on, each design window's elements and boxes sent as JSON lines to a port of the
+  host's, which makes them the file's elements (`elements` partials): a click in the frame selects one's start tag and
+  the element at the caret is outlined. The session waits on a thread of
   its own: a request that never answers would stall the test platform's executor.
 - `crates/rsharp-dap`: the Debug Adapter Protocol client and Passenger's debug adapter it runs. `build.rs`
   publishes Passenger's `Passenger.DebugAdapter` from the same submodule into `target/<profile>/sidecars/debugger`

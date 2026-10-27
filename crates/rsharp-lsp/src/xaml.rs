@@ -65,13 +65,24 @@ pub struct XamlColour {
 }
 
 /// What a preview says as it goes: the HostApp to start (its arguments to `dotnet`, in its folder), a frame, why the XAML
-/// did not load (None once it loads again), or that the root has no size to draw.
+/// did not load (None once it loads again), that the root has no size to draw, or the file's elements as the frame
+/// draws them.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PreviewEvent {
     Started { session: String, arguments: Vec<String>, folder: PathBuf },
     Frame(PreviewFrame),
     Error(Option<String>),
     Empty(bool),
+    Elements(Vec<PreviewElement>),
+}
+
+/// An element of the previewed file as the frame draws it (Passenger's PreviewElement): its start tag and its whole
+/// markup in the text last sent, and its box in the frame at 96 DPI, as x, y, width and height. Parents come first.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreviewElement {
+    pub tag: Span,
+    pub whole: Span,
+    pub bounds: [f32; 4],
 }
 
 /// A frame of the previewer: its size in pixels, its pixels as BGRA rows with no padding, and the DPI it was drawn at.
@@ -261,6 +272,7 @@ impl XamlHost {
     pub fn format(
         &self,
         text: &str,
+        settings: &Value,
         editorconfig: &serde_json::Map<String, Value>,
         indent: (usize, bool),
         range: Option<Span>,
@@ -268,7 +280,8 @@ impl XamlHost {
         let found = self.ask(
             "format",
             json!({
-                "text": text, "editorconfig": editorconfig, "indentSize": indent.0, "tabs": indent.1, "eol": "\n",
+                "text": text, "settings": settings, "editorconfig": editorconfig, "indentSize": indent.0,
+                "tabs": indent.1, "eol": "\n",
                 "range": range.map(Span::to_json),
             }),
         )?;
@@ -397,6 +410,18 @@ fn preview_event(partial: &Value) -> Option<PreviewEvent> {
     }
     if let Some(error) = partial.get("error") {
         return Some(PreviewEvent::Error(error.as_str().map(str::to_string)));
+    }
+    if let Some(elements) = partial.get("elements") {
+        let elements = elements.as_array()?.iter().filter_map(|e| {
+            let b = e["box"].as_array()?;
+            let n = |i: usize| b.get(i).and_then(Value::as_f64).map(|v| v as f32);
+            Some(PreviewElement {
+                tag: Span::from(&e["tag"]),
+                whole: Span::from(&e["whole"]),
+                bounds: [n(0)?, n(1)?, n(2)?, n(3)?],
+            })
+        });
+        return Some(PreviewEvent::Elements(elements.collect()));
     }
     partial.get("empty").map(|empty| PreviewEvent::Empty(empty == true))
 }

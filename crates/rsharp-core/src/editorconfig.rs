@@ -5,11 +5,11 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// The properties that apply to one file, by their lower-case names and values, and the .editorconfig that gave
-/// each.
+/// The properties that apply to one file, by their lower-case names and values (and each value as written), and the
+/// .editorconfig that gave each.
 #[derive(Default, Clone, Debug, PartialEq)]
 pub struct EditorConfig {
-    properties: HashMap<String, (String, PathBuf)>,
+    properties: HashMap<String, (String, String, PathBuf)>,
 }
 
 impl EditorConfig {
@@ -35,8 +35,8 @@ impl EditorConfig {
             let relative = file.strip_prefix(dir).unwrap_or(file).to_string_lossy().replace('\\', "/");
             for (glob, pairs) in parse(&text).1 {
                 if matches(&glob, &relative) {
-                    for (key, value) in pairs {
-                        properties.insert(key, (value, config.clone()));
+                    for (key, written) in pairs {
+                        properties.insert(key, (written.to_lowercase(), written, config.clone()));
                     }
                 }
             }
@@ -46,17 +46,26 @@ impl EditorConfig {
 
     /// A property's value, lower case, none where none applies or it is `unset`.
     pub fn get(&self, key: &str) -> Option<&str> {
-        self.properties.get(key).map(|(v, _)| v.as_str()).filter(|v| *v != "unset")
+        self.properties.get(key).map(|(v, _, _)| v.as_str()).filter(|v| *v != "unset")
     }
 
-    /// Every property that applies, `unset` ones left out.
+    /// Every property that applies, `unset` ones left out, each value lower case.
     pub fn properties(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.properties.iter().map(|(k, (v, _))| (k.as_str(), v.as_str())).filter(|(_, v)| *v != "unset")
+        self.properties.iter().map(|(k, (v, _, _))| (k.as_str(), v.as_str())).filter(|(_, v)| *v != "unset")
+    }
+
+    /// Every property that applies, each value as its file writes it: what a value naming things says in their own
+    /// letter case (XAML Styler's attribute ordering rule groups).
+    pub fn properties_as_written(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.properties
+            .iter()
+            .filter(|(_, (v, _, _))| v != "unset")
+            .map(|(k, (_, written, _))| (k.as_str(), written.as_str()))
     }
 
     /// The .editorconfig that set a property.
     pub fn source(&self, key: &str) -> Option<&Path> {
-        self.properties.get(key).map(|(_, from)| from.as_path())
+        self.properties.get(key).map(|(_, _, from)| from.as_path())
     }
 
     pub fn flag(&self, key: &str) -> Option<bool> {
@@ -81,10 +90,10 @@ fn parse(text: &str) -> (bool, Vec<Section>) {
         if let Some(glob) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
             sections.push((glob.to_string(), Vec::new()));
         } else if let Some((key, value)) = line.split_once(['=', ':']) {
-            let (key, value) = (key.trim().to_lowercase(), value.trim().to_lowercase());
+            let (key, value) = (key.trim().to_lowercase(), value.trim().to_string());
             match sections.last_mut() {
                 Some((_, pairs)) => pairs.push((key, value)),
-                None if key == "root" => root = value == "true",
+                None if key == "root" => root = value.eq_ignore_ascii_case("true"),
                 None => {}
             }
         }
@@ -172,10 +181,16 @@ mod tests {
         std::fs::write(base.join(".editorconfig"), "[*]\nindent_size = 8\ninsert_final_newline = false\n").unwrap();
         std::fs::write(base.join("repo/.editorconfig"), "root = true\n[*.cs]\nindent_style = space\nindent_size = 4\n")
             .unwrap();
-        std::fs::write(inner.join(".editorconfig"), "[*.cs]\nindent_size = 2\n").unwrap();
+        std::fs::write(
+            inner.join(".editorconfig"),
+            "[*.cs]\nindent_size = 2\nindent_style = Tab\nxaml_order = x:Name; Grid.Row\n",
+        )
+        .unwrap();
         let config = EditorConfig::for_file(&inner.join("Program.cs"));
         assert_eq!(config.get("indent_size"), Some("2"), "the nearer .editorconfig did not win");
-        assert_eq!(config.get("indent_style"), Some("space"));
+        assert_eq!(config.get("indent_style"), Some("tab"), "a value was not read in lower case");
+        let written: HashMap<&str, &str> = config.properties_as_written().collect();
+        assert_eq!(written.get("xaml_order"), Some(&"x:Name; Grid.Row"), "a value lost its letter case as written");
         assert_eq!(config.flag("insert_final_newline"), None, "a file above the root was read");
         assert_eq!(config.source("indent_size"), Some(inner.join(".editorconfig").as_path()));
         std::fs::remove_dir_all(&base).unwrap();

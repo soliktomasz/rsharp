@@ -41,9 +41,7 @@ impl MainWindow {
         }
     }
 
-    /// Files another program wrote: the projects that hold them read again, a project file's read afresh.
-    // shortcut: the watcher passes over obj/, so a restore landing while a XAML file is open is not seen until the
-    // project file changes; report project.assets.json apart, as Passenger's watcher does, once restores are run here.
+    /// Files another program wrote: the projects that hold them read again, a project file's or a restore's read afresh.
     pub(super) fn xaml_files_changed(&self, paths: &[PathBuf], cx: &mut Context<Self>) {
         let Some(host) = self.xaml.clone() else { return };
         let paths = paths.to_vec();

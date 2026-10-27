@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Avalonia's previewer as its Avalonia.Designer.HostApp runs it, with where each element is drawn sent to the XAML host
+       (Preview.cs): run under the project's own runtimeconfig and deps.json, so it takes the project's Avalonia. Its own
+       assembly alone is published, into the host's preview/ folder. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- The oldest .NET an Avalonia 12 app runs on, so it loads into any of them. -->
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>RSharp.Preview</RootNamespace>
+    <RollForward>LatestMajor</RollForward>
+    <UseAppHost>false</UseAppHost>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Avalonia's first 12, so the project's own 12.x is never older than what this asks for; compiled against, never
+         carried. -->
+    <PackageReference Include="Avalonia" VersionOverride="12.0.0" IncludeAssets="compile" PrivateAssets="all" />
+  </ItemGroup>
+</Project>
