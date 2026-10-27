@@ -398,7 +398,7 @@ fn after_a_build_the_xaml_compilers_error_is_marked_on_its_line_until_that_line_
 fn an_elements_name_renames_with_its_code_behinds_uses_and_the_code_goes_to_it(cx: &mut TestAppContext) {
     let project = PROJECT.replace("<OutputType>WinExe</OutputType>", "<OutputType>Library</OutputType>");
     let window_text = "<Window xmlns=\"https://github.com/avaloniaui\"\n        xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"\n        x:Class=\"Demo.MainWindow\">\n  <StackPanel>\n    <Button Name=\"Go\" Content=\"Go\" />\n    <TextBlock Text=\"{Binding #Go.Content}\" />\n  </StackPanel>\n</Window>\n";
-    let code = "namespace Demo;\n\npublic partial class MainWindow : Avalonia.Controls.Window\n{\n    public MainWindow()\n    {\n        InitializeComponent();\n        Go.Content = \"Start\";\n    }\n}\n";
+    let code = "namespace Demo;\n\npublic partial class MainWindow : Avalonia.Controls.Window // Go Go Go Go Go Go\n{\n    public MainWindow()\n    {\n        InitializeComponent();\n        this.Go.Content = \"Start\";\n    }\n}\n";
     let Some(run) = restored(
         "xaml-name",
         &[("Demo.csproj", &project), ("MainWindow.axaml", window_text), ("MainWindow.axaml.cs", code)],
@@ -417,7 +417,7 @@ fn an_elements_name_renames_with_its_code_behinds_uses_and_the_code_goes_to_it(c
     let deadline = Instant::now() + Duration::from_secs(120);
     while active(&main, cx).as_ref() != Some(&xaml) {
         assert!(Instant::now() < deadline, "Go to Declaration on the field never reached the XAML's name");
-        main.update_in(cx, |m, window, cx| m.open_file(&behind, Some((7, 9)), window, cx));
+        main.update_in(cx, |m, window, cx| m.open_file(&behind, Some((7, 14)), window, cx));
         cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-b" } else { "f12" });
         for _ in 0..20 {
             cx.executor().advance_clock(Duration::from_millis(100));

@@ -65,6 +65,11 @@ impl MainWindow {
             .collect();
         let server = self.server.clone();
         let rename = asked.rename.clone();
+        if rename.is_some() && server.is_none() {
+            self.said = Some("Cannot rename the XAML element while Roslyn is unavailable".into());
+            cx.notify();
+            return;
+        }
         cx.spawn_in(window, async move |this, cx| {
             let code = match &server {
                 Some(server) => code_behind_uses(server, texts, &named.name).await,
@@ -144,7 +149,7 @@ async fn code_behind_uses(
     for (path, text) in files {
         let uri = rsharp_core::paths::to_uri(&path);
         let rope = rsharp_text::Rope::from_str(&text);
-        for at in mentions(&text, name).take(5) {
+        for at in mentions(&text, name) {
             let here = rsharp_lsp::at(&uri, crate::language::point(&rope, at));
             let Ok(declared) = server.ask("textDocument/definition", here.clone()).await else { continue };
             let generated = crate::editor::generated_field(&declared).is_some()
@@ -161,11 +166,12 @@ async fn code_behind_uses(
     Vec::new()
 }
 
-/// Where `name` stands as a whole word not after a dot (a member of something else).
+/// Where `name` stands as a whole word, unqualified or qualified by `this.`.
 fn mentions<'a>(text: &'a str, name: &'a str) -> impl Iterator<Item = usize> + 'a {
     let word = |c: char| c.is_alphanumeric() || c == '_';
     text.match_indices(name).map(|(at, _)| at).filter(move |&at| {
-        !text[..at].chars().next_back().is_some_and(|c| word(c) || c == '.')
+        let before = text[..at].strip_suffix("this.").unwrap_or(&text[..at]);
+        !before.chars().next_back().is_some_and(|c| word(c) || c == '.')
             && !text[at + name.len()..].chars().next().is_some_and(word)
     })
 }
@@ -178,9 +184,72 @@ fn is_generated(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[gpui::test]
+    fn a_rename_without_roslyn_keeps_the_xaml_unchanged(cx: &mut gpui::TestAppContext) {
+        let root = std::env::temp_dir().join(format!("rsharp-xaml-rename-no-roslyn-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("MainWindow.axaml");
+        let text = "<Button Name=\"Go\" />";
+        std::fs::write(&path, text).unwrap();
+        cx.update(|cx| {
+            crate::init(root.join("state"), cx);
+            cx.global_mut::<crate::state::Ide>().servers = false;
+            cx.global_mut::<crate::templates::Templates>().enabled = false;
+        });
+        let (main, cx) = cx.add_window_view(MainWindow::new);
+        main.update_in(cx, |main, window, cx| {
+            main.open_file(&path, None, window, cx);
+            let asked = editor::CodeBehind {
+                xaml: path.clone(),
+                named: rsharp_lsp::xaml::XamlNamed {
+                    name: "Go".into(),
+                    uses: vec![rsharp_lsp::Span {
+                        start: rsharp_lsp::Point { line: 0, character: 14 },
+                        end: rsharp_lsp::Point { line: 0, character: 16 },
+                    }],
+                    files: Vec::new(),
+                },
+                rename: Some("Start".into()),
+            };
+            main.code_behind(&asked, window, cx);
+        });
+        cx.run_until_parked();
+        main.read_with(cx, |main, cx| {
+            assert_eq!(
+                main.editor().unwrap().read(cx).text().to_string(),
+                text,
+                "the XAML was renamed without its code-behind"
+            );
+            assert_eq!(main.said(), Some("Cannot rename the XAML element while Roslyn is unavailable"));
+        });
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            text,
+            "the XAML on disk was renamed without its code-behind"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn a_mention_is_a_whole_word_not_after_a_dot() {
         let text = "Go.Content = x.Go; GoOn(); var go = Go;";
         assert_eq!(super::mentions(text, "Go").collect::<Vec<_>>(), [0, 36]);
+    }
+
+    #[test]
+    fn a_this_qualified_mention_is_allowed_but_other_objects_are_excluded() {
+        for text in ["Go", "this.Go", "(this.Go)", "this.Go.Content"] {
+            assert_eq!(
+                super::mentions(text, "Go").collect::<Vec<_>>(),
+                [text.find("Go").unwrap()],
+                "missing field in {text}"
+            );
+        }
+        for text in ["x.Go", "x.this.Go", "notthis.Go", "_this.Go", "this.GoOn", "this.Go_", "this.Go1", "éGo", "Goé"]
+        {
+            assert!(super::mentions(text, "Go").next().is_none(), "accepted a different field or word in {text}");
+        }
     }
 }
