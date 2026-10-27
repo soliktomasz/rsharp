@@ -291,8 +291,25 @@ impl CodeEditor {
     // shortcut: a field taking a colour as written, not Rider's colour wheel; draw one once a field is too little.
     pub(super) fn pick_colour(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(colour) = self.buffer.read(cx).colours.get(index).cloned() else { return };
-        if colour.write.is_none() {
+        let Some(write) = &colour.write else {
             cx.emit(Said("This colour is not written where it can be changed".into()));
+            return;
+        };
+        let target = match crate::buffer::find(&write.path, cx) {
+            Some(target) => target,
+            None => match crate::buffer::open(write.path.clone(), cx) {
+                Ok(target) => target,
+                Err(why) => {
+                    cx.emit(Said(format!("The colour was not read: {why}")));
+                    return;
+                }
+            },
+        };
+        target.update(cx, |b, cx| b.refresh_from_disk(cx));
+        let before = target.read(cx).document.text().clone();
+        let range = offset(&before, write.span.start)..offset(&before, write.span.end);
+        if colour.written["written"].as_str().is_none_or(|written| before.byte_slice(range).to_string() != written) {
+            cx.emit(Said("The colour was edited meanwhile: choose it again".into()));
             return;
         }
         let hex = colour.colour.strip_prefix("#FF").map_or(colour.colour.clone(), |rgb| format!("#{rgb}"));
@@ -306,18 +323,16 @@ impl CodeEditor {
         let focus = field.focus_handle(cx);
         window.defer(cx, move |window, _| window.focus(&focus));
         let line = self.text.line_to_byte(colour.line.min(self.text.len_lines().saturating_sub(1)));
-        self.show(Popup::Colour { field, index }, line, cx);
+        self.show(Popup::Colour { field, colour, before }, line, cx);
     }
 
     /// Enter in the picker: the colour typed written back where the swatch's colour is written, as it was written.
     pub(super) fn finish_colour(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(Popup::Colour { field, index }) = self.assist.popup.take() else { return };
+        let Some(Popup::Colour { field, colour, before }) = self.assist.popup.take() else { return };
         window.focus(&self.focus);
         let typed = field.read(cx).text().trim().to_string();
         let buffer = self.buffer.read(cx);
-        let (Some(colour), Some((host, _))) = (buffer.colours.get(index).cloned(), buffer.colour_host()) else {
-            return;
-        };
+        let Some((host, _)) = buffer.colour_host() else { return };
         let Some(write) = colour.write.clone() else { return };
         let written = colour.written.clone();
         let told = host.clone();
@@ -325,16 +340,34 @@ impl CodeEditor {
         self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
             let made = made.await;
             let _ = this.update(cx, |e, cx| match made {
-                Ok((Some(text), _)) if write.path == e.path => {
-                    let edits = language::edits(&e.text, &[rsharp_lsp::TextEdit { span: write.span, text }]);
-                    e.apply_server_edits(edits, cx);
-                }
                 Ok((Some(text), _)) => {
-                    let edit = rsharp_lsp::WorkspaceEdit {
-                        files: vec![(write.path.clone(), vec![rsharp_lsp::TextEdit { span: write.span, text }])],
-                        ..Default::default()
+                    let open = crate::buffer::find(&write.path, cx);
+                    let shown = open.is_some();
+                    let target = match open {
+                        Some(target) => target,
+                        None => match crate::buffer::open(write.path.clone(), cx) {
+                            Ok(target) => target,
+                            Err(why) => {
+                                cx.emit(Said(format!("The colour was not read: {why}")));
+                                return;
+                            }
+                        },
                     };
-                    match language::apply_workspace_edit(&edit, None, cx) {
+                    target.update(cx, |b, cx| b.refresh_from_disk(cx));
+                    if target.read(cx).document.text() != &before {
+                        cx.emit(Said("The colour was edited meanwhile: choose it again".into()));
+                        return;
+                    }
+                    let edits = language::edits(&before, &[rsharp_lsp::TextEdit { span: write.span, text }]);
+                    if write.path == e.path {
+                        e.apply_server_edits(edits, cx);
+                        return;
+                    }
+                    let applied = target.update(cx, |b, cx| {
+                        b.apply_edits(edits, cx);
+                        if shown { Ok(()) } else { b.save(cx) }
+                    });
+                    match applied {
                         // Told at once, not left to the folder's watcher: every open file naming it is checked again.
                         Ok(()) => cx
                             .background_executor()
@@ -344,7 +377,7 @@ impl CodeEditor {
                                 }
                             })
                             .detach(),
-                        Err(why) => cx.emit(Said(why)),
+                        Err(why) => cx.emit(Said(format!("The colour was not written: {why}"))),
                     }
                 }
                 Ok((None, typed)) => cx.emit(Said(format!("'{typed}' is not a colour"))),

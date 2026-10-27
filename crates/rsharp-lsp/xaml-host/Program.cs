@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.CodeAnalysis.Text;
 using Passenger.Text;
 using Passenger.Xaml;
 using Passenger.Xaml.Dialects;
@@ -325,21 +326,26 @@ public static class Program
             return new JsonArray();
         }
         JsonArray found = [];
+        Dictionary<string, SourceText> texts = new(StringComparer.Ordinal) { [path] = SourceText.From(text) };
         foreach (ColourUse use in uses)
         {
             string target = use.WritePath ?? path;
-            string written = target == path ? text : Texts.TryGetValue(target, out string? open) ? open : File.Exists(target) ? File.ReadAllText(target) : string.Empty;
+            if (!texts.TryGetValue(target, out SourceText? written))
+            {
+                written = SourceText.From(TextOf(target, null));
+                texts[target] = written;
+            }
             JsonObject colour = new()
             {
-                ["line"] = Point(text, use.Offset)["line"]!.GetValue<int>(),
+                ["line"] = texts[path].Lines.GetLinePosition(use.Offset).Line,
                 ["colour"] = $"#{use.Colour.A:X2}{use.Colour.R:X2}{use.Colour.G:X2}{use.Colour.B:X2}",
                 ["use"] = new JsonObject { ["form"] = use.Form.ToString(), ["receiver"] = use.Receiver },
             };
             if (use.WriteRange is { } range && range.End <= written.Length)
             {
                 colour["path"] = target;
-                colour["range"] = Range(written, range.Start, range.End);
-                colour["use"]!["written"] = written[range.Start..range.End];
+                colour["range"] = new JsonObject { ["start"] = Point(written, range.Start), ["end"] = Point(written, range.End) };
+                colour["use"]!["written"] = written.ToString(TextSpan.FromBounds(range.Start, range.End));
             }
             found.Add(colour);
         }
@@ -480,6 +486,12 @@ public static class Program
     }
 
     private static JsonObject Range(string text, int start, int end) => new() { ["start"] = Point(text, start), ["end"] = Point(text, end) };
+
+    private static JsonObject Point(SourceText text, int offset)
+    {
+        LinePosition at = text.Lines.GetLinePosition(offset);
+        return new JsonObject { ["line"] = at.Line, ["character"] = at.Character };
+    }
 
     private static void Write(JsonObject reply)
     {

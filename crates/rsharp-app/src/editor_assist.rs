@@ -28,8 +28,8 @@ pub enum Popup {
     Actions { actions: Vec<CodeAction>, selected: usize },
     /// Rename's field over the word being renamed.
     Rename { field: Entity<TextField>, word: Range<usize> },
-    /// The colour picker over a swatch: the colour as typed, and the buffer's colour it changes.
-    Colour { field: Entity<TextField>, index: usize },
+    /// The colour picker over a swatch: its chosen use and the target's text before the picker opened.
+    Colour { field: Entity<TextField>, colour: rsharp_lsp::xaml::XamlColour, before: Rope },
     /// Surround With's constructs (each its name, template and the digit that chooses it), the chosen one, and the
     /// text they go around when that is not the selection's lines (a XAML element).
     Surround { items: Vec<super::refactor::Surround>, selected: usize, target: Option<Range<usize>> },

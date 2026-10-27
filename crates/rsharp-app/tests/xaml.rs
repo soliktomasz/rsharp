@@ -1874,6 +1874,19 @@ fn colours_show_as_gutter_swatches_and_one_chosen_in_the_picker_is_written_back_
     assert!(written.contains("<SolidColorBrush x:Key=\"Accent\" Color=\"#3574F0\" />"), "{written}");
     wait(cx, "the swatch following the palette", |cx| colour_on(&editor, button, cx).as_deref() == Some("#FFE2A33F"));
 
+    // A closed resource file can change while its picker is open too.
+    let swatch = editor.read_with(cx, |e, cx| e.swatch_point(button, cx)).unwrap();
+    cx.simulate_click(swatch, gpui::Modifiers::default());
+    cx.run_until_parked();
+    cx.simulate_input("#AA0000");
+    let changed = written.replace("#E2A33F", "#112233");
+    std::fs::write(&palette, &changed).unwrap();
+    cx.simulate_keystrokes("enter");
+    wait(cx, "the changed resource's colour edit refused", |cx| {
+        main.read_with(cx, |m, _| m.said().is_some_and(|s| s.contains("edited meanwhile")))
+    });
+    assert_eq!(std::fs::read_to_string(&palette).unwrap(), changed, "the picker overwrote the changed resource");
+
     // C#'s colours too, written back in the form they were written.
     main.update_in(cx, |m, window_, cx| m.open_file(&behind, Some((7, 29)), window_, cx));
     let code_editor = main.read_with(cx, |m, _| m.editor().unwrap());
@@ -1893,4 +1906,72 @@ fn colours_show_as_gutter_swatches_and_one_chosen_in_the_picker_is_written_back_
     wait(cx, "the call written back as a call", |cx| {
         code_editor.read_with(cx, |e, _| e.text().to_string()).contains("Avalonia.Media.Color.FromRgb(170, 0, 0));")
     });
+}
+
+fn colour_picker<'a>(
+    name: &str,
+    cx: &'a mut TestAppContext,
+) -> Option<(Run, Entity<MainWindow>, Entity<rsharp_app::editor::CodeEditor>, &'a mut VisualTestContext)> {
+    let Some(host) = rsharp_lsp::xaml::XamlHost::carried() else {
+        eprintln!("skipped: the XAML host was not built");
+        return None;
+    };
+    let run = Run::new(name, &[("Colours.cs", "var a = Color.FromRgb(1, 2, 3);\nvar b = Color.FromRgb(4, 5, 6);\n")]);
+    let (main, cx) = run.window(cx);
+    main.update_in(cx, |m, window, cx| {
+        m.open_workspace(&run.folder, window, cx);
+        m.open_file(&run.folder.join("Colours.cs"), None, window, cx);
+    });
+    let editor = main.read_with(cx, |m, _| m.editor().unwrap());
+    let buffer = cx.update(|_, cx| rsharp_app::buffer::find(&run.folder.join("Colours.cs"), cx)).unwrap();
+    buffer.update(cx, |b, cx| b.attach_colours(host, run.folder.join("Demo.csproj"), cx));
+    wait(cx, "the two C# colour swatches", |cx| editor.read_with(cx, |e, cx| e.colour_marks(cx).len() == 2));
+    let swatch = editor.read_with(cx, |e, cx| e.swatch_point(0, cx)).expect("the first colour has no swatch");
+    cx.simulate_click(swatch, gpui::Modifiers::default());
+    cx.run_until_parked();
+    cx.simulate_input("#AA0000");
+    Some((run, main, editor, cx))
+}
+
+#[gpui::test]
+fn the_colour_picker_does_not_switch_to_another_colour_when_the_swatches_refresh(cx: &mut TestAppContext) {
+    let Some((run, main, editor, cx)) = colour_picker("colour-picker-target", cx) else { return };
+    let changed = "// removed\nvar b = Color.FromRgb(4, 5, 6);\n";
+    let buffer = cx.update(|_, cx| rsharp_app::buffer::find(&run.folder.join("Colours.cs"), cx)).unwrap();
+    buffer.update(cx, |b, cx| b.replace_all(changed.into(), cx));
+    wait(cx, "only the second colour's swatch", |cx| editor.read_with(cx, |e, cx| e.colour_marks(cx).len() == 1));
+    cx.simulate_keystrokes("enter");
+    wait(cx, "the colour edit applied or refused", |cx| {
+        main.read_with(cx, |m, _| m.said().is_some_and(|s| s.contains("edited meanwhile")))
+            || editor.read_with(cx, |e, _| e.text().to_string() != changed)
+    });
+    assert_eq!(editor.read_with(cx, |e, _| e.text().to_string()), changed, "the picker edited a different colour");
+}
+
+#[gpui::test]
+fn the_colour_picker_does_not_write_at_a_stale_range_before_the_swatches_refresh(cx: &mut TestAppContext) {
+    let Some((run, main, editor, cx)) = colour_picker("colour-picker-range", cx) else { return };
+    let changed = format!("    {}", editor.read_with(cx, |e, _| e.text().to_string()));
+    let buffer = cx.update(|_, cx| rsharp_app::buffer::find(&run.folder.join("Colours.cs"), cx)).unwrap();
+    buffer.update(cx, |b, cx| b.replace_all(changed.clone(), cx));
+    cx.simulate_keystrokes("enter");
+    wait(cx, "the stale colour edit applied or refused", |cx| {
+        main.read_with(cx, |m, _| m.said().is_some_and(|s| s.contains("edited meanwhile")))
+            || editor.read_with(cx, |e, _| e.text().to_string() != changed)
+    });
+    assert_eq!(editor.read_with(cx, |e, _| e.text().to_string()), changed, "the stale colour range overwrote code");
+}
+
+#[gpui::test]
+fn the_colour_picker_checks_disk_changes_before_the_watcher_reports_them(cx: &mut TestAppContext) {
+    let Some((run, main, editor, cx)) = colour_picker("colour-picker-disk", cx) else { return };
+    let changed = format!("    {}", editor.read_with(cx, |e, _| e.text().to_string()));
+    std::fs::write(run.folder.join("Colours.cs"), &changed).unwrap();
+    cx.simulate_keystrokes("enter");
+    wait(cx, "the external colour edit seen or overwritten", |cx| {
+        main.read_with(cx, |m, _| m.said().is_some_and(|s| s.contains("edited meanwhile")))
+            || editor.read_with(cx, |e, cx| e.is_modified(cx))
+    });
+    assert_eq!(editor.read_with(cx, |e, _| e.text().to_string()), changed, "the picker overwrote an external edit");
+    assert!(!editor.read_with(cx, |e, cx| e.is_modified(cx)), "the refused picker edit left the file modified");
 }
