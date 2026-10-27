@@ -23,6 +23,8 @@ rsharp-mcp = { path = "crates/rsharp-mcp" }
 # runtime_shaders: macOS compiles gpui's Metal shaders at start, so a build needs no Metal toolchain.
 gpui = { version = "0.2.2", features = ["runtime_shaders"] }
 encoding_rs = "0.8"
+# gpui's own (0.25), for the XAML Preview's frames as images; no decoders, the frames being raw pixels.
+image = { version = "0.25", default-features = false }
 futures = "0.3"
 imara-diff = "0.1"
 # Held below 0.2.190, which dropped ENOATTR on Linux: gpui 0.2.2's xattr 0.2.3 (through its tar crate) needs it.

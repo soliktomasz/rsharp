@@ -53,6 +53,7 @@ actions!(
         ToggleTerminal,
         ToggleCommit,
         ToggleGit,
+        XamlPreview,
         GitRefresh,
         GitPush,
         GitUpdate,
@@ -144,6 +145,7 @@ mod solution_actions;
 mod terminal;
 mod tests;
 mod xaml;
+mod xaml_preview;
 
 pub use build::{BuildOutcome, BuildStatus};
 pub use run::{RunOutcome, RunStatus};
@@ -227,6 +229,7 @@ pub struct MainWindow {
     float_grab: Point<Pixels>,
     opened_as: Option<PathBuf>,
     explorer_focus: FocusHandle,
+    preview_focus: FocusHandle,
     problems_focus: FocusHandle,
     find_focus: FocusHandle,
     /// The Find window's list: what was looked for, and each place found with its line's text.
@@ -283,6 +286,8 @@ pub struct MainWindow {
     host: Option<rsharp_lsp::SharedHost>,
     /// The XAML host, started as the first XAML file opens.
     xaml: Option<rsharp_lsp::xaml::XamlHost>,
+    /// The XAML file Avalonia's previewer draws, while the XAML Preview is open.
+    preview: Option<xaml_preview::Preview>,
     /// A round of evaluations is running; `evaluate_again` asks for one more after it.
     evaluating: bool,
     evaluate_again: bool,
@@ -534,6 +539,7 @@ impl MainWindow {
             float_grab: Point::default(),
             opened_as: None,
             explorer_focus: cx.focus_handle(),
+            preview_focus: cx.focus_handle(),
             problems_focus: cx.focus_handle(),
             find_focus: cx.focus_handle(),
             found: None,
@@ -567,6 +573,7 @@ impl MainWindow {
             _server_task: None,
             host: None,
             xaml: None,
+            preview: None,
             evaluating: false,
             evaluate_again: false,
             _evaluate_task: None,
@@ -685,8 +692,9 @@ impl MainWindow {
         self.area.groups[group].active = Some(index);
         let path = self.area.groups[group].tabs[index].editor.read(cx).path.clone();
         self.recent.retain(|p| *p != path);
-        self.recent.insert(0, path);
+        self.recent.insert(0, path.clone());
         self.recent.truncate(HISTORY);
+        self.follow_preview(&path, cx);
         window.focus(&self.area.groups[group].tabs[index].editor.focus_handle(cx));
         self.follow_find_bar(cx);
         self.save_state(cx);
@@ -2161,6 +2169,7 @@ impl Render for MainWindow {
             .on_action(cx.listener(|w, _: &ToggleTerminal, window, cx| w.toggle_terminal(window, cx)))
             .on_action(cx.listener(|w, _: &ToggleCommit, window, cx| w.toggle_tool(Tool::Commit, window, cx)))
             .on_action(cx.listener(|w, _: &ToggleGit, window, cx| w.toggle_tool(Tool::Git, window, cx)))
+            .on_action(cx.listener(|w, _: &XamlPreview, window, cx| w.open_preview(window, cx)))
             .on_action(cx.listener(|w, _: &GitRefresh, _, cx| w.refresh_git(cx)))
             .when(self.git_status().is_some() && !self.git_busy(), |d| {
                 d.on_action(
@@ -2676,6 +2685,7 @@ impl MainWindow {
             Tool::UnitTests => self.tests.view.clone().into_any_element(),
             Tool::Commit => self.git.commit.clone().into_any_element(),
             Tool::Git => self.git.log.clone().into_any_element(),
+            Tool::XamlPreview => self.preview_content(cx).into_any_element(),
             Tool::Terminal => {
                 self.ensure_terminal(cx);
                 self.terminal.clone().into_any_element()
@@ -2696,6 +2706,7 @@ impl MainWindow {
             Tool::Run => self.run_outcome.as_ref().map(|outcome| outcome.message.clone()),
             Tool::Debug => Some(self.debug_view.read(cx).status().to_string()),
             Tool::UnitTests => None,
+            Tool::XamlPreview => self.preview_subtitle(),
             Tool::Terminal | Tool::Commit | Tool::Git => None,
         }
     }
@@ -2798,6 +2809,7 @@ impl MainWindow {
             Tool::Terminal => self.terminal.focus_handle(cx),
             Tool::Commit => self.git.commit.focus_handle(cx),
             Tool::Git => self.git.log.focus_handle(cx),
+            Tool::XamlPreview => self.preview_focus.clone(),
         }
     }
 
@@ -2811,6 +2823,10 @@ impl MainWindow {
         }
         let had_focus = self.tool_area(tool, cx).contains_focused(window, cx);
         self.dock.toggle(tool);
+        // A preview no one sees ends, its previewer with it.
+        if tool == Tool::XamlPreview && !self.dock.is_open(tool) {
+            self.stop_preview(cx);
+        }
         if self.dock.is_open(tool) {
             window.focus(&self.tool_focus(tool, cx));
         } else if had_focus {

@@ -4778,6 +4778,7 @@ dependencies = [
  "encoding_rs",
  "futures",
  "gpui",
+ "image",
  "log",
  "regex",
  "rsharp-core",

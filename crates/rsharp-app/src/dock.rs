@@ -48,10 +48,12 @@ pub enum Tool {
     Terminal,
     Commit,
     Git,
+    /// An Avalonia XAML file drawn by Avalonia's own previewer.
+    XamlPreview,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 11] = [
+    pub const ALL: [Tool; 12] = [
         Tool::Solution,
         Tool::Problems,
         Tool::Find,
@@ -63,6 +65,7 @@ impl Tool {
         Tool::Terminal,
         Tool::Commit,
         Tool::Git,
+        Tool::XamlPreview,
     ];
 
     pub fn title(self) -> &'static str {
@@ -78,6 +81,7 @@ impl Tool {
             Tool::Terminal => "Terminal",
             Tool::Commit => "Commit",
             Tool::Git => "Git",
+            Tool::XamlPreview => "XAML Preview",
         }
     }
 
@@ -94,6 +98,7 @@ impl Tool {
             Tool::Terminal => "tw-terminal",
             Tool::Commit => "check",
             Tool::Git => "branch",
+            Tool::XamlPreview => "file-xml",
         }
     }
 
@@ -111,6 +116,7 @@ impl Tool {
             Tool::Terminal => Place::BottomLeft,
             Tool::Commit => Place::LeftTop,
             Tool::Git => Place::BottomLeft,
+            Tool::XamlPreview => Place::RightTop,
         }
     }
 }

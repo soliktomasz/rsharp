@@ -1,4 +1,8 @@
 <Project>
   <!-- The package versions Passenger pins, Passenger.Xaml's Roslyn among them. -->
   <Import Project="../../../vendor/passenger/Directory.Packages.props" />
+  <ItemGroup>
+    <!-- Avalonia's own, at the Avalonia Passenger pins. -->
+    <PackageVersion Include="Avalonia.Remote.Protocol" Version="12.1.4" />
+  </ItemGroup>
 </Project>

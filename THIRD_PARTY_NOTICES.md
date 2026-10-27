@@ -15,6 +15,7 @@ change that brings it in.
 | `encoding_rs` | (Apache-2.0 OR MIT) AND BSD-3-Clause | Mozilla Foundation, Henri Sivonen; its data from the WHATWG Encoding Standard (BSD-3-Clause) |
 | `futures` | MIT OR Apache-2.0 | The futures-rs authors |
 | `imara-diff` | Apache-2.0 | Pascal Kuthe |
+| `image` | MIT OR Apache-2.0 | The image-rs Developers |
 | `libc` | MIT OR Apache-2.0 | The Rust Project Developers |
 | `log` | MIT OR Apache-2.0 | The Rust Project Developers |
 | `notify` | CC0-1.0 | Félix Saparelli, Daniel Faust, Aron Heinecke and contributors |
@@ -76,7 +77,9 @@ Adapter Protocol, in a process of its own, with ILSpy's decompiler for code with
 Microsoft.Build.Locator (MIT, .NET Foundation); the extension is compiled against Roslyn's server with
 Krafs.Publicizer (MIT, Krafs), which carries nothing into the output. RSharp's own XAML host
 (`crates/rsharp-lsp/xaml-host/`, published by the same build.rs) is built on Passenger.Xaml and Passenger.Text,
-unchanged, and carries them with Microsoft.CodeAnalysis.CSharp (MIT, .NET Foundation), Passenger.Xaml's C# parser.
+unchanged, and carries them with Microsoft.CodeAnalysis.CSharp (MIT, .NET Foundation), Passenger.Xaml's C# parser,
+and Avalonia.Remote.Protocol (MIT, AvaloniaUI OÜ), which the XAML Preview speaks to the project's own Avalonia
+previewer.
 
 ## Ported from Passenger
 

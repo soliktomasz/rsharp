@@ -63,6 +63,7 @@ macro_rules! ide {
 pub static ALL: &[IdeAction] = &[
     ide!("Commit", "Git", ["commit changes", "version control"], crate::window::ToggleCommit),
     ide!("Git", "View", ["log", "branches", "version control"], crate::window::ToggleGit),
+    ide!("XAML Preview", "View", ["avalonia preview", "designer", "previewer"], crate::window::XamlPreview),
     ide!("Refresh Git", "Git", ["status", "changes"], crate::window::GitRefresh),
     ide!("Push", "Git", ["push commits"], crate::window::GitPush),
     ide!("Update Project", "Git", ["pull", "update git"], crate::window::GitUpdate),

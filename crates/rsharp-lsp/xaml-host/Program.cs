@@ -35,14 +35,15 @@ public static class Program
         {
             if (line.Length > 0)
             {
-                // A close must follow earlier reads, so a delayed read cannot bring discarded text back.
-                Handle(line);
+                // A close must follow earlier reads, so a delayed read cannot bring discarded text back: each request runs
+                // here in turn, and only a preview, which awaits its end, gives the loop back before it is answered.
+                _ = Handle(line);
             }
         }
         return 0;
     }
 
-    private static void Handle(string line)
+    private static async Task Handle(string line)
     {
         JsonNode? request;
         try
@@ -58,7 +59,8 @@ public static class Program
         JsonNode asked = request?["params"] ?? new JsonObject();
         try
         {
-            JsonNode? result = request?["method"]?.GetValue<string>() switch
+            // A preview lasts until it is stopped, its frames sent as it goes: awaited, it holds no thread meanwhile.
+            JsonNode? result = request?["method"]?.GetValue<string>() == "preview" ? await Previews.Run(id, asked) : request?["method"]?.GetValue<string>() switch
             {
                 "check" => Check(asked),
                 "complete" => Complete(asked),
@@ -70,6 +72,8 @@ public static class Program
                 "extract" => Extract(asked),
                 "colours" => ColoursOf(asked),
                 "recolour" => Recolour(asked),
+                "preview_update" => Previews.Update(asked),
+                "preview_stop" => Previews.Stop(asked),
                 "changed" => Changed(asked),
                 "closed" => Closed(asked),
                 var method => throw new InvalidOperationException($"the XAML host has no method {method}"),
@@ -101,7 +105,7 @@ public static class Program
     }
 
     /// <summary>A project's XAML, read on its first request; null for a project whose XAML Passenger.Xaml does not read.</summary>
-    private static XamlProjectBuilder? Builder(string project) => Builders.GetOrAdd(project, p => new Lazy<XamlProjectBuilder?>(() =>
+    internal static XamlProjectBuilder? Builder(string project) => Builders.GetOrAdd(project, p => new Lazy<XamlProjectBuilder?>(() =>
     {
         XamlProjectBuilder? made = XamlProjectBuilder.For(p, DotnetRoot);
         made?.Load(Texts.GetValueOrDefault);
@@ -493,7 +497,7 @@ public static class Program
         return new JsonObject { ["line"] = at.Line, ["character"] = at.Character };
     }
 
-    private static void Write(JsonObject reply)
+    internal static void Write(JsonObject reply)
     {
         string line = reply.ToJsonString();
         lock (Writing)
