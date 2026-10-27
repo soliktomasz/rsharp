@@ -97,6 +97,11 @@ pub struct Buffer {
     xaml_live: Vec<Diagnostic>,
     xaml_built: Vec<(usize, Diagnostic)>,
     xaml_changes: Option<Task<()>>,
+    /// The colours the file writes or names, for the gutter's swatches, asked of the XAML host for a XAML file and for
+    /// a C# file of a window whose XAML host runs.
+    pub colours: Arc<Vec<rsharp_lsp::xaml::XamlColour>>,
+    colour_host: Option<(rsharp_lsp::xaml::XamlHost, PathBuf)>,
+    colouring: Option<Task<()>>,
 }
 
 impl EventEmitter<BufferEvent> for Buffer {}
@@ -252,6 +257,9 @@ impl Buffer {
             xaml_live: Vec::new(),
             xaml_built: Vec::new(),
             xaml_changes: None,
+            colours: Arc::default(),
+            colour_host: None,
+            colouring: None,
             inspecting: None,
         };
         buffer.on_disk = stamp(&buffer.path);
@@ -380,6 +388,9 @@ impl Buffer {
         self.check(Duration::from_millis(400), cx);
         self.inspect(Duration::from_millis(500), cx);
         self.check_xaml(Duration::from_millis(300), cx);
+        if self.xaml.is_none() {
+            self.check_colours(Duration::from_millis(300), cx);
+        }
         cx.emit(BufferEvent::Edited { changes, by });
         cx.notify();
     }
@@ -706,6 +717,7 @@ impl Buffer {
             .detach();
         }
         let mut changes = host.subscribe();
+        self.colour_host = Some((host.clone(), project.clone()));
         self.xaml = Some((host, project));
         self.xaml_changes = Some(cx.spawn(async move |this, cx| {
             while let Some(except) = changes.next().await {
@@ -719,9 +731,50 @@ impl Buffer {
         self.check_xaml(Duration::ZERO, cx);
     }
 
+    /// The XAML host the file's colours come from, which also writes a chosen one.
+    pub fn colour_host(&self) -> Option<(rsharp_lsp::xaml::XamlHost, PathBuf)> {
+        self.colour_host.clone()
+    }
+
+    /// A C# file's colours, from the window's XAML host, now and once typing pauses.
+    pub fn attach_colours(&mut self, host: rsharp_lsp::xaml::XamlHost, project: PathBuf, cx: &mut Context<Self>) {
+        if self.colour_host.is_none() {
+            self.colour_host = Some((host, project));
+            self.check_colours(Duration::ZERO, cx);
+        }
+    }
+
+    /// The colours the file writes or names, as typed.
+    fn check_colours(&mut self, after: Duration, cx: &mut Context<Self>) {
+        let Some((host, project)) = self.colour_host.clone() else { return };
+        let (version, path, text) = (self.document.version(), self.path.clone(), self.document.text().to_string());
+        self.colouring = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(after).await;
+            // shortcut: a resource's colour is its Dark variant's, RSharp's only theme; follow the theme once there is a
+            // light one.
+            let found =
+                cx.background_executor().spawn(async move { host.colours(&project, &path, &text, "Dark") }).await;
+            let colours = match found {
+                Ok(colours) => colours,
+                Err(failed) => {
+                    log::info!("XAML colours: {failed}");
+                    return;
+                }
+            };
+            let _ = this.update(cx, |b, cx| {
+                if b.document.version() == version && *b.colours != colours {
+                    b.colours = Arc::new(colours);
+                    cx.notify();
+                }
+            });
+        }));
+    }
+
     /// The file checked as typed; what the host finds becomes the file's problems.
     fn check_xaml(&mut self, after: Duration, cx: &mut Context<Self>) {
         let Some((host, project)) = self.xaml.clone() else { return };
+        // A resource's colour may have changed with the project, as the file's own have with its text.
+        self.check_colours(after, cx);
         let (version, path, text) = (self.document.version(), self.path.clone(), self.document.text().to_string());
         self.checking_xaml = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(after).await;

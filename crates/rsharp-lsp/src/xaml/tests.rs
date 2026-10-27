@@ -12,6 +12,26 @@ const PROJECT: &str = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n 
 const WINDOW: &str = "<Window xmlns=\"https://github.com/avaloniaui\"\n        xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"\n        x:Class=\"Demo.MainWindow\">\n  <StackPanel>\n    <Button Foregrund=\"Red\" />\n  </StackPanel>\n</Window>\n";
 
 #[test]
+fn twenty_thousand_colours_keep_their_positions_without_holding_up_the_host() {
+    let Some(host) = XamlHost::carried() else {
+        eprintln!("skipped: the XAML host was not built");
+        return;
+    };
+    let (project, path) = (Path::new("/tmp/colours/Demo.csproj"), Path::new("/tmp/colours/Palette.cs"));
+    host.colours(project, path, "var c = Color.FromRgb(1, 2, 3);", "Dark").unwrap();
+    let text = format!("var palette = new[] {{\n{}}};\n", "    Color.FromRgb(1, 2, 3),\n".repeat(20_000));
+    let started = std::time::Instant::now();
+    let colours = host.colours(project, path, &text, "Dark").unwrap();
+    let elapsed = started.elapsed();
+    assert_eq!(colours.len(), 20_000, "some colours disappeared from a large palette");
+    assert_eq!(colours[19_999].line, 20_000);
+    let span = colours[19_999].write.as_ref().unwrap().span;
+    assert_eq!(span.start, Point::new(20_000, 4));
+    assert_eq!(span.end, Point::new(20_000, 26));
+    assert!(elapsed < std::time::Duration::from_secs(3), "colour lookup blocked the host for {elapsed:?}");
+}
+
+#[test]
 fn an_avalonia_window_is_checked_completed_and_described_from_its_restored_packages() {
     let (Some(host), Some(dotnet)) = (XamlHost::carried(), rsharp_core::programs::dotnet()) else {
         eprintln!("skipped: the XAML host was not built (no dotnet or no vendor/passenger at build time)");

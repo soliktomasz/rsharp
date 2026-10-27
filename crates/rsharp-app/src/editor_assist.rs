@@ -28,6 +28,8 @@ pub enum Popup {
     Actions { actions: Vec<CodeAction>, selected: usize },
     /// Rename's field over the word being renamed.
     Rename { field: Entity<TextField>, word: Range<usize> },
+    /// The colour picker over a swatch: its chosen use and the target's text before the picker opened.
+    Colour { field: Entity<TextField>, colour: rsharp_lsp::xaml::XamlColour, before: Rope },
     /// Surround With's constructs (each its name, template and the digit that chooses it), the chosen one, and the
     /// text they go around when that is not the selection's lines (a XAML element).
     Surround { items: Vec<super::refactor::Surround>, selected: usize, target: Option<Range<usize>> },
@@ -513,7 +515,13 @@ impl CodeEditor {
         self.assist.hover_task = None;
         let busy = matches!(
             self.assist.popup,
-            Some(Popup::Completion { .. } | Popup::Actions { .. } | Popup::Rename { .. } | Popup::Surround { .. })
+            Some(
+                Popup::Completion { .. }
+                    | Popup::Actions { .. }
+                    | Popup::Rename { .. }
+                    | Popup::Surround { .. }
+                    | Popup::Colour { .. },
+            )
         );
         if let Some(at) = at.filter(|_| !busy) {
             self.request_hover(at, true, cx);
@@ -1115,6 +1123,33 @@ impl CodeEditor {
                     })
                     .into_any_element()
             }
+            Popup::Colour { field, .. } => frame()
+                .key_context("RenamePopup")
+                .left(at.x - px(6.))
+                .top(at.y - px(4.))
+                .w(px(220.))
+                .p(px(6.))
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .on_action(cx.listener(|e, _: &Choose, window, cx| e.finish_colour(window, cx)))
+                .on_action(cx.listener(|e, _: &Dismiss, window, cx| {
+                    e.assist.popup = None;
+                    window.focus(&e.focus);
+                    cx.notify();
+                }))
+                .child(div().text_color(theme::text_secondary()).child("Colour (#RRGGBB or a name)"))
+                .child(
+                    div()
+                        .h(px(26.))
+                        .px(px(6.))
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(theme::control_border())
+                        .bg(theme::search_field())
+                        .child(field.clone()),
+                )
+                .into_any_element(),
             Popup::Rename { field, .. } => frame()
                 .key_context("RenamePopup")
                 .left(at.x - px(6.))

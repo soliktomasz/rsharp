@@ -7,11 +7,25 @@ impl MainWindow {
     /// Gives a XAML file's buffer the XAML host, which starts with the first.
     pub(super) fn attach_xaml(&mut self, buffer: &Entity<Buffer>, cx: &mut Context<Self>) {
         let path = buffer.read(cx).path.clone();
+        // A C# file's colours come from the host where it runs already; it is not started for them.
+        if path.extension().is_some_and(|e| e == "cs")
+            && let Some(host) = self.xaml.clone()
+        {
+            let project = self.msbuild_project(&path);
+            buffer.update(cx, |b, cx| b.attach_colours(host, project, cx));
+            return;
+        }
         if !rsharp_lsp::xaml::is_xaml(&path) || !cx.global::<crate::state::Ide>().servers {
             return;
         }
         if self.xaml.is_none() {
             self.xaml = rsharp_lsp::xaml::XamlHost::carried();
+            // The C# files open already get their colours from it too.
+            for open in self.workspace_buffers(cx) {
+                if open.read(cx).path.extension().is_some_and(|e| e == "cs") {
+                    self.attach_xaml(&open, cx);
+                }
+            }
         }
         let Some(host) = self.xaml.clone() else { return };
         let project = self.msbuild_project(&path);

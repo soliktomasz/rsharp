@@ -155,6 +155,9 @@ terminal and takes focus for a moment.
   WPF's named element's field is MarkupCompile's `obj/…/File.g.cs`: `markup_compiled_name` follows its `#line` to the
   XAML. The WPF cases run on Passenger's WPF gallery (`tests/xaml.rs`' `wpf_gallery`), restored off Windows by
   EnableWindowsTargeting from the WindowsDesktop reference pack.
+  A buffer's `colours` (the host's `colours`: a XAML file's, and a C# file's once the window's host runs, never started
+  for them) are the editor's gutter swatches, in a column added only while there are some; a click opens
+  `Popup::Colour`, whose colour the host's `recolour` writes as the use was written.
 - `crates/rsharp-dap`: the Debug Adapter Protocol client and Passenger's debug adapter it runs. `build.rs`
   publishes Passenger's `Passenger.DebugAdapter` from the same submodule into `target/<profile>/sidecars/debugger`
   (its engine, ICorDebug behind DAP, with ILSpy's decompiler). `Session` starts it through `process::spawn` — so it
