@@ -60,6 +60,7 @@ pub struct Assist {
     /// Where the popup hangs: the word's start, or the caret.
     pub popup_at: usize,
     pub(super) popup_task: Option<Task<()>>,
+    pub(super) xaml_word_characters: String,
     /// The usages of what the caret is on, each written or only read; asked for the text's version and caret.
     pub usages: Vec<(Range<usize>, bool)>,
     usages_for: Option<(u64, usize)>,

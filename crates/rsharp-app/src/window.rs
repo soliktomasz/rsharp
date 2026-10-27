@@ -576,6 +576,7 @@ impl MainWindow {
     }
 
     pub fn open_workspace(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        self.xaml = None;
         self.leave_tests(cx);
         self.leave_git(cx);
         self.leave_build(cx);
@@ -1802,6 +1803,7 @@ impl MainWindow {
 
     /// Back to the Welcome screen, the folder's state kept, as Rider's File | Close Solution.
     pub fn close_solution(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.xaml = None;
         self.leave_tests(cx);
         self.leave_git(cx);
         self.leave_build(cx);

@@ -50,3 +50,43 @@ fn an_avalonia_window_is_checked_completed_and_described_from_its_restored_packa
     std::fs::write(&plain, "<Project Sdk=\"Microsoft.NET.Sdk\" />\n").unwrap();
     assert_eq!(host.check(&plain, &window, WINDOW).unwrap(), None, "a project without Avalonia or WPF read as XAML's");
 }
+
+#[test]
+fn a_sibling_projects_changed_source_updates_its_xaml_consumers() {
+    let (Some(host), Some(dotnet)) = (XamlHost::carried(), rsharp_core::programs::dotnet()) else { return };
+    let folder = Folder(std::env::temp_dir().join(format!("rsharp-xaml-reference-{}", std::process::id())));
+    let app = folder.0.join("app");
+    let models = folder.0.join("models");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::create_dir_all(&models).unwrap();
+    let app = rsharp_core::paths::canonical(&app);
+    let project = app.join("Demo.csproj");
+    std::fs::write(
+        &project,
+        PROJECT.replace("</ItemGroup>", "<ProjectReference Include=\"../models/Models.csproj\" /></ItemGroup>"),
+    )
+    .unwrap();
+    std::fs::write(models.join("Models.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>").unwrap();
+    let source = rsharp_core::paths::canonical(&models).join("ViewModel.cs");
+    let model = "namespace Demo; public class ViewModel { public string Greeting { get; set; } }";
+    std::fs::write(&source, model).unwrap();
+    let text = "<Window xmlns=\"https://github.com/avaloniaui\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\" xmlns:vm=\"clr-namespace:Demo;assembly=Models\" x:DataType=\"vm:ViewModel\"><TextBlock Text=\"{Binding Greeting}\" /></Window>";
+    let path = app.join("Window.axaml");
+    std::fs::write(&path, text).unwrap();
+    let restored = rsharp_core::dotnet::command(&dotnet, ["restore", "-v", "q"], &app).output().unwrap();
+    if !restored.status.success() {
+        eprintln!("skipped: Avalonia could not be restored: {}", String::from_utf8_lossy(&restored.stdout));
+        return;
+    }
+    assert!(
+        host.check(&project, &path, text).unwrap().unwrap().is_empty(),
+        "the original referenced property should resolve"
+    );
+    std::fs::write(&source, model.replace("Greeting", "Other")).unwrap();
+    host.changed(&[source]).unwrap();
+    let problems = host.check(&project, &path, text).unwrap().unwrap();
+    assert!(
+        problems.iter().any(|p| p.message == "Cannot resolve property 'Greeting' on ViewModel"),
+        "the removed referenced property still resolves: {problems:?}"
+    );
+}

@@ -19,7 +19,9 @@ impl CodeEditor {
         let completing = matches!(self.assist.popup, Some(Popup::Completion { .. }));
         let before = self.primary().head.checked_sub(c.len_utf8() + 1).map(|at| self.text.byte(at) as char);
         match c {
-            c if completing && (c.is_alphanumeric() || matches!(c, '_' | '.' | ':' | '-')) => {
+            c if completing
+                && (c.is_alphanumeric() || matches!(c, '_' | '-') || self.assist.xaml_word_characters.contains(c)) =>
+            {
                 self.filter_completion(cx)
             }
             '<' | '"' | '\'' | '{' | '.' | ':' | ',' => self.xaml_complete(false, cx),
@@ -36,6 +38,7 @@ impl CodeEditor {
 
     /// What may go where the caret is, asked of the XAML host on the text as typed.
     pub(super) fn xaml_complete(&mut self, explicit: bool, cx: &mut Context<Self>) {
+        self.close_popup(cx);
         let Some((host, project)) = self.buffer.read(cx).xaml.clone() else { return };
         let (path, text, rope) = (self.path.clone(), self.text.to_string(), self.text.clone());
         let at = language::point(&rope, self.primary().head);
@@ -56,6 +59,7 @@ impl CodeEditor {
                     return;
                 };
                 let start = offset(&e.text, list.start);
+                e.assist.xaml_word_characters = list.word_characters;
                 let head = e.primary().head;
                 if head < start || e.text.byte_to_line(head) != e.text.byte_to_line(start) {
                     return;

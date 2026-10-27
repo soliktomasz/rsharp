@@ -3,6 +3,7 @@
 //! scroll and folds, and is told of each change made through another so its carets keep their place.
 
 use crate::editor::Diagnostic;
+use futures::StreamExt;
 use gpui::{App, AppContext, Context, Entity, EntityId, EventEmitter, Global, Task, WeakEntity};
 use rsharp_core::editorconfig::EditorConfig;
 use rsharp_core::encodings::{Charset, decode, encode};
@@ -91,6 +92,7 @@ pub struct Buffer {
     /// A XAML file's host and the project it is read against.
     pub xaml: Option<(rsharp_lsp::xaml::XamlHost, PathBuf)>,
     checking_xaml: Option<Task<()>>,
+    xaml_changes: Option<Task<()>>,
 }
 
 impl EventEmitter<BufferEvent> for Buffer {}
@@ -243,6 +245,7 @@ impl Buffer {
             insight: None,
             xaml: None,
             checking_xaml: None,
+            xaml_changes: None,
             inspecting: None,
         };
         buffer.on_disk = stamp(&buffer.path);
@@ -663,7 +666,32 @@ impl Buffer {
 
     /// A XAML file's code help: read against `project` in the XAML host, now and once typing pauses.
     pub fn attach_xaml(&mut self, host: rsharp_lsp::xaml::XamlHost, project: PathBuf, cx: &mut Context<Self>) {
+        if self.xaml.is_none() {
+            cx.on_release(|b, cx| {
+                if let Some((host, _)) = b.xaml.take() {
+                    let path = b.path.clone();
+                    cx.background_executor()
+                        .spawn(async move {
+                            if let Err(failed) = host.closed(&path) {
+                                log::info!("XAML file closed: {failed}");
+                            }
+                        })
+                        .detach();
+                }
+            })
+            .detach();
+        }
+        let mut changes = host.subscribe();
         self.xaml = Some((host, project));
+        self.xaml_changes = Some(cx.spawn(async move |this, cx| {
+            while let Some(except) = changes.next().await {
+                let _ = this.update(cx, |b, cx| {
+                    if Some(&b.path) != except.as_ref() {
+                        b.check_xaml(Duration::ZERO, cx);
+                    }
+                });
+            }
+        }));
         self.check_xaml(Duration::ZERO, cx);
     }
 

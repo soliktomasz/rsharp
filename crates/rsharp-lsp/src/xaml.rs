@@ -3,6 +3,7 @@
 
 use crate::host::Connection;
 use crate::{Location, Point, Problem, ServerFailed, Span};
+use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -32,6 +33,7 @@ pub struct XamlItem {
 pub struct XamlCompletion {
     pub start: Point,
     pub items: Vec<XamlItem>,
+    pub word_characters: String,
 }
 
 /// The name at a place: where it is written, the card that says what it is, and where it leads.
@@ -46,6 +48,7 @@ pub struct XamlSymbol {
 #[derive(Clone)]
 pub struct XamlHost {
     running: Arc<Mutex<Option<Arc<Connection>>>>,
+    changes: Arc<Mutex<Vec<UnboundedSender<Option<PathBuf>>>>>,
     dotnet: PathBuf,
     host: PathBuf,
 }
@@ -54,7 +57,18 @@ impl XamlHost {
     /// None without the host RSharp's build publishes, or without dotnet.
     pub fn carried() -> Option<Self> {
         let host = crate::roslyn::carried_xaml_host()?;
-        Some(Self { running: Arc::default(), dotnet: rsharp_core::programs::dotnet()?, host })
+        Some(Self { running: Arc::default(), changes: Arc::default(), dotnet: rsharp_core::programs::dotnet()?, host })
+    }
+
+    /// A completed project update; the file that published it need not check itself again.
+    pub fn subscribe(&self) -> UnboundedReceiver<Option<PathBuf>> {
+        let (send, receive) = unbounded();
+        self.changes.lock().unwrap().push(send);
+        receive
+    }
+
+    fn changed_project(&self, except: Option<&Path>) {
+        self.changes.lock().unwrap().retain(|send| send.unbounded_send(except.map(Path::to_path_buf)).is_ok());
     }
 
     fn ask(&self, method: &str, params: Value) -> Result<Value, ServerFailed> {
@@ -79,6 +93,9 @@ impl XamlHost {
     /// Blocks for the answer, so call it off the UI thread.
     pub fn check(&self, project: &Path, path: &Path, text: &str) -> Result<Option<Vec<Problem>>, ServerFailed> {
         let found = self.ask("check", json!({ "project": project, "path": path, "text": text }))?;
+        if found["changed"] == true {
+            self.changed_project(Some(path));
+        }
         if found["dialect"].is_null() {
             return Ok(None);
         }
@@ -107,7 +124,11 @@ impl XamlHost {
             return Ok(None);
         }
         let items = found["items"].as_array().into_iter().flatten();
-        Ok(Some(XamlCompletion { start: Point::from(&found["start"]), items: items.map(item).collect() }))
+        Ok(Some(XamlCompletion {
+            start: Point::from(&found["start"]),
+            items: items.map(item).collect(),
+            word_characters: found["wordCharacters"].as_str().unwrap_or_default().to_string(),
+        }))
     }
 
     /// The name at `at`. Blocks for the answer, so call it off the UI thread.
@@ -137,7 +158,20 @@ impl XamlHost {
 
     /// Files written on disk, which the projects that hold them read again. Blocks, so call it off the UI thread.
     pub fn changed(&self, paths: &[PathBuf]) -> Result<(), ServerFailed> {
-        self.ask("changed", json!({ "paths": paths })).map(|_| ())
+        self.ask("changed", json!({ "paths": paths }))?;
+        self.changed_project(None);
+        Ok(())
+    }
+
+    /// The last editor of a file closed: discard its overlay without starting an unused host.
+    /// Blocks, so call it off the UI thread.
+    pub fn closed(&self, path: &Path) -> Result<(), ServerFailed> {
+        let running = self.running.lock().unwrap().clone();
+        if let Some(connection) = running.filter(|c| c.failed().is_none()) {
+            connection.ask("closed", json!({ "path": path }), |_| {}).map_err(ServerFailed)?;
+            self.changed_project(None);
+        }
+        Ok(())
     }
 }
 

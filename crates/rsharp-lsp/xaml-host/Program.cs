@@ -11,7 +11,7 @@ namespace RSharp.XamlHost;
 
 /// <summary>Passenger.Xaml behind JSON lines on standard input and output, as Passenger.Host speaks: a first line with id
 /// 0 says it is ready, then each request <c>{id, method, params}</c> is answered <c>{id, result}</c> or <c>{id, error}</c>,
-/// on the thread pool as it comes. Places are LSP's: lines and UTF-16 columns from zero. Each request carries the file's
+/// in input order. Places are LSP's: lines and UTF-16 columns from zero. Each request carries the file's
 /// text as typed and its project; a project's types are read once, on its first request, and read again once a file of it
 /// changes on disk (<c>changed</c>).</summary>
 public static class Program
@@ -32,7 +32,8 @@ public static class Program
         {
             if (line.Length > 0)
             {
-                _ = Task.Run(() => Handle(line));
+                // A close must follow earlier reads, so a delayed read cannot bring discarded text back.
+                Handle(line);
             }
         }
         return 0;
@@ -60,6 +61,7 @@ public static class Program
                 "complete" => Complete(asked),
                 "symbol" => Symbol(asked),
                 "changed" => Changed(asked),
+                "closed" => Closed(asked),
                 var method => throw new InvalidOperationException($"the XAML host has no method {method}"),
             };
             Write(new JsonObject { ["id"] = id, ["result"] = result });
@@ -71,7 +73,7 @@ public static class Program
     }
 
     /// <summary>The file read against its project, or null for a project whose XAML Passenger.Xaml does not read.</summary>
-    private static (XamlProjectBuilder Builder, XamlFile File)? Read(JsonNode asked)
+    private static (XamlFile File, bool Changed)? Read(JsonNode asked, bool publish = false)
     {
         string project = asked["project"]!.GetValue<string>();
         string path = asked["path"]!.GetValue<string>();
@@ -88,14 +90,15 @@ public static class Program
             return null;
         }
         XmlTree tree = XmlTree.Parse(text);
-        // What this file now says (a resource, a name) is seen by the project's other files.
-        XamlProject current = builder.XamlTyped(path, tree) ?? builder.Current;
-        return (builder, new XamlFile(path, tree, current.With(XamlFileSummary.Of(path, tree, current.ResolveSource))));
+        // Only a check publishes the summary and reports its change to the other open files.
+        XamlProject? changed = publish ? builder.XamlTyped(path, tree) : null;
+        XamlProject current = changed ?? builder.Current;
+        return (new XamlFile(path, tree, current.With(XamlFileSummary.Of(path, tree, current.ResolveSource))), changed is not null);
     }
 
     private static JsonNode Check(JsonNode asked)
     {
-        if (Read(asked) is not { File: var file })
+        if (Read(asked, publish: true) is not { File: var file, Changed: var changed })
         {
             return new JsonObject { ["dialect"] = null, ["diagnostics"] = new JsonArray() };
         }
@@ -109,7 +112,7 @@ public static class Program
                 ["message"] = diagnostic.Message,
             });
         }
-        return new JsonObject { ["dialect"] = file.Dialect.GetType().Name.Replace("Dialect", string.Empty, StringComparison.Ordinal), ["diagnostics"] = found };
+        return new JsonObject { ["dialect"] = file.Dialect.GetType().Name.Replace("Dialect", string.Empty, StringComparison.Ordinal), ["diagnostics"] = found, ["changed"] = changed };
     }
 
     private static JsonNode? Complete(JsonNode asked)
@@ -183,7 +186,7 @@ public static class Program
                 {
                     Builders.TryRemove(project, out _);
                 }
-                else if (lazy.IsValueCreated && lazy.Value is { } builder && Paths.IsUnder(path, builder.Folder))
+                else if (lazy.IsValueCreated && lazy.Value is { } builder)
                 {
                     if (path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
                     {
@@ -194,6 +197,20 @@ public static class Program
                         builder.XamlChanged(path, null);
                     }
                 }
+            }
+        }
+        return true;
+    }
+
+    private static JsonNode Closed(JsonNode asked)
+    {
+        string path = asked["path"]!.GetValue<string>();
+        Texts.TryRemove(path, out _);
+        foreach (Lazy<XamlProjectBuilder?> lazy in Builders.Values)
+        {
+            if (lazy.IsValueCreated && lazy.Value is { } builder && builder.Owns(path))
+            {
+                builder.XamlChanged(path, null);
             }
         }
         return true;

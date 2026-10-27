@@ -44,6 +44,207 @@ fn caret_line(main: &Entity<MainWindow>, cx: &mut VisualTestContext) -> String {
     })
 }
 
+fn restored(name: &str, files: &[(&str, &str)]) -> Option<Run> {
+    if rsharp_lsp::xaml::XamlHost::carried().is_none() {
+        eprintln!("skipped: the XAML host was not built");
+        return None;
+    }
+    let run = Run::new(name, files);
+    let dotnet = rsharp_core::programs::dotnet().unwrap();
+    let restore = rsharp_core::dotnet::command(&dotnet, ["restore", "-v", "q"], &run.folder).output().unwrap();
+    if !restore.status.success() {
+        eprintln!("skipped: Avalonia could not be restored: {}", String::from_utf8_lossy(&restore.stdout));
+        return None;
+    }
+    Some(run)
+}
+
+#[gpui::test]
+fn a_dot_requests_the_next_binding_members(cx: &mut TestAppContext) {
+    let text = WINDOW.replace("Greeting", "");
+    let model = "namespace Demo; public class MainViewModel { public Person Person { get; set; } } public class Person { public string Name { get; set; } }";
+    let Some(run) = restored(
+        "xaml-dot",
+        &[
+            ("Demo.csproj", PROJECT),
+            ("MainWindow.axaml", &text),
+            ("MainWindow.axaml.cs", CODE),
+            ("MainViewModel.cs", model),
+        ],
+    ) else {
+        return;
+    };
+    let (main, cx) = run.window(cx);
+    cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
+    main.update_in(cx, |m, window, cx| {
+        m.open_workspace(&run.folder, window, cx);
+        m.open_file(&run.folder.join("MainWindow.axaml"), Some((6, 30)), window, cx);
+    });
+    cx.run_until_parked();
+    cx.simulate_input("P");
+    assert!(caret_line(&main, cx).contains("{Binding P|}"), "the binding caret is wrong: {}", caret_line(&main, cx));
+    offered(&main, cx, "the view model's Person property", "Person");
+    for c in "erson".chars() {
+        cx.simulate_input(&c.to_string());
+    }
+    cx.simulate_input(".");
+    offered(&main, cx, "Person's Name after the binding dot", "Name");
+    cx.simulate_keystrokes("enter");
+    assert!(caret_line(&main, cx).contains("{Binding Person.Name|}"), "{}", caret_line(&main, cx));
+}
+
+#[gpui::test]
+fn a_binding_dot_closes_the_previous_list_even_without_members(cx: &mut TestAppContext) {
+    let text = WINDOW.replace("Greeting", "");
+    let model =
+        "namespace Demo; public class MainViewModel { public Person Person { get; set; } } public class Person { }";
+    let Some(run) = restored(
+        "xaml-dot-empty",
+        &[
+            ("Demo.csproj", PROJECT),
+            ("MainWindow.axaml", &text),
+            ("MainWindow.axaml.cs", CODE),
+            ("MainViewModel.cs", model),
+        ],
+    ) else {
+        return;
+    };
+    let (main, cx) = run.window(cx);
+    cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
+    main.update_in(cx, |m, window, cx| {
+        m.open_workspace(&run.folder, window, cx);
+        m.open_file(&run.folder.join("MainWindow.axaml"), Some((6, 30)), window, cx);
+    });
+    cx.run_until_parked();
+    cx.simulate_input("P");
+    offered(&main, cx, "the Person property before its empty member list", "Person");
+    for c in "erson".chars() {
+        cx.simulate_input(&c.to_string());
+    }
+    cx.simulate_input(".");
+    assert!(shown(&main, cx).is_empty(), "the previous Person choice can still replace Person. after typing its dot");
+    cx.simulate_keystrokes("enter");
+    let text = main.read_with(cx, |m, cx| m.editor().unwrap().read(cx).text().to_string());
+    assert!(text.contains("{Binding Person."), "Enter accepted an old completion and removed the binding dot: {text}");
+}
+
+#[gpui::test]
+fn a_saved_source_change_rechecks_open_xaml(cx: &mut TestAppContext) {
+    let text = WINDOW.replace("Greeting", "Added");
+    let Some(run) = restored(
+        "xaml-source-change",
+        &[
+            ("Demo.csproj", PROJECT),
+            ("MainWindow.axaml", &text),
+            ("MainWindow.axaml.cs", CODE),
+            ("MainViewModel.cs", VIEW_MODEL),
+        ],
+    ) else {
+        return;
+    };
+    let (main, cx) = run.window(cx);
+    cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
+    main.update_in(cx, |m, window, cx| {
+        m.open_workspace(&run.folder, window, cx);
+        m.open_file(&run.folder.join("MainWindow.axaml"), None, window, cx);
+    });
+    let buffer = main.read_with(cx, |m, cx| m.editor().unwrap().read(cx).buffer.clone());
+    wait(cx, "the missing Added property marked", |cx| {
+        buffer.read_with(cx, |b, _| b.diagnostics.iter().any(|d| d.message.contains("'Added'")))
+    });
+    std::fs::write(run.folder.join("MainViewModel.cs"), VIEW_MODEL.replace("Greeting", "Added")).unwrap();
+    wait(cx, "the binding error cleared after saving its C# property", |cx| {
+        buffer.read_with(cx, |b, _| b.diagnostics.is_empty())
+    });
+}
+
+#[gpui::test]
+fn resources_follow_unsaved_edits_until_the_last_editor_closes(cx: &mut TestAppContext) {
+    let window_text = "<Window xmlns=\"https://github.com/avaloniaui\" Background=\"{StaticResource Ghost}\" />";
+    let app = "<Application xmlns=\"https://github.com/avaloniaui\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"></Application>";
+    let typed = app.replace("</Application>", "<Application.Resources><SolidColorBrush x:Key=\"Ghost\" Color=\"Red\" /></Application.Resources></Application>");
+    let Some(run) = restored(
+        "xaml-resources-close",
+        &[("Demo.csproj", PROJECT), ("MainWindow.axaml", window_text), ("App.axaml", app)],
+    ) else {
+        return;
+    };
+    let (main, cx) = run.window(cx);
+    cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
+    main.update_in(cx, |m, window, cx| {
+        m.open_workspace(&run.folder, window, cx);
+        m.open_file(&run.folder.join("MainWindow.axaml"), None, window, cx);
+    });
+    let buffer = main.read_with(cx, |m, cx| m.editor().unwrap().read(cx).buffer.clone());
+    wait(cx, "the missing Ghost resource marked", |cx| {
+        buffer.read_with(cx, |b, _| b.diagnostics.iter().any(|d| d.message.contains("'Ghost'")))
+    });
+    main.update_in(cx, |m, window, cx| m.open_file(&run.folder.join("App.axaml"), None, window, cx));
+    main.read_with(cx, |m, cx| m.editor().unwrap().read(cx).buffer.clone())
+        .update(cx, |b, cx| b.replace_all(typed, cx));
+    wait(cx, "the other buffer sees the unsaved resource", |cx| buffer.read_with(cx, |b, _| b.diagnostics.is_empty()));
+    cx.dispatch_action(rsharp_app::window::SplitRight);
+    cx.run_until_parked();
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-w" } else { "ctrl-f4" });
+    cx.run_until_parked();
+    buffer.update(cx, |b, cx| b.replace_all(window_text.replace("Ghost", "Missing"), cx));
+    wait(cx, "the surviving editor still checks dependent resources", |cx| {
+        buffer.read_with(cx, |b, _| b.diagnostics.iter().any(|d| d.message.contains("'Missing'")))
+    });
+    buffer.update(cx, |b, cx| b.replace_all(window_text.to_string(), cx));
+    wait(cx, "closing one split keeps the unsaved resource", |cx| {
+        buffer.read_with(cx, |b, _| b.diagnostics.is_empty())
+    });
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-w" } else { "ctrl-f4" });
+    wait(cx, "the discarded resource is missing again", |cx| {
+        buffer.read_with(cx, |b, _| b.diagnostics.iter().any(|d| d.message.contains("'Ghost'")))
+    });
+}
+
+#[gpui::test]
+fn reopening_a_solution_reads_changes_made_while_it_was_closed(cx: &mut TestAppContext) {
+    let text = WINDOW.replace("Greeting", "Added");
+    let Some(run) = restored(
+        "xaml-reopen",
+        &[
+            ("Demo.csproj", PROJECT),
+            ("MainWindow.axaml", &text),
+            ("MainWindow.axaml.cs", CODE),
+            ("MainViewModel.cs", VIEW_MODEL),
+        ],
+    ) else {
+        return;
+    };
+    let (main, cx) = run.window(cx);
+    cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
+    let path = run.folder.join("MainWindow.axaml");
+    main.update_in(cx, |m, window, cx| {
+        m.open_workspace(&run.folder, window, cx);
+        m.open_file(&path, None, window, cx);
+    });
+    wait(cx, "the first session's missing property marked", |cx| {
+        main.read_with(cx, |m, cx| !m.editor().unwrap().read(cx).buffer.read(cx).diagnostics.is_empty())
+    });
+    main.update_in(cx, |m, window, cx| m.close_solution(window, cx));
+    cx.run_until_parked();
+    std::fs::write(run.folder.join("MainViewModel.cs"), VIEW_MODEL.replace("Greeting", "Added")).unwrap();
+    main.update_in(cx, |m, window, cx| {
+        m.open_workspace(&run.folder, window, cx);
+        m.open_file(&path, Some((6, 32)), window, cx);
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "f1" } else { "ctrl-shift-f1" });
+    wait(cx, "the reopened session reads the new Added declaration", |cx| {
+        main.read_with(cx, |m, cx| {
+            m.editor()
+                .unwrap()
+                .read(cx)
+                .popup_text()
+                .is_some_and(|t| t.contains("Added") && !t.contains("Cannot resolve"))
+        })
+    });
+}
+
 #[gpui::test]
 fn avalonia_xaml_completes_marks_and_goes_to_what_its_project_declares(cx: &mut TestAppContext) {
     if rsharp_lsp::xaml::XamlHost::carried().is_none() {
