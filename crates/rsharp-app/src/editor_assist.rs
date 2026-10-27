@@ -567,6 +567,11 @@ impl CodeEditor {
                     cx.emit(super::XamlField { class, name });
                 } else if to.is_empty() {
                     cx.emit(Said(format!("Cannot find {} to go to", title.to_lowercase())));
+                } else if let [field] = to.as_slice()
+                    && let Some(named) = super::xaml_help::markup_compiled_name(field, &name, cx)
+                {
+                    // WPF's MarkupCompile declares it: its declaration is the XAML's name.
+                    cx.emit(Navigate { title: title.to_string(), to: vec![named], list: false });
                 } else {
                     cx.emit(Navigate { title: title.to_string(), to, list: false });
                 }

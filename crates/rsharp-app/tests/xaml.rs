@@ -1098,3 +1098,720 @@ fn a_binding_path_and_a_converter_nothing_has_offer_to_create_them_in_the_view_m
         shop_buffer.read_with(cx, |b, _| b.diagnostics.is_empty())
     });
 }
+
+// WPF's XAML (Passenger's WpfXamlTests), on Passenger's WPF gallery: a WinExe on net10.0-windows with UseWPF, which
+// EnableWindowsTargeting restores and builds off Windows.
+
+const WPF_PROJECT: &str = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <OutputType>WinExe</OutputType>\n    <TargetFramework>net10.0-windows</TargetFramework>\n    <UseWPF>true</UseWPF>\n    <EnableWindowsTargeting>true</EnableWindowsTargeting>\n    <Nullable>enable</Nullable>\n    <ImplicitUsings>enable</ImplicitUsings>\n  </PropertyGroup>\n</Project>\n";
+const WPF_APP_CODE: &str =
+    "using System.Windows;\n\nnamespace Gallery;\n\npublic partial class App : Application\n{\n}\n";
+const WPF_WINDOW: &str = "<Window x:Class=\"Gallery.MainWindow\"\n        xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"\n        xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"\n        xmlns:d=\"http://schemas.microsoft.com/expression/blend/2008\"\n        xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\"\n        xmlns:vm=\"clr-namespace:Gallery.ViewModels\"\n        mc:Ignorable=\"d\"\n        d:DataContext=\"{d:DesignInstance Type=vm:MainViewModel}\"\n        Title=\"Gallery\" Height=\"450\" Width=\"800\">\n    <Window.Resources>\n        <Style TargetType=\"Button\">\n            <Setter Property=\"Template\">\n                <Setter.Value>\n                    <ControlTemplate TargetType=\"Button\">\n                        <Border x:Name=\"Chrome\" Background=\"{TemplateBinding Background}\" CornerRadius=\"4\">\n                            <ContentPresenter HorizontalAlignment=\"Center\" />\n                        </Border>\n                        <ControlTemplate.Triggers>\n                            <Trigger Property=\"IsMouseOver\" Value=\"True\">\n                                <Setter TargetName=\"Chrome\" Property=\"Background\" Value=\"{DynamicResource Muted}\" />\n                            </Trigger>\n                        </ControlTemplate.Triggers>\n                    </ControlTemplate>\n                </Setter.Value>\n            </Setter>\n        </Style>\n    </Window.Resources>\n    <StackPanel Margin=\"12\">\n        <TextBlock Style=\"{StaticResource Heading}\" Text=\"{Binding Greeting}\" />\n        <Button x:Name=\"Go\" Content=\"Go\" Click=\"OnGo\" Background=\"{StaticResource Accent}\" />\n        <TextBlock Text=\"{Binding Content, ElementName=Go}\" />\n        <ListBox ItemsSource=\"{Binding People}\" Background=\"{x:Static SystemColors.ControlBrush}\">\n            <ListBox.ItemTemplate>\n                <DataTemplate>\n                    <TextBlock Text=\"{Binding Name}\" />\n                </DataTemplate>\n            </ListBox.ItemTemplate>\n        </ListBox>\n    </StackPanel>\n</Window>\n";
+const WPF_APP: &str = "<Application x:Class=\"Gallery.App\"\n             xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"\n             xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"\n             StartupUri=\"MainWindow.xaml\">\n    <Application.Resources>\n        <ResourceDictionary>\n            <ResourceDictionary.MergedDictionaries>\n                <ResourceDictionary Source=\"Themes/Brushes.xaml\" />\n            </ResourceDictionary.MergedDictionaries>\n            <Style x:Key=\"Heading\" TargetType=\"TextBlock\">\n                <Setter Property=\"FontSize\" Value=\"20\" />\n                <Setter Property=\"Foreground\" Value=\"{StaticResource Accent}\" />\n            </Style>\n        </ResourceDictionary>\n    </Application.Resources>\n</Application>\n";
+const WPF_BRUSHES: &str = "<ResourceDictionary xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"\n                    xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"\n                    xmlns:sys=\"clr-namespace:System;assembly=mscorlib\">\n    <SolidColorBrush x:Key=\"Accent\" Color=\"#3574F0\" />\n    <SolidColorBrush x:Key=\"Muted\" Color=\"#868A91\" />\n    <sys:Double x:Key=\"Gap\">8</sys:Double>\n</ResourceDictionary>\n";
+const WPF_MAIN_VIEW_MODEL: &str = "using System.Collections.ObjectModel;\n\nnamespace Gallery.ViewModels;\n\npublic class MainViewModel\n{\n    public string Greeting { get; set; } = \"Hello\";\n\n    public Person Owner { get; } = new();\n\n    public ObservableCollection<Person> People { get; } = [];\n\n    public bool IsBusy { get; set; }\n}\n\npublic class Person\n{\n    public string Name { get; set; } = \"Ada\";\n\n    public int Age { get; set; }\n}\n";
+const WPF_CODE_BEHIND: &str = "using System.Windows;\n\nnamespace Gallery;\n\npublic partial class MainWindow : Window\n{\n    public MainWindow()\n    {\n        InitializeComponent();\n        Go.Content = \"Start\";\n    }\n\n    private void OnGo(object sender, RoutedEventArgs e)\n    {\n    }\n}\n";
+const WPF_LISTS_VIEW_MODEL: &str = "using System.Collections.ObjectModel;\n\nnamespace Gallery.ViewModels;\n\npublic class Node\n{\n    public string Title { get; set; } = \"\";\n\n    public ObservableCollection<Node> Children { get; } = [];\n}\n\npublic interface INamed\n{\n    string Name { get; }\n}\n\npublic interface IShopper : INamed\n{\n    int Visits { get; }\n}\n\npublic class ListsViewModel\n{\n    public ObservableCollection<Node> Roots { get; } = [];\n\n    public ObservableCollection<Person> People { get; } = [];\n\n    public IShopper? Shopper { get; set; }\n}\n";
+const WPF_LISTS: &str = "<Window x:Class=\"Gallery.ListsWindow\"\n        xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"\n        xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"\n        xmlns:d=\"http://schemas.microsoft.com/expression/blend/2008\"\n        xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\"\n        xmlns:vm=\"clr-namespace:Gallery.ViewModels\"\n        xmlns:sys=\"clr-namespace:System;assembly=mscorlib\"\n        mc:Ignorable=\"d\"\n        d:DataContext=\"{d:DesignInstance vm:ListsViewModel}\"\n        Title=\"Lists\" Height=\"450\" Width=\"800\">\n    <Window.Resources>\n        <ResourceDictionary>\n            <ResourceDictionary.MergedDictionaries>\n                <ResourceDictionary Source=\"pack://application:,,,/PresentationFramework.Aero2;component/themes/aero2.normalcolor.xaml\" />\n            </ResourceDictionary.MergedDictionaries>\n            <x:Array x:Key=\"Sizes\" Type=\"sys:Double\">\n                <sys:Double>10</sys:Double>\n                <sys:Double>12</sys:Double>\n            </x:Array>\n            <XmlDataProvider x:Key=\"Books\" XPath=\"Books\">\n                <x:XData>\n                    <Books xmlns=\"\">\n                        <Book Title=\"Dune\" />\n                    </Books>\n                </x:XData>\n            </XmlDataProvider>\n        </ResourceDictionary>\n    </Window.Resources>\n    <UniformGrid Columns=\"3\">\n        <TreeView ItemsSource=\"{Binding Roots}\">\n            <TreeView.ItemTemplate>\n                <HierarchicalDataTemplate ItemsSource=\"{Binding Children}\">\n                    <TextBlock Text=\"{Binding Title}\" />\n                </HierarchicalDataTemplate>\n            </TreeView.ItemTemplate>\n        </TreeView>\n        <DataGrid ItemsSource=\"{Binding People}\" AutoGenerateColumns=\"False\" Background=\"{StaticResource {x:Static SystemColors.WindowBrushKey}}\">\n            <DataGrid.Columns>\n                <DataGridTextColumn Header=\"Name\" Binding=\"{Binding Name}\" />\n                <DataGridTemplateColumn Header=\"Age\">\n                    <DataGridTemplateColumn.CellTemplate>\n                        <DataTemplate>\n                            <TextBlock Text=\"{Binding Age}\" />\n                        </DataTemplate>\n                    </DataGridTemplateColumn.CellTemplate>\n                </DataGridTemplateColumn>\n            </DataGrid.Columns>\n        </DataGrid>\n        <StackPanel>\n            <ListView ItemsSource=\"{Binding People}\">\n                <ListView.View>\n                    <GridView>\n                        <GridViewColumn Header=\"Age\" DisplayMemberBinding=\"{Binding Age}\" />\n                    </GridView>\n                </ListView.View>\n            </ListView>\n            <TextBlock Text=\"{Binding Shopper.Name}\" />\n            <ComboBox ItemsSource=\"{StaticResource Sizes}\" />\n            <ListBox ItemsSource=\"{Binding Source={StaticResource Books}, XPath=Book}\" DisplayMemberPath=\"@Title\" />\n        </StackPanel>\n    </UniformGrid>\n</Window>\n";
+const WPF_LISTS_CODE_BEHIND: &str = "using System.Windows;\n\nnamespace Gallery;\n\npublic partial class ListsWindow : Window\n{\n    public ListsWindow()\n    {\n        InitializeComponent();\n    }\n}\n";
+
+/// Passenger's WPF gallery, restored; None, said, without the XAML host or the WindowsDesktop reference pack.
+fn wpf_gallery(name: &str) -> Option<Run> {
+    restored(
+        name,
+        &[
+            ("Gallery.csproj", WPF_PROJECT),
+            ("App.xaml", WPF_APP),
+            ("App.xaml.cs", WPF_APP_CODE),
+            ("Themes/Brushes.xaml", WPF_BRUSHES),
+            ("MainWindow.xaml", WPF_WINDOW),
+            ("MainWindow.xaml.cs", WPF_CODE_BEHIND),
+            ("ViewModels/MainViewModel.cs", WPF_MAIN_VIEW_MODEL),
+            ("ViewModels/ListsViewModel.cs", WPF_LISTS_VIEW_MODEL),
+            ("ListsWindow.xaml", WPF_LISTS),
+            ("ListsWindow.xaml.cs", WPF_LISTS_CODE_BEHIND),
+        ],
+    )
+}
+
+/// The window opened on `file` of a restored WPF gallery, servers on, the editor's buffer and a reader of its text.
+fn open_wpf<'a>(
+    run: &Run,
+    file: &str,
+    cx: &'a mut TestAppContext,
+) -> (Entity<MainWindow>, &'a mut VisualTestContext, Entity<rsharp_app::buffer::Buffer>) {
+    let (main, cx) = run.window(cx);
+    cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
+    let path = run.folder.join(file);
+    main.update_in(cx, |m, window, cx| {
+        m.open_workspace(&run.folder, window, cx);
+        m.open_file(&path, None, window, cx);
+    });
+    let buffer = main.read_with(cx, |m, cx| m.editor().unwrap().read(cx).buffer.clone());
+    (main, cx, buffer)
+}
+
+/// The caret put just after `needle` in the open file `path`.
+fn place_after(main: &Entity<MainWindow>, path: &std::path::Path, needle: &str, cx: &mut VisualTestContext) {
+    let buffer = cx.update(|_, cx| rsharp_app::buffer::find(&path.to_path_buf(), cx)).unwrap();
+    let place = after(&buffer.read_with(cx, |b, _| b.document.text().to_string()), needle);
+    main.update_in(cx, |m, window, cx| m.open_file(path, Some(place), window, cx));
+}
+
+#[gpui::test]
+fn typing_a_tag_offers_wpfs_controls_then_a_controls_properties_and_events_and_then_the_values_of_the_one_chosen(
+    cx: &mut TestAppContext,
+) {
+    let Some(run) = wpf_gallery("wpf-complete") else { return };
+    let (main, cx, _) = open_wpf(&run, "MainWindow.xaml", cx);
+    let window = run.folder.join("MainWindow.xaml");
+    place_after(&main, &window, "<StackPanel Margin=\"12\">", cx);
+    cx.simulate_keystrokes("enter");
+    cx.simulate_input("<");
+    offered(&main, cx, "WPF's controls after a tag's '<'", "Button");
+    assert!(shown(&main, cx).iter().any(|l| l == "Border"), "{:?}", shown(&main, cx));
+    cx.simulate_input("Butt");
+    cx.run_until_parked();
+    assert_eq!(shown(&main, cx).first().map(String::as_str), Some("Button"));
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(caret_line(&main, cx).ends_with("<Button|"), "{}", caret_line(&main, cx));
+
+    cx.simulate_input(" ");
+    cx.simulate_input("C");
+    offered(&main, cx, "a Button's events among its attributes", "Click");
+    for label in ["Command", "Content", "Canvas.Left"] {
+        assert!(shown(&main, cx).iter().any(|l| l == label), "{label} not offered: {:?}", shown(&main, cx));
+    }
+    cx.simulate_keystrokes("escape backspace");
+    cx.simulate_input("G");
+    offered(&main, cx, "Grid's attached properties by their owner", "Grid.Row");
+    assert!(!shown(&main, cx).iter().any(|l| l == "IsMouseOver"), "a property only a trigger reads was offered to set");
+    cx.simulate_keystrokes("escape backspace");
+    cx.simulate_input("H");
+    offered(&main, cx, "a Button's dependency properties, its bases' included", "HorizontalAlignment");
+    cx.simulate_input("orizontalA");
+    cx.run_until_parked();
+    assert_eq!(shown(&main, cx).first().map(String::as_str), Some("HorizontalAlignment"));
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(caret_line(&main, cx).ends_with("<Button HorizontalAlignment=\"|\""), "{}", caret_line(&main, cx));
+    offered(&main, cx, "the enum's members inside the new value's quotes", "Center");
+    let mut values = shown(&main, cx);
+    values.sort();
+    assert_eq!(values, ["Center", "Left", "Right", "Stretch"]);
+    cx.simulate_input("Ce");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(caret_line(&main, cx).ends_with("<Button HorizontalAlignment=\"Center|\""), "{}", caret_line(&main, cx));
+
+    // A trigger's property may be one WPF sets itself; its setter's, one of the element its TargetName names.
+    place_after(&main, &window, "<Trigger Property=\"", cx);
+    cx.dispatch_action(rsharp_app::editor::Complete);
+    offered(&main, cx, "the read-only dependency properties a trigger watches", "IsMouseOver");
+    cx.simulate_keystrokes("escape");
+    place_after(&main, &window, "<Setter TargetName=\"Chrome\" Property=\"", cx);
+    cx.dispatch_action(rsharp_app::editor::Complete);
+    offered(&main, cx, "the Border's properties, as TargetName names it", "CornerRadius");
+}
+
+#[gpui::test]
+fn resources_complete_from_what_app_xaml_merges_in_and_a_binding_from_its_design_time_data_context_through_a_path(
+    cx: &mut TestAppContext,
+) {
+    use rsharp_app::editor::Complete;
+    let Some(run) = wpf_gallery("wpf-resources") else { return };
+    let (main, cx, buffer) = open_wpf(&run, "MainWindow.xaml", cx);
+    let window = run.folder.join("MainWindow.xaml");
+    let text = |cx: &mut VisualTestContext| buffer.read_with(cx, |b, _| b.document.text().to_string());
+    let replace = |from: &str, to: &str, cx: &mut VisualTestContext| {
+        let replaced = text(cx).replacen(from, to, 1);
+        buffer.update(cx, |b, cx| b.replace_all(replaced, cx));
+    };
+    let has = |label: &str, cx: &mut VisualTestContext| shown(&main, cx).iter().any(|l| l == label);
+
+    place_after(&main, &window, "<Button x:Name=\"Go\" Content=\"Go\" Click=\"OnGo\"", cx);
+    cx.simulate_input(" Foreground=");
+    cx.simulate_input("\"");
+    offered(&main, cx, "the named colours a brush takes", "Red");
+    // RSharp's editor pairs no quotes (Passenger's does): the value is closed by hand, the caret back inside it.
+    cx.simulate_keystrokes("escape");
+    cx.simulate_input("\"");
+    cx.simulate_keystrokes("left");
+    cx.simulate_input("{");
+    offered(&main, cx, "the markup extensions after a value's brace", "StaticResource");
+    for label in ["DynamicResource", "Binding", "RelativeSource", "x:Static", "x:Type"] {
+        assert!(has(label, cx), "{label} not offered: {:?}", shown(&main, cx));
+    }
+    cx.simulate_input("StaticRes");
+    cx.run_until_parked();
+    cx.simulate_keystrokes("enter");
+    cx.simulate_input(" ");
+    offered(&main, cx, "the brushes' keys, merged in by App.xaml", "Accent");
+    assert!(has("Heading", cx) && has("Gap", cx), "{:?}", shown(&main, cx));
+    cx.simulate_keystrokes("escape");
+
+    place_after(&main, &window, "Text=\"{Binding ", cx);
+    cx.dispatch_action(Complete);
+    offered(&main, cx, "the view model's properties, d:DataContext's type's", "Greeting");
+    assert!(has("Owner", cx) && has("Mode=", cx), "{:?}", shown(&main, cx));
+    cx.simulate_keystrokes("escape");
+    replace("{Binding Greeting}", "{Binding Owner.}", cx);
+    place_after(&main, &window, "{Binding Owner.", cx);
+    cx.dispatch_action(Complete);
+    offered(&main, cx, "the path's next step's properties, Person's after Owner.", "Name");
+    assert!(has("Age", cx) && !has("Greeting", cx), "{:?}", shown(&main, cx));
+    cx.simulate_keystrokes("escape");
+
+    // An item template's bindings resolve against the items its list's ItemsSource binds.
+    replace(
+        "<TextBlock Text=\"{Binding Name}\" />",
+        "<TextBlock Text=\"{Binding Name}\" /><TextBlock Text=\"{Binding }\" />",
+        cx,
+    );
+    place_after(&main, &window, "<TextBlock Text=\"{Binding Name}\" /><TextBlock Text=\"{Binding ", cx);
+    cx.dispatch_action(Complete);
+    offered(&main, cx, "Person's properties, People's items'", "Age");
+    cx.simulate_keystrokes("escape");
+
+    replace("Background=\"{x:Static SystemColors.ControlBrush}\"", "Background=\"{x:Static SystemColors.}\"", cx);
+    place_after(&main, &window, "Background=\"{x:Static SystemColors.", cx);
+    cx.dispatch_action(Complete);
+    offered(&main, cx, "SystemColors' static members", "ControlBrushKey");
+    cx.simulate_keystrokes("escape");
+
+    // A namespace as WPF writes it: the project's own by its name, another assembly's with that assembly's.
+    for (typed, wanted) in [
+        ("http", "http://schemas.microsoft.com/winfx/2006/xaml/presentation"),
+        ("clr-namespace:Gal", "clr-namespace:Gallery.ViewModels"),
+    ] {
+        replace(
+            "xmlns:vm=\"clr-namespace:Gallery.ViewModels\"",
+            &format!("xmlns:vm=\"clr-namespace:Gallery.ViewModels\" xmlns:items=\"{typed}\""),
+            cx,
+        );
+        place_after(&main, &window, &format!("xmlns:items=\"{typed}"), cx);
+        cx.dispatch_action(Complete);
+        offered(&main, cx, &format!("{wanted} offered for an xmlns"), wanted);
+        cx.simulate_keystrokes("escape");
+        replace(&format!(" xmlns:items=\"{typed}\""), "", cx);
+    }
+    replace(
+        "xmlns:vm=\"clr-namespace:Gallery.ViewModels\"",
+        "xmlns:vm=\"clr-namespace:Gallery.ViewModels\" xmlns:items=\"clr-namespace:System.Collections.Obj\"",
+        cx,
+    );
+    place_after(&main, &window, "xmlns:items=\"clr-namespace:System.Collections.Obj", cx);
+    cx.dispatch_action(Complete);
+    wait(cx, "another assembly's namespace, with its assembly", |cx| {
+        shown(&main, cx).iter().any(|l| l.starts_with("clr-namespace:System.Collections.ObjectModel;assembly="))
+    });
+    cx.simulate_keystrokes("escape");
+
+    // A grid column's binding, and a hierarchical template's own, resolve against the items.
+    let lists = run.folder.join("ListsWindow.xaml");
+    main.update_in(cx, |m, window_, cx| m.open_file(&lists, None, window_, cx));
+    place_after(&main, &lists, "<DataGridTextColumn Header=\"Name\" Binding=\"{Binding ", cx);
+    cx.dispatch_action(Complete);
+    offered(&main, cx, "Person's properties, the grid's items'", "Age");
+    assert!(!has("Roots", cx), "the window's data context offered in a grid column: {:?}", shown(&main, cx));
+    cx.simulate_keystrokes("escape");
+    place_after(&main, &lists, "<HierarchicalDataTemplate ItemsSource=\"{Binding ", cx);
+    cx.dispatch_action(Complete);
+    offered(&main, cx, "Node's properties, the tree's items'", "Children");
+}
+
+#[gpui::test]
+fn a_wpf_window_that_compiles_is_marked_with_nothing_and_a_misspelt_property_value_resource_and_binding_path_are_marked(
+    cx: &mut TestAppContext,
+) {
+    let Some(run) = wpf_gallery("wpf-marked") else { return };
+    let (main, cx, buffer) = open_wpf(&run, "MainWindow.xaml", cx);
+    // The gallery compiles: none of its files is marked once read.
+    for file in ["App.xaml", "Themes/Brushes.xaml", "ListsWindow.xaml", "MainWindow.xaml"] {
+        let path = run.folder.join(file);
+        main.update_in(cx, |m, window, cx| m.open_file(&path, None, window, cx));
+        pump(cx, Duration::from_secs(3));
+        let marked = main.read_with(cx, |m, cx| {
+            m.editor()
+                .unwrap()
+                .read(cx)
+                .buffer
+                .read(cx)
+                .diagnostics
+                .iter()
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+        });
+        assert!(marked.is_empty(), "{file}, which compiles, is marked: {marked:?}");
+    }
+    let text = buffer
+        .read_with(cx, |b, _| b.document.text().to_string())
+        .replace(
+            "<Button x:Name=\"Go\" Content=\"Go\" Click=\"OnGo\"",
+            "<Button x:Name=\"Go\" Content=\"Go\" Click=\"OnGo\" Foregrund=\"Red\" HorizontalAlignment=\"Centre\"",
+        )
+        .replace("{Binding Greeting}", "{Binding Greting}")
+        .replace("{StaticResource Accent}", "{StaticResource Acent}");
+    buffer.update(cx, |b, cx| b.replace_all(text, cx));
+    wait(cx, "the four mistakes marked", |cx| buffer.read_with(cx, |b, _| b.diagnostics.len() == 4));
+    let mut marked: Vec<(String, bool)> =
+        buffer.read_with(cx, |b, _| b.diagnostics.iter().map(|d| (d.message.clone(), d.error)).collect());
+    marked.sort();
+    assert_eq!(
+        marked,
+        [
+            ("'Centre' is not a value of HorizontalAlignment".to_string(), true),
+            ("Cannot resolve property 'Foregrund' on Button".to_string(), true),
+            // WPF's bindings are read as the app runs: a path its design-time data context lacks is a warning.
+            ("Cannot resolve property 'Greting' in data context of type MainViewModel".to_string(), false),
+            ("Resource 'Acent' is not found".to_string(), true),
+        ]
+    );
+}
+
+#[gpui::test]
+fn after_a_build_markup_compiles_error_is_marked_on_its_line_with_its_code(cx: &mut TestAppContext) {
+    let Some(run) = wpf_gallery("wpf-built") else { return };
+    let (_main, cx, buffer) = open_wpf(&run, "MainWindow.xaml", cx);
+    // A button given two children: MarkupCompile's to find, not the live check's.
+    let text = buffer.read_with(cx, |b, _| b.document.text().to_string()).replace(
+        "<StackPanel Margin=\"12\">",
+        "<StackPanel Margin=\"12\">\n<Button><TextBlock Text=\"a\" /><TextBlock Text=\"b\" /></Button>",
+    );
+    buffer.update(cx, |b, cx| b.replace_all(text.clone(), cx));
+    cx.simulate_keystrokes("secondary-shift-b");
+    wait(cx, "MarkupCompile's MC3089 marked", |cx| {
+        buffer.read_with(cx, |b, _| b.diagnostics.iter().any(|d| d.message.starts_with("MC3089")))
+    });
+    let (message, error, line) = buffer.read_with(cx, |b, _| {
+        let d = b.diagnostics.iter().find(|d| d.message.starts_with("MC3089")).unwrap();
+        (d.message.clone(), d.error, b.document.text().byte_to_line(d.range.start))
+    });
+    assert!(error, "MarkupCompile's error is not marked as an error");
+    assert_eq!(
+        message,
+        "MC3089: The object 'Button' already has a child and cannot add 'TextBlock'. 'Button' can accept only one child."
+    );
+    assert_eq!(
+        line,
+        text[..text.find("<Button><TextBlock").unwrap()].matches('\n').count(),
+        "not on the button's line"
+    );
+}
+
+#[gpui::test]
+fn go_to_declaration_from_wpf_xaml_opens_a_controls_class_a_resources_definition_a_bound_property_and_a_handler(
+    cx: &mut TestAppContext,
+) {
+    let Some(run) = wpf_gallery("wpf-declaration") else { return };
+    let (main, cx, _) = open_wpf(&run, "MainWindow.xaml", cx);
+    let window = run.folder.join("MainWindow.xaml");
+    let go_to = if cfg!(target_os = "macos") { "cmd-b" } else { "f12" };
+    let opened = |name: &str, cx: &mut VisualTestContext| {
+        main.read_with(cx, |m, cx| m.editor().is_some_and(|e| e.read(cx).path.ends_with(name)))
+    };
+    for (needle, file, landed) in [
+        ("x:Class=\"Gallery.Main", "MainWindow.xaml.cs", "public partial class |MainWindow"),
+        ("{StaticResource Acc", "Themes/Brushes.xaml", "<SolidColorBrush x:Key=\"|Accent\""),
+        ("{Binding Gree", "ViewModels/MainViewModel.cs", "public string |Greeting"),
+        ("Click=\"OnG", "MainWindow.xaml.cs", "private void |OnGo("),
+    ] {
+        main.update_in(cx, |m, window_, cx| m.open_file(&window, None, window_, cx));
+        place_after(&main, &window, needle, cx);
+        cx.simulate_keystrokes(go_to);
+        wait(cx, &format!("{file} opened from {needle}"), |cx| opened(file, cx));
+        assert!(caret_line(&main, cx).contains(landed), "from {needle}: {}", caret_line(&main, cx));
+    }
+
+    // The card on a tag names WPF's type and its base.
+    main.update_in(cx, |m, window_, cx| m.open_file(&window, None, window_, cx));
+    place_after(&main, &window, "<StackPanel Margin=\"12\">\n        <TextBl", cx);
+    let editor = main.read_with(cx, |m, _| m.editor().unwrap());
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "f1" } else { "ctrl-shift-f1" });
+    wait(cx, "the card describing the tag's type", |cx| editor.read_with(cx, |e, _| e.popup_text().is_some()));
+    let card = editor.read_with(cx, |e, _| e.popup_text()).unwrap();
+    assert!(card.contains("class System.Windows.Controls.TextBlock : FrameworkElement"), "{card}");
+}
+
+#[gpui::test]
+fn a_wpf_elements_x_name_renames_with_its_code_behinds_uses_and_the_code_goes_to_it(cx: &mut TestAppContext) {
+    let Some(run) = wpf_gallery("wpf-name") else { return };
+    let (main, cx, _) = open_wpf(&run, "MainWindow.xaml.cs", cx);
+    let (xaml, behind) = (run.folder.join("MainWindow.xaml"), run.folder.join("MainWindow.xaml.cs"));
+    let active = |cx: &mut VisualTestContext| main.read_with(cx, |m, cx| m.editor().map(|e| e.read(cx).path.clone()));
+
+    // The field MarkupCompile makes for the button leads to its name in the XAML, once Roslyn has the project.
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while active(cx).as_ref() != Some(&xaml) {
+        assert!(
+            Instant::now() < deadline,
+            "Go to Declaration on the field never reached the XAML's name: {:?}",
+            active(cx)
+        );
+        place_after(&main, &behind, "        G", cx);
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-b" } else { "f12" });
+        pump(cx, Duration::from_secs(2));
+    }
+    assert!(caret_line(&main, cx).contains("<Button x:Name=\"|Go\""), "not on the name: {}", caret_line(&main, cx));
+
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "alt-f7" } else { "shift-f12" });
+    wait(cx, "Find Usages listing", |cx| main.read_with(cx, |m, _| m.found().is_some()));
+    let found = main.read_with(cx, |m, _| m.found()).unwrap();
+    let line_of = |path: &std::path::PathBuf, needle: &str| {
+        let text = std::fs::read_to_string(path).unwrap();
+        format!(
+            "{}:{}",
+            path.file_name().unwrap().to_string_lossy(),
+            text[..text.find(needle).unwrap()].matches('\n').count() + 1
+        )
+    };
+    for place in [line_of(&behind, "Go.Content"), line_of(&xaml, "ElementName=Go")] {
+        assert!(found.contains(&place), "Find Usages did not list {place}: {found:?}");
+    }
+
+    place_after(&main, &xaml, "<Button x:Name=\"G", cx);
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "shift-f6" } else { "ctrl-r ctrl-r" });
+    cx.run_until_parked();
+    cx.simulate_input("Start");
+    cx.simulate_keystrokes("enter");
+    let text_of = |path: &std::path::PathBuf, cx: &mut VisualTestContext| {
+        cx.update(|_, cx| rsharp_app::buffer::find(path, cx).map(|b| b.read(cx).document.text().to_string()))
+            .unwrap_or_default()
+    };
+    wait(cx, "the code-behind's use renamed", |cx| text_of(&behind, cx).contains("Start.Content = \"Start\";"));
+    let renamed = text_of(&xaml, cx);
+    assert!(renamed.contains("<Button x:Name=\"Start\"") && renamed.contains("ElementName=Start"), "{renamed}");
+    assert!(!renamed.contains("x:Name=\"Go\""), "{renamed}");
+}
+
+#[gpui::test]
+fn a_wpf_user_control_with_no_code_behind_is_a_class_unmarked_and_go_to_declaration_reaches_its_xaml(
+    cx: &mut TestAppContext,
+) {
+    let badge = "<UserControl x:Class=\"Gallery.Badge\"\n             xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"\n             xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\">\n    <Border Background=\"{StaticResource Accent}\" Padding=\"4\">\n        <TextBlock Text=\"New\" />\n    </Border>\n</UserControl>\n";
+    let badges = "<Window x:Class=\"Gallery.Badges\"\n        xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"\n        xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"\n        xmlns:local=\"clr-namespace:Gallery\"\n        Title=\"Badges\" Height=\"200\" Width=\"300\">\n    <StackPanel>\n        <local:Badge Margin=\"4\" HorizontalAlignment=\"Left\" />\n    </StackPanel>\n</Window>\n";
+    let Some(run) = wpf_gallery("wpf-badge") else { return };
+    std::fs::write(run.folder.join("Badge.xaml"), badge).unwrap();
+    std::fs::write(run.folder.join("Badges.xaml"), badges).unwrap();
+    let (main, cx, buffer) = open_wpf(&run, "Badge.xaml", cx);
+    pump(cx, Duration::from_secs(3));
+    let marked = buffer.read_with(cx, |b, _| b.diagnostics.iter().map(|d| d.message.clone()).collect::<Vec<_>>());
+    assert!(marked.is_empty(), "the XAML-only control is marked: {marked:?}");
+
+    let uses = run.folder.join("Badges.xaml");
+    main.update_in(cx, |m, window, cx| m.open_file(&uses, None, window, cx));
+    pump(cx, Duration::from_secs(3));
+    let marked = main.read_with(cx, |m, cx| {
+        m.editor().unwrap().read(cx).buffer.read(cx).diagnostics.iter().map(|d| d.message.clone()).collect::<Vec<_>>()
+    });
+    assert!(marked.is_empty(), "its use, with a UserControl's Margin, is marked: {marked:?}");
+    place_after(&main, &uses, "<local:Bad", cx);
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-b" } else { "f12" });
+    wait(cx, "Badge.xaml opened", |cx| {
+        main.read_with(cx, |m, cx| m.editor().is_some_and(|e| e.read(cx).path.ends_with("Badge.xaml")))
+    });
+    assert!(caret_line(&main, cx).contains("x:Class=\"|Gallery.Badge\""), "{}", caret_line(&main, cx));
+}
+
+const WPF_SHOP_VIEW: &str = "<UserControl x:Class=\"Gallery.ShopView\"\n             xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\"\n             xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"\n             xmlns:d=\"http://schemas.microsoft.com/expression/blend/2008\"\n             xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\"\n             xmlns:vm=\"clr-namespace:Gallery.ViewModels\"\n             mc:Ignorable=\"d\"\n             d:DataContext=\"{d:DesignInstance Type=vm:ShopViewModel}\">\n    <StackPanel>\n        <TextBlock Text=\"{Binding Name}\" />\n    </StackPanel>\n</UserControl>\n";
+const WPF_BUTTON: &str =
+    "<Button x:Name=\"Go\" Content=\"Go\" Click=\"OnGo\" Background=\"{StaticResource Accent}\" />";
+const WPF_TITLE: &str = "<TextBlock Style=\"{StaticResource Heading}\" Text=\"{Binding Greeting}\" />";
+
+#[gpui::test]
+fn wpf_reformat_code_lays_xaml_out_by_riders_code_style_and_the_editorconfig(cx: &mut TestAppContext) {
+    let Some(run) = wpf_gallery("wpf-format") else { return };
+    let (main, cx, buffer) = open_wpf(&run, "MainWindow.xaml", cx);
+    let window = run.folder.join("MainWindow.xaml");
+    let reformat = if cfg!(target_os = "macos") { "cmd-alt-l" } else { "ctrl-alt-enter" };
+    let said = |cx: &mut VisualTestContext| main.read_with(cx, |m, _| m.said().map(str::to_string));
+    let text = |cx: &mut VisualTestContext| buffer.read_with(cx, |b, _| b.document.text().to_string());
+    wait(cx, "the window, laid out as Rider lays it out, left as it is", |cx| {
+        cx.simulate_keystrokes(reformat);
+        said(cx).as_deref() == Some("Already formatted")
+    });
+    let tidy = text(cx);
+    let (start, end) = (tidy.find("<StackPanel").unwrap(), tidy.find("</StackPanel>").unwrap() + "</StackPanel>".len());
+    let untidy = format!("{}{UNTIDY}{}", &tidy[..start], &tidy[end..]);
+    buffer.update(cx, |b, cx| b.replace_all(untidy.clone(), cx));
+    main.update_in(cx, |m, window_, cx| m.open_file(&window, Some((0, 0)), window_, cx));
+    cx.simulate_keystrokes(reformat);
+    wait(cx, "the reformat", |cx| said(cx).as_deref() == Some("Reformatted"));
+    assert_eq!(
+        text(cx),
+        format!(
+            "{}{}{}",
+            &tidy[..start],
+            "<StackPanel Margin=\"12\">\n        <!-- the\n             greeting -->\n        <TextBlock Text='Fish &amp; chips' />\n        <Button Grid.Row=\"1\" Content=\"Go\"\n                x:Name=\"Pay\"\n                HorizontalAlignment=\"Center\" />\n\n\n        <Border></Border>\n    </StackPanel>",
+            &tidy[end..]
+        )
+    );
+    cx.simulate_keystrokes("secondary-z");
+    cx.run_until_parked();
+    assert_eq!(text(cx), untidy, "one Undo did not take the whole reformat back");
+
+    std::fs::write(
+        run.folder.join(".editorconfig"),
+        "root = true\n\n[*.{axaml,xaml}]\nxml_attribute_style = on_different_lines\nxml_attribute_indent = single_indent\nxaml_enable_attribute_reordering = true\nxaml_remove_ending_tag_of_empty_element = true\n",
+    )
+    .unwrap();
+    cx.simulate_keystrokes(reformat);
+    wait(cx, "the reformat by the .editorconfig", |cx| text(cx) != untidy);
+    let configured = text(cx);
+    assert!(
+        configured.contains("        <Button\n            x:Name=\"Pay\"\n            Grid.Row=\"1\"\n            HorizontalAlignment=\"Center\"\n            Content=\"Go\" />\n\n\n        <Border />\n    </StackPanel>"),
+        "the .editorconfig's style was not followed:\n{configured}"
+    );
+    assert!(configured.starts_with("<Window\n    x:Class=\"Gallery.MainWindow\"\n    xmlns=\""), "{configured}");
+}
+
+#[gpui::test]
+fn wpf_surround_with_wraps_the_element_at_the_caret_or_the_elements_chosen(cx: &mut TestAppContext) {
+    let Some(run) = wpf_gallery("wpf-surround") else { return };
+    let (main, cx, buffer) = open_wpf(&run, "MainWindow.xaml", cx);
+    let window = run.folder.join("MainWindow.xaml");
+    let editor = main.read_with(cx, |m, _| m.editor().unwrap());
+    let surround = if cfg!(target_os = "macos") { "cmd-alt-t" } else { "ctrl-k ctrl-s" };
+    let listed = |cx: &mut VisualTestContext| editor.read_with(cx, |e, _| e.surrounds_shown());
+    let text = |cx: &mut VisualTestContext| buffer.read_with(cx, |b, _| b.document.text().to_string());
+    let before = text(cx);
+    place_after(&main, &window, "<Butt", cx);
+    cx.simulate_keystrokes(surround);
+    wait(cx, "Surround With's templates", |cx| listed(cx).is_some());
+    // Avalonia's Panel is no WPF element.
+    assert_eq!(
+        listed(cx).unwrap(),
+        ["tag", "Grid", "StackPanel", "Border", "ScrollViewer", "DockPanel", "WrapPanel", "Canvas", "Viewbox"]
+    );
+    cx.simulate_input("4");
+    cx.run_until_parked();
+    assert!(
+        text(cx).contains(&format!("        <Border>\n            {WPF_BUTTON}\n        </Border>\n")),
+        "{}",
+        text(cx)
+    );
+    cx.simulate_keystrokes("secondary-z");
+    cx.run_until_parked();
+    assert_eq!(text(cx), before, "one Undo did not take the surround back");
+
+    // The title and the button chosen, from inside one to inside the other: Rider's tag around both.
+    let (line, column) = after(&before, &WPF_TITLE[..3]);
+    main.update_in(cx, |m, window_, cx| m.open_file(&window, Some((line, column)), window_, cx));
+    cx.simulate_keystrokes("shift-down shift-right");
+    cx.simulate_keystrokes(surround);
+    wait(cx, "Surround With's templates for two elements", |cx| listed(cx).is_some());
+    assert!(!listed(cx).unwrap().iter().any(|o| o == "Border" || o == "ScrollViewer"), "{:?}", listed(cx));
+    cx.simulate_input("1");
+    cx.run_until_parked();
+    cx.simulate_input("DockPanel");
+    cx.run_until_parked();
+    assert!(
+        text(cx).contains(&format!(
+            "        <DockPanel>\n            {WPF_TITLE}\n            {WPF_BUTTON}\n        </DockPanel>\n"
+        )),
+        "{}",
+        text(cx)
+    );
+}
+
+#[gpui::test]
+fn wpf_extract_resource_and_extract_style_make_a_keyed_resource_and_a_keyed_style(cx: &mut TestAppContext) {
+    use rsharp_app::editor::{ExtractResource, ExtractStyle};
+    let Some(run) = wpf_gallery("wpf-extract") else { return };
+    let (main, cx, buffer) = open_wpf(&run, "MainWindow.xaml", cx);
+    let (window, app) = (run.folder.join("MainWindow.xaml"), run.folder.join("App.xaml"));
+    let text = |cx: &mut VisualTestContext| buffer.read_with(cx, |b, _| b.document.text().to_string());
+    let said = |cx: &mut VisualTestContext| main.read_with(cx, |m, _| m.said().map(str::to_string));
+    let dialog = |cx: &mut VisualTestContext| main.read_with(cx, |m, _| m.extracting());
+    let button = "<Button x:Name=\"Go\" Content=\"Go\" Click=\"OnGo\"";
+    let with_margin = text(cx).replace(button, &format!("{button} Margin=\"12\""));
+    buffer.update(cx, |b, cx| b.replace_all(with_margin, cx));
+
+    place_after(&main, &window, "<StackPanel Margin=\"1", cx);
+    wait(cx, "Extract Resource's dialog", |cx| {
+        if dialog(cx).is_none() {
+            cx.dispatch_action(ExtractResource);
+        }
+        dialog(cx).is_some()
+    });
+    let resource = dialog(cx).unwrap();
+    assert_eq!(resource.read_with(cx, |d, cx| d.name(cx)), "StackPanelMargin");
+    assert_eq!(
+        resource.read_with(cx, |d, _| d.places().to_vec()),
+        ["MainWindow.xaml <Window.Resources>", "App.xaml <Application.Resources>", "Brushes.xaml <ResourceDictionary>"]
+    );
+    resource.update(cx, |d, cx| {
+        d.set_name("PanelMargin", cx);
+        d.accept(cx);
+    });
+    wait(cx, "the resource extracted", |cx| dialog(cx).is_none());
+    assert!(
+        text(cx).contains("        </Style>\n        <Thickness x:Key=\"PanelMargin\">12</Thickness>\n    </Window.Resources>\n    <StackPanel Margin=\"{StaticResource PanelMargin}\">"),
+        "{}",
+        text(cx)
+    );
+    assert!(text(cx).contains(&format!("{button} Margin=\"{{StaticResource PanelMargin}}\"")), "{}", text(cx));
+    assert_eq!(
+        said(cx).as_deref(),
+        Some("Extracted resource 'PanelMargin' to MainWindow.xaml <Window.Resources>, used in 2 places")
+    );
+    cx.simulate_keystrokes("secondary-z");
+    cx.run_until_parked();
+
+    // A brush to the application's resources.
+    let with_brush = text(cx).replace(
+        "<TextBlock Style=\"{StaticResource Heading}\"",
+        "<TextBlock Style=\"{StaticResource Heading}\" Foreground=\"#E2A33F\"",
+    );
+    buffer.update(cx, |b, cx| b.replace_all(with_brush, cx));
+    place_after(&main, &window, "Foreground=\"#E2", cx);
+    cx.dispatch_action(ExtractResource);
+    wait(cx, "Extract Resource's dialog on the brush", |cx| dialog(cx).is_some());
+    let resource = dialog(cx).unwrap();
+    assert_eq!(resource.read_with(cx, |d, cx| d.name(cx)), "ForegroundBrush");
+    resource.update(cx, |d, cx| {
+        d.choose_place(1, cx);
+        d.accept(cx);
+    });
+    wait(cx, "the brush extracted", |cx| dialog(cx).is_none());
+    let app_text = std::fs::read_to_string(&app).unwrap();
+    assert!(
+        app_text.contains("            </Style>\n            <SolidColorBrush x:Key=\"ForegroundBrush\" Color=\"#E2A33F\" />\n        </ResourceDictionary>"),
+        "{app_text}"
+    );
+    cx.simulate_keystrokes("secondary-z");
+    cx.run_until_parked();
+
+    // The button's margin and background to WPF's keyed style, which it names.
+    place_after(&main, &window, "<Butt", cx);
+    cx.dispatch_action(ExtractStyle);
+    wait(cx, "Extract Style's dialog", |cx| dialog(cx).is_some());
+    let style = dialog(cx).unwrap();
+    assert_eq!(style.read_with(cx, |d, cx| d.name(cx)), "ButtonStyle");
+    let properties: Vec<String> = style.read_with(cx, |d, _| d.properties()).into_iter().map(|(p, _)| p).collect();
+    assert_eq!(properties, ["Content = \"Go\"", "Margin = \"12\"", "Background = \"{StaticResource Accent}\""]);
+    style.update(cx, |d, cx| {
+        d.toggle_property(0, cx);
+        d.accept(cx);
+    });
+    wait(cx, "the style extracted", |cx| dialog(cx).is_none());
+    let made = text(cx);
+    assert!(
+        made.contains("        </Style>\n        <Style x:Key=\"ButtonStyle\" TargetType=\"Button\">\n            <Setter Property=\"Margin\" Value=\"12\" />\n            <Setter Property=\"Background\" Value=\"{StaticResource Accent}\" />\n        </Style>\n    </Window.Resources>"),
+        "{made}"
+    );
+    assert!(
+        made.contains("<Button x:Name=\"Go\" Content=\"Go\" Click=\"OnGo\" Style=\"{StaticResource ButtonStyle}\" />"),
+        "{made}"
+    );
+}
+
+#[gpui::test]
+fn wpf_a_binding_path_and_a_converter_nothing_has_offer_to_create_them(cx: &mut TestAppContext) {
+    let Some(run) = wpf_gallery("wpf-create") else { return };
+    let shop_model = "using CommunityToolkit.Mvvm.ComponentModel;\n\nnamespace Gallery.ViewModels;\n\npublic class ShopViewModel : ObservableObject\n{\n    [ObservableProperty]\n    private string? _name;\n}\n";
+    for (file, text) in [
+        ("ShopView.xaml", WPF_SHOP_VIEW),
+        (
+            "ShopView.xaml.cs",
+            "using System.Windows.Controls;\n\nnamespace Gallery;\n\npublic partial class ShopView : UserControl\n{\n}\n",
+        ),
+        ("ViewModels/ShopViewModel.cs", shop_model),
+        ("Mvvm.cs", MVVM),
+    ] {
+        std::fs::write(run.folder.join(file), text).unwrap();
+    }
+    let (main, cx, buffer) = open_wpf(&run, "MainWindow.xaml", cx);
+    let (window, model) = (run.folder.join("MainWindow.xaml"), run.folder.join("ViewModels/MainViewModel.cs"));
+    let quick_fix = if cfg!(target_os = "macos") { "alt-enter" } else { "ctrl-." };
+    let fix = |path: &std::path::PathBuf, needle: &str, offered: &str, cx: &mut VisualTestContext| {
+        place_after(&main, path, needle, cx);
+        let editor = main.read_with(cx, |m, _| m.editor().unwrap());
+        cx.simulate_keystrokes(quick_fix);
+        wait(cx, &format!("the fixes offered after {needle}"), |cx| {
+            editor.read_with(cx, |e, _| e.actions_shown().is_some())
+        });
+        let first = editor.read_with(cx, |e, _| e.actions_shown()).unwrap().first().cloned();
+        assert_eq!(first.as_deref(), Some(offered), "the first fix offered after {needle}");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+    };
+    let marked = |text: &str, cx: &mut VisualTestContext| {
+        buffer.read_with(cx, |b, _| b.diagnostics.iter().any(|d| d.message.contains(text)))
+    };
+    let edit = |from: &str, to: &str, cx: &mut VisualTestContext| {
+        let text = buffer.read_with(cx, |b, _| b.document.text().to_string()).replacen(from, to, 1);
+        buffer.update(cx, |b, cx| b.replace_all(text, cx));
+    };
+    let disk = |path: &std::path::PathBuf| std::fs::read_to_string(path).unwrap_or_default();
+
+    edit("{Binding Greeting}", "{Binding Subtitle}", cx);
+    wait(cx, "the binding path the view model lacks marked", |cx| marked("'Subtitle'", cx));
+    fix(&window, "{Binding Subt", "Create property 'Subtitle'", cx);
+    wait(cx, "the property written", |_| {
+        disk(&model).contains("    public bool IsBusy { get; set; }\n\n    public string? Subtitle { get; set; }\n}")
+    });
+    wait(cx, "the binding resolved once the property is there", |cx| !marked("'Subtitle'", cx));
+
+    edit(
+        "<Button x:Name=\"Go\" Content=\"Go\" Click=\"OnGo\"",
+        "<Button x:Name=\"Go\" Content=\"Go\" Click=\"OnGo\" Command=\"{Binding SaveCommand}\"",
+        cx,
+    );
+    wait(cx, "the command the view model lacks marked", |cx| marked("'SaveCommand'", cx));
+    fix(&window, "{Binding Save", "Create property 'SaveCommand'", cx);
+    wait(cx, "the command written", |_| {
+        disk(&model)
+            .contains("    public string? Subtitle { get; set; }\n\n    public ICommand? SaveCommand { get; set; }\n}")
+    });
+    assert!(
+        disk(&model).contains("using System.Collections.ObjectModel;\nusing System.Windows.Input;\n"),
+        "{}",
+        disk(&model)
+    );
+
+    edit(
+        "<TextBlock Text=\"{Binding Content, ElementName=Go}\" />",
+        "<TextBlock Text=\"{Binding Content, ElementName=Go}\" />\n        <TextBlock Text=\"{Binding Greeting, Converter={StaticResource ShoutConverter}}\" />",
+        cx,
+    );
+    wait(cx, "the converter nothing defines marked", |cx| marked("Resource 'ShoutConverter' is not found", cx));
+    fix(&window, "{StaticResource Shout", "Create converter 'ShoutConverter'", cx);
+    let converter = run.folder.join("ShoutConverter.cs");
+    wait(cx, "ShoutConverter.cs made", |_| converter.exists());
+    let made = disk(&converter);
+    assert!(made.contains("namespace Gallery;\n\npublic class ShoutConverter : IValueConverter\n{\n"), "{made}");
+    assert!(made.contains("using System.Windows.Data;"), "{made}");
+    assert!(
+        made.contains("    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)\n    {\n        throw new NotImplementedException();\n    }\n"),
+        "{made}"
+    );
+    let view = buffer.read_with(cx, |b, _| b.document.text().to_string());
+    assert!(
+        view.contains("xmlns:vm=\"clr-namespace:Gallery.ViewModels\"\n        xmlns:local=\"clr-namespace:Gallery\""),
+        "{view}"
+    );
+    assert!(view.contains("<local:ShoutConverter x:Key=\"ShoutConverter\" />"), "{view}");
+
+    // With the MVVM Toolkit, an [ObservableProperty] field and a [RelayCommand] method, the class made partial.
+    let (shop, shop_model_path) = (run.folder.join("ShopView.xaml"), run.folder.join("ViewModels/ShopViewModel.cs"));
+    main.update_in(cx, |m, window_, cx| m.open_file(&shop, None, window_, cx));
+    let shop_buffer = cx.update(|_, cx| rsharp_app::buffer::find(&shop, cx)).unwrap();
+    let text = shop_buffer.read_with(cx, |b, _| b.document.text().to_string()).replace(
+        "<TextBlock Text=\"{Binding Name}\" />",
+        "<TextBlock Text=\"{Binding Name}\" />\n        <TextBlock Text=\"{Binding Title}\" />\n        <Button Command=\"{Binding BuyCommand}\" />",
+    );
+    shop_buffer.update(cx, |b, cx| b.replace_all(text, cx));
+    wait(cx, "the property and the command the shop's view model lacks marked", |cx| {
+        shop_buffer.read_with(cx, |b, _| b.diagnostics.len() == 2)
+    });
+    fix(&shop, "{Binding Tit", "Create property 'Title'", cx);
+    wait(cx, "the property field written", |_| disk(&shop_model_path).contains("_title"));
+    fix(&shop, "{Binding Buy", "Create property 'BuyCommand'", cx);
+    wait(cx, "the command method written", |_| disk(&shop_model_path).contains("Buy()"));
+    assert_eq!(
+        disk(&shop_model_path),
+        "using CommunityToolkit.Mvvm.ComponentModel;\nusing CommunityToolkit.Mvvm.Input;\n\nnamespace Gallery.ViewModels;\n\npublic partial class ShopViewModel : ObservableObject\n{\n    [ObservableProperty]\n    private string? _name;\n\n    [ObservableProperty]\n    private string? _title;\n\n    [RelayCommand]\n    private void Buy()\n    {\n    }\n}\n"
+    );
+}

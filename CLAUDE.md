@@ -152,6 +152,9 @@ terminal and takes focus for a moment.
   `fixes` takes the open files' unsaved texts, so create from usage edits a view model as typed. Surround With asks its
   `surround` for the element(s) to wrap (`editor_refactor.rs`' XAML list), and Extract Resource / Extract Style its
   `extract`, their dialog `xaml_dialog.rs`, hosted by the window as the refactoring dialog is.
+  WPF's named element's field is MarkupCompile's `obj/…/File.g.cs`: `markup_compiled_name` follows its `#line` to the
+  XAML. The WPF cases run on Passenger's WPF gallery (`tests/xaml.rs`' `wpf_gallery`), restored off Windows by
+  EnableWindowsTargeting from the WindowsDesktop reference pack.
 - `crates/rsharp-dap`: the Debug Adapter Protocol client and Passenger's debug adapter it runs. `build.rs`
   publishes Passenger's `Passenger.DebugAdapter` from the same submodule into `target/<profile>/sidecars/debugger`
   (its engine, ICorDebug behind DAP, with ILSpy's decompiler). `Session` starts it through `process::spawn` — so it

@@ -38,6 +38,49 @@ pub fn generated_field(answer: &serde_json::Value) -> Option<String> {
     })
 }
 
+/// WPF's MarkupCompile output for a XAML file, `obj/…/File.g.cs` (`.g.i.cs` at design time).
+pub fn is_markup_compiled(path: &std::path::Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    (name.ends_with(".g.cs") || name.ends_with(".g.i.cs")) && path.components().any(|c| c.as_os_str() == "obj")
+}
+
+/// Where a named element's current XAML names it, using the field's active `#line` to find the file.
+/// None when the mapping ended or the current text does not identify one name unambiguously.
+pub(super) fn markup_compiled_name(field: &rsharp_lsp::Location, name: &str, cx: &App) -> Option<rsharp_lsp::Location> {
+    if !is_markup_compiled(&field.path) || name.is_empty() {
+        return None;
+    }
+    let generated = std::fs::read_to_string(&field.path).ok()?;
+    let directive =
+        generated.lines().take(field.span.start.line + 1).filter_map(|l| l.trim().strip_prefix("#line ")).last()?;
+    // A reset (default or hidden) ends the preceding mapping; never scan past it.
+    let (line, file) = directive.split_once(' ')?;
+    line.parse::<usize>().ok()?.checked_sub(1)?;
+    let file = file.trim().strip_prefix('"')?.strip_suffix('"')?;
+    let xaml = rsharp_core::paths::canonical(&field.path.parent()?.join(file.replace('\\', "/")));
+    let text = match crate::buffer::find(&xaml, cx) {
+        Some(open) => open.read(cx).document.text().to_string(),
+        None => std::fs::read_to_string(&xaml).ok()?,
+    };
+    let mut names = text.match_indices(name).filter_map(|(at, _)| {
+        use rsharp_core::msbuild::context::{self, Place};
+        match context::at(&text, at) {
+            Place::AttributeValue { attribute, start, end, .. }
+                if matches!(attribute.as_str(), "Name" | "x:Name") && start == at && end == at + name.len() =>
+            {
+                Some(at)
+            }
+            _ => None,
+        }
+    });
+    let offset = names.next()?;
+    if names.next().is_some() {
+        return None;
+    }
+    let at = language::point(&rsharp_text::Rope::from_str(&text), offset);
+    Some(rsharp_lsp::Location { path: xaml, span: rsharp_lsp::Span { start: at, end: at } })
+}
+
 impl CodeEditor {
     pub(super) fn is_xaml(&self) -> bool {
         rsharp_lsp::xaml::is_xaml(&self.path)
@@ -271,5 +314,87 @@ fn kind(kind: &str) -> u64 {
         "Resource" | "Extension" | "Directive" => 14,
         "Asset" => 17,
         _ => 12,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rsharp_lsp::{Location, Point};
+
+    const XAML: &str = "<Window>\n    <Button x:Name=\"Go\" />\n</Window>\n";
+    const GENERATED: &str = "#line 2 \"../MainWindow.xaml\"\ninternal Button Go;\n";
+
+    fn markup_fixture(name: &str, generated: &str) -> (PathBuf, Location) {
+        let root = std::env::temp_dir().join(format!("rsharp-markup-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("obj")).unwrap();
+        std::fs::write(root.join("MainWindow.xaml"), XAML).unwrap();
+        let path = root.join("obj/MainWindow.g.cs");
+        std::fs::write(&path, generated).unwrap();
+        let at = Point::new(generated.lines().count() - 1, 0);
+        (rsharp_core::paths::canonical(&root), Location { path, span: Span { start: at, end: at } })
+    }
+
+    #[gpui::test]
+    fn markup_compiled_methods_after_a_line_reset_keep_their_csharp_destination(cx: &mut gpui::TestAppContext) {
+        for reset in ["#line default", "#line hidden", "#line default\n#line hidden"] {
+            let generated = format!("{GENERATED}{reset}\npublic void InitializeComponent() {{ }}\n");
+            let (root, method) = markup_fixture("reset", &generated);
+            // Even a matching name in edited XAML must not revive an expired mapping.
+            std::fs::write(root.join("MainWindow.xaml"), XAML.replace("Go", "InitializeComponent")).unwrap();
+            cx.update(|cx| {
+                assert!(
+                    markup_compiled_name(&method, "InitializeComponent", cx).is_none(),
+                    "InitializeComponent after {reset} was redirected to an unrelated XAML element"
+                );
+            });
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[gpui::test]
+    fn markup_compiled_names_follow_unsaved_xaml(cx: &mut gpui::TestAppContext) {
+        let (root, field) = markup_fixture("unsaved", GENERATED);
+        let xaml = root.join("MainWindow.xaml");
+        cx.update(|cx| crate::init(root.join("state"), cx));
+        let buffer = cx.update(|cx| crate::buffer::open(xaml.clone(), cx).unwrap());
+        for (text, expected) in [
+            (XAML.into(), Point::new(1, 20)),
+            (format!("\n{XAML}"), Point::new(2, 20)),
+            (
+                "<Window>\n    <!-- <Button x:Name=\"Go\" /> -->\n    <Button\n        x:Name = 'Go' />\n</Window>\n"
+                    .into(),
+                Point::new(3, 18),
+            ),
+        ] {
+            buffer.update(cx, |b, cx| b.replace_all(text, cx));
+            cx.update(|cx| {
+                let found = markup_compiled_name(&field, "Go", cx).expect("the current XAML still names Go");
+                assert_eq!(found.path, xaml);
+                assert_eq!(found.span.start, expected, "Go to Declaration missed the name in the unsaved text");
+            });
+        }
+        assert_eq!(std::fs::read_to_string(&xaml).unwrap(), XAML, "navigation saved the unsaved edits");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[gpui::test]
+    fn markup_compiled_fields_without_a_current_name_keep_their_csharp_destination(cx: &mut gpui::TestAppContext) {
+        let (root, field) = markup_fixture("missing", GENERATED);
+        for text in [
+            "<Window>\n    <Button x:Name=\"Gone\" />\n</Window>\n",
+            "<Window>\n    <!-- <Button x:Name=\"Go\" /> -->\n</Window>\n",
+            "<Window>\n    <Setter TargetName=\"Go\" />\n</Window>\n",
+            "<Window>\n    <Button x:Name=\"Go\" />\n    <DataTemplate><Button x:Name=\"Go\" /></DataTemplate>\n</Window>\n",
+        ] {
+            std::fs::write(root.join("MainWindow.xaml"), text).unwrap();
+            cx.update(|cx| {
+                assert!(
+                    markup_compiled_name(&field, "Go", cx).is_none(),
+                    "a missing element name was redirected to an unrelated XAML location"
+                );
+            });
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

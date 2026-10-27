@@ -153,14 +153,17 @@ async fn code_behind_uses(
             let here = rsharp_lsp::at(&uri, crate::language::point(&rope, at));
             let Ok(declared) = server.ask("textDocument/definition", here.clone()).await else { continue };
             let generated = crate::editor::generated_field(&declared).is_some()
-                || rsharp_lsp::locations(&declared).iter().any(|l| is_generated(&l.path));
+                || rsharp_lsp::locations(&declared).iter().any(|l| crate::editor::is_markup_compiled(&l.path));
             if !generated {
                 continue;
             }
             let mut params = here;
             params["context"] = serde_json::json!({ "includeDeclaration": false });
             let found = server.ask("textDocument/references", params).await.unwrap_or_default();
-            return rsharp_lsp::locations(&found).into_iter().filter(|l| !is_generated(&l.path)).collect();
+            return rsharp_lsp::locations(&found)
+                .into_iter()
+                .filter(|l| !crate::editor::is_markup_compiled(&l.path))
+                .collect();
         }
     }
     Vec::new()
@@ -174,12 +177,6 @@ fn mentions<'a>(text: &'a str, name: &'a str) -> impl Iterator<Item = usize> + '
         !before.chars().next_back().is_some_and(|c| word(c) || c == '.')
             && !text[at + name.len()..].chars().next().is_some_and(word)
     })
-}
-
-/// WPF's MarkupCompile output for a XAML file, `obj/…/File.g.cs` (`.g.i.cs` at design time).
-fn is_generated(path: &Path) -> bool {
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-    (name.ends_with(".g.cs") || name.ends_with(".g.i.cs")) && path.components().any(|c| c.as_os_str() == "obj")
 }
 
 #[cfg(test)]
