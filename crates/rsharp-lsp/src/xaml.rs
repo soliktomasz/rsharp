@@ -42,6 +42,16 @@ pub struct XamlSymbol {
     pub span: Span,
     pub description: String,
     pub targets: Vec<Location>,
+    pub named: Option<XamlNamed>,
+}
+
+/// An element's name: the name, where its file names it, and the C# files of its class, where the field Avalonia's
+/// generator or WPF's MarkupCompile makes for it is used.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct XamlNamed {
+    pub name: String,
+    pub uses: Vec<Span>,
+    pub files: Vec<PathBuf>,
 }
 
 /// The folder's XAML host, started on first use and again after it fails.
@@ -153,7 +163,25 @@ impl XamlHost {
                     Some(Location { path: PathBuf::from(t["path"].as_str()?), span: Span { start: at, end: at } })
                 })
                 .collect(),
+            named: found.get("named").filter(|n| n.is_object()).map(|n| XamlNamed {
+                name: n["name"].as_str().unwrap_or_default().to_string(),
+                uses: n["uses"].as_array().into_iter().flatten().map(Span::from).collect(),
+                files: n["files"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|f| f.as_str())
+                    .map(PathBuf::from)
+                    .collect(),
+            }),
         }))
+    }
+
+    /// Where the XAML of `class` (its full name) names the element `name`. Blocks, so call it off the UI thread.
+    pub fn element(&self, project: &Path, class: &str, name: &str) -> Result<Option<Location>, ServerFailed> {
+        let found = self.ask("element", json!({ "project": project, "class": class, "name": name }))?;
+        let at = Point::from(&found["at"]);
+        Ok(found["path"].as_str().map(|path| Location { path: PathBuf::from(path), span: Span { start: at, end: at } }))
     }
 
     /// Files written on disk, which the projects that hold them read again. Blocks, so call it off the UI thread.

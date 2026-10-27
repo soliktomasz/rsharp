@@ -60,6 +60,7 @@ public static class Program
                 "check" => Check(asked),
                 "complete" => Complete(asked),
                 "symbol" => Symbol(asked),
+                "element" => Element(asked),
                 "changed" => Changed(asked),
                 "closed" => Closed(asked),
                 var method => throw new InvalidOperationException($"the XAML host has no method {method}"),
@@ -79,13 +80,7 @@ public static class Program
         string path = asked["path"]!.GetValue<string>();
         string text = asked["text"]!.GetValue<string>();
         Texts[path] = text;
-        XamlProjectBuilder? builder = Builders.GetOrAdd(project, p => new Lazy<XamlProjectBuilder?>(() =>
-        {
-            XamlProjectBuilder? made = XamlProjectBuilder.For(p, DotnetRoot);
-            made?.Load(Texts.GetValueOrDefault);
-            return made;
-        })).Value;
-        if (builder is null)
+        if (Builder(project) is not { } builder)
         {
             return null;
         }
@@ -95,6 +90,14 @@ public static class Program
         XamlProject current = changed ?? builder.Current;
         return (new XamlFile(path, tree, current.With(XamlFileSummary.Of(path, tree, current.ResolveSource))), changed is not null);
     }
+
+    /// <summary>A project's XAML, read on its first request; null for a project whose XAML Passenger.Xaml does not read.</summary>
+    private static XamlProjectBuilder? Builder(string project) => Builders.GetOrAdd(project, p => new Lazy<XamlProjectBuilder?>(() =>
+    {
+        XamlProjectBuilder? made = XamlProjectBuilder.For(p, DotnetRoot);
+        made?.Load(Texts.GetValueOrDefault);
+        return made;
+    })).Value;
 
     private static JsonNode Check(JsonNode asked)
     {
@@ -163,13 +166,41 @@ public static class Program
                 targets.Add(new JsonObject { ["kind"] = target.Kind.ToString(), ["name"] = target.Name, ["path"] = found.Path, ["at"] = found.Point });
             }
         }
-        return new JsonObject
+        JsonObject answer = new()
         {
             ["range"] = Range(file.Text, symbol.Range.Start, symbol.Range.End),
             ["name"] = symbol.Name,
             ["description"] = XamlNavigation.Describe(file, symbol),
             ["targets"] = targets,
         };
+        // An element's name: where the file names it, and the class's C# files, where its code-behind field is used.
+        if (symbol.Named is { } named)
+        {
+            JsonArray uses = [.. XamlNavigation.NameUses(file, named.Value).Select(r => (JsonNode)Range(file.Text, r.Start, r.End))];
+            IEnumerable<string> code = file.ClassName is { } className ? file.Types.PlacesOf(className).Select(p => p.Path) : [];
+            JsonArray files = [.. code.Append(file.Path + ".cs").Where(File.Exists).Distinct(StringComparer.Ordinal).Select(f => (JsonNode)f)];
+            answer["named"] = new JsonObject { ["name"] = named.Value, ["uses"] = uses, ["files"] = files };
+        }
+        return answer;
+    }
+
+    /// <summary>Where the XAML of a class names an element: what the field Avalonia's generator makes for it leads to.</summary>
+    private static JsonNode? Element(JsonNode asked)
+    {
+        string className = asked["class"]!.GetValue<string>();
+        string name = asked["name"]!.GetValue<string>();
+        if (Builder(asked["project"]!.GetValue<string>()) is not { } builder)
+        {
+            return null;
+        }
+        foreach (XamlFileSummary file in builder.Current.Files.Values.Where(f => f.Class == className))
+        {
+            if (file.Names.FirstOrDefault(n => n.Name == name) is { Name: not null } named)
+            {
+                return new JsonObject { ["path"] = file.Path, ["at"] = Point(TextOf(file.Path, null), named.Range.Start) };
+            }
+        }
+        return null;
     }
 
     /// <summary>Files written on disk: a C# or XAML file read again into the projects that hold it, and a project whose
@@ -217,8 +248,8 @@ public static class Program
     }
 
     /// <summary>Another file's text as the editor has it, else as it is on disk.</summary>
-    private static string TextOf(string path, XamlFile file) =>
-        path == file.Path ? file.Text : Texts.TryGetValue(path, out string? open) ? open : File.Exists(path) ? File.ReadAllText(path) : string.Empty;
+    private static string TextOf(string path, XamlFile? file) =>
+        path == file?.Path ? file.Text : Texts.TryGetValue(path, out string? open) ? open : File.Exists(path) ? File.ReadAllText(path) : string.Empty;
 
     private static int Offset(string text, JsonNode asked)
     {

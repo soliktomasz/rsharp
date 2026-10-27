@@ -144,6 +144,9 @@ terminal and takes focus for a moment.
   same `host::Connection` as the Host: `check`, `complete` and `symbol` take a XAML file's text as typed and its project,
   `changed` the files written on disk. `window/xaml.rs` starts it with the first XAML file and gives each XAML buffer
   its project (`msbuild_project`'s search); `editor_xaml.rs` is completion, the card and Go to Declaration there.
+  An element's name (`symbol`'s `named`) goes to the window as `CodeBehind`, which finds the code-behind's uses through
+  Roslyn and lists or renames them; C#'s Go to Declaration on Avalonia's generated field (`generated_field`, its
+  `hintName`) goes to the window as `XamlField`, which asks the host's `element` where the class's XAML names it.
 - `crates/rsharp-dap`: the Debug Adapter Protocol client and Passenger's debug adapter it runs. `build.rs`
   publishes Passenger's `Passenger.DebugAdapter` from the same submodule into `target/<profile>/sidecars/debugger`
   (its engine, ICorDebug behind DAP, with ILSpy's decompiler). `Session` starts it through `process::spawn` — so it

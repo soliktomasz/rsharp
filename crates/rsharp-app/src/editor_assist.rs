@@ -545,11 +545,19 @@ impl CodeEditor {
             return;
         }
         let Some((server, uri)) = self.server(cx) else { return };
-        let answer = ask(&server, method, lsp::at(&uri, language::point(&self.text, self.primary().head)), cx);
+        let head = self.primary().head;
+        let name = self.text.byte_slice(word_at(&self.text, head).range()).to_string();
+        let answer = ask(&server, method, lsp::at(&uri, language::point(&self.text, head)), cx);
         self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
-            let to = answer.await.map(|a| lsp::locations(&a)).unwrap_or_default();
+            let answer = answer.await;
+            let to = answer.as_ref().map(lsp::locations).unwrap_or_default();
             let _ = this.update(cx, |_, cx| {
-                if to.is_empty() {
+                // A named element's field, which Avalonia's generator declares: its declaration is the XAML's name.
+                if let Some(class) =
+                    answer.as_ref().and_then(super::xaml_help::generated_field).filter(|_| to.is_empty())
+                {
+                    cx.emit(super::XamlField { class, name });
+                } else if to.is_empty() {
                     cx.emit(Said(format!("Cannot find {} to go to", title.to_lowercase())));
                 } else {
                     cx.emit(Navigate { title: title.to_string(), to, list: false });
@@ -639,6 +647,10 @@ impl CodeEditor {
     }
 
     pub(super) fn find_usages(&mut self, cx: &mut Context<Self>) {
+        if self.is_xaml() {
+            self.xaml_named(None, self.primary().head, cx);
+            return;
+        }
         let Some((server, uri)) = self.server(cx) else { return };
         let head = self.primary().head;
         let name = self.text.byte_slice(word_at(&self.text, head).range()).to_string();
@@ -750,7 +762,7 @@ impl CodeEditor {
 
     /// Rename: a field over the word at the caret, its name selected.
     pub(super) fn start_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.server(cx).is_none() {
+        if self.server(cx).is_none() && !self.is_xaml() {
             return;
         }
         let word = word_at(&self.text, self.primary().head).range();
@@ -774,6 +786,10 @@ impl CodeEditor {
         window.focus(&self.focus);
         let name = field.read(cx).text().trim().to_string();
         let old = self.text.byte_slice(word.clone()).to_string();
+        if self.is_xaml() && !name.is_empty() && name != old {
+            self.xaml_named(Some(name), word.start, cx);
+            return;
+        }
         let Some((server, uri)) = self.server(cx).filter(|_| !name.is_empty() && name != old) else {
             cx.notify();
             return;
