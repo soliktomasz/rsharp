@@ -64,6 +64,25 @@ pub struct XamlColour {
     pub written: Value,
 }
 
+/// What a preview says as it goes: the HostApp to start (its arguments to `dotnet`, in its folder), a frame, why the XAML
+/// did not load (None once it loads again), or that the root has no size to draw.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PreviewEvent {
+    Started { session: String, arguments: Vec<String>, folder: PathBuf },
+    Frame(PreviewFrame),
+    Error(Option<String>),
+    Empty(bool),
+}
+
+/// A frame of the previewer: its size in pixels, its pixels as BGRA rows with no padding, and the DPI it was drawn at.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreviewFrame {
+    pub width: u32,
+    pub height: u32,
+    pub bgra: Vec<u8>,
+    pub dpi: f64,
+}
+
 /// The folder's XAML host, started on first use and again after it fails.
 #[derive(Clone)]
 pub struct XamlHost {
@@ -92,7 +111,11 @@ impl XamlHost {
     }
 
     fn ask(&self, method: &str, params: Value) -> Result<Value, ServerFailed> {
-        let connection = {
+        self.connection()?.ask(method, params, |_| {}).map_err(ServerFailed)
+    }
+
+    fn connection(&self) -> Result<Arc<Connection>, ServerFailed> {
+        Ok({
             let mut running = self.running.lock().unwrap();
             if running.as_ref().is_some_and(|c| c.failed().is_some()) {
                 *running = None;
@@ -105,8 +128,40 @@ impl XamlHost {
                     running.insert(Connection::start(command, "the XAML host", None)?).clone()
                 }
             }
-        };
-        connection.ask(method, params, |_| {}).map_err(ServerFailed)
+        })
+    }
+
+    /// An Avalonia file's preview of the project's last build, the file as `text`: each event given to `on` as it comes,
+    /// until [`XamlHost::preview_stop`]; Some(why) when there is none to start (no build, WPF off Windows). Blocks for the
+    /// whole session, so call it off the UI thread.
+    pub fn preview(
+        &self,
+        project: &Path,
+        path: &Path,
+        text: &str,
+        scale: f32,
+        mut on: impl FnMut(PreviewEvent),
+    ) -> Result<Option<String>, ServerFailed> {
+        let params = json!({ "project": project, "path": path, "text": text, "scale": scale });
+        let ended = self
+            .connection()?
+            .ask("preview", params, |partial| {
+                if let Some(event) = preview_event(partial) {
+                    on(event);
+                }
+            })
+            .map_err(ServerFailed)?;
+        Ok(ended["why"].as_str().map(str::to_string))
+    }
+
+    /// The previewed file's text as typed. Blocks, so call it off the UI thread.
+    pub fn preview_update(&self, session: &str, text: &str) -> Result<(), ServerFailed> {
+        self.ask("preview_update", json!({ "session": session, "text": text })).map(|_| ())
+    }
+
+    /// Ends a preview, whose [`XamlHost::preview`] then returns. Blocks, so call it off the UI thread.
+    pub fn preview_stop(&self, session: &str) -> Result<(), ServerFailed> {
+        self.ask("preview_stop", json!({ "session": session })).map(|_| ())
     }
 
     /// The file's problems as typed; None for a project whose XAML is neither Avalonia's nor WPF's.
@@ -310,6 +365,59 @@ impl XamlHost {
         }
         Ok(())
     }
+}
+
+fn preview_event(partial: &Value) -> Option<PreviewEvent> {
+    if let Some(started) = partial.get("started") {
+        let arguments = started["arguments"].as_array()?.iter().filter_map(|a| a.as_str().map(String::from)).collect();
+        return Some(PreviewEvent::Started {
+            session: started["session"].as_str()?.to_string(),
+            arguments,
+            folder: PathBuf::from(started["folder"].as_str()?),
+        });
+    }
+    if let Some(frame) = partial.get("frame") {
+        let (width, height) = (frame["width"].as_u64()? as u32, frame["height"].as_u64()? as u32);
+        let stride = frame["stride"].as_u64()? as usize;
+        let data = base64(frame["data"].as_str()?)?;
+        let row = width as usize * 4;
+        let mut bgra = Vec::with_capacity(row * height as usize);
+        for y in 0..height as usize {
+            bgra.extend_from_slice(data.get(y * stride..y * stride + row)?);
+        }
+        if frame["rgba"] == true {
+            bgra.chunks_exact_mut(4).for_each(|p| p.swap(0, 2));
+        }
+        return Some(PreviewEvent::Frame(PreviewFrame {
+            width,
+            height,
+            bgra,
+            dpi: frame["dpi"].as_f64().unwrap_or(96.),
+        }));
+    }
+    if let Some(error) = partial.get("error") {
+        return Some(PreviewEvent::Error(error.as_str().map(str::to_string)));
+    }
+    partial.get("empty").map(|empty| PreviewEvent::Empty(empty == true))
+}
+
+/// Standard base64, padded, as .NET's Convert writes it.
+fn base64(text: &str) -> Option<Vec<u8>> {
+    let value = |c: u8| match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    };
+    let mut out = Vec::with_capacity(text.len() / 4 * 3);
+    for chunk in text.as_bytes().chunks(4) {
+        let digits: Vec<u8> = chunk.iter().take_while(|&&c| c != b'=').map(|&c| value(c)).collect::<Option<_>>()?;
+        let bits = digits.iter().fold(0u32, |acc, &d| acc << 6 | d as u32) << (6 * (4 - digits.len()));
+        out.extend_from_slice(&bits.to_be_bytes()[1..digits.len()]);
+    }
+    Some(out)
 }
 
 fn params(project: &Path, path: &Path, text: &str, at: Point) -> Value {

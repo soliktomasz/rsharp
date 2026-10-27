@@ -158,6 +158,11 @@ terminal and takes focus for a moment.
   A buffer's `colours` (the host's `colours`: a XAML file's, and a C# file's once the window's host runs, never started
   for them) are the editor's gutter swatches, in a column added only while there are some; a click opens
   `Popup::Colour`, whose colour the host's `recolour` writes as the use was written.
+  The XAML Preview (`window/xaml_preview.rs`, the `XamlPreview` tool on the right) is the host's `preview` request
+  (`Preview.cs`: Avalonia.Remote.Protocol to the project's own Avalonia.Designer.HostApp, frames streamed back as
+  partial replies until `preview_stop`); RSharp starts the HostApp the host names through `process::spawn`, sends the
+  text 300 ms after typing pauses (`preview_update`) and starts again after a build. The session waits on a thread of
+  its own: a request that never answers would stall the test platform's executor.
 - `crates/rsharp-dap`: the Debug Adapter Protocol client and Passenger's debug adapter it runs. `build.rs`
   publishes Passenger's `Passenger.DebugAdapter` from the same submodule into `target/<profile>/sidecars/debugger`
   (its engine, ICorDebug behind DAP, with ILSpy's decompiler). `Session` starts it through `process::spawn` — so it

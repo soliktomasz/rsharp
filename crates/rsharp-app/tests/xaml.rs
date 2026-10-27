@@ -1975,3 +1975,83 @@ fn the_colour_picker_checks_disk_changes_before_the_watcher_reports_them(cx: &mu
     assert_eq!(editor.read_with(cx, |e, _| e.text().to_string()), changed, "the picker overwrote an external edit");
     assert!(!editor.read_with(cx, |e, cx| e.is_modified(cx)), "the refused picker edit left the file modified");
 }
+
+#[gpui::test]
+fn the_preview_draws_a_window_from_the_last_build_follows_its_text_and_draws_styles_as_their_preview_with(
+    cx: &mut TestAppContext,
+) {
+    let project = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <OutputType>WinExe</OutputType>\n    <TargetFramework>net10.0</TargetFramework>\n    <Nullable>enable</Nullable>\n  </PropertyGroup>\n  <ItemGroup>\n    <PackageReference Include=\"Avalonia\" Version=\"12.1.4\" />\n    <PackageReference Include=\"Avalonia.Desktop\" Version=\"12.1.4\" />\n    <PackageReference Include=\"Avalonia.Themes.Fluent\" Version=\"12.1.4\" />\n  </ItemGroup>\n</Project>\n";
+    let program = "using Avalonia;\n\nnamespace Demo;\n\npublic static class Program\n{\n    [System.STAThread]\n    public static void Main(string[] args) => BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);\n\n    public static AppBuilder BuildAvaloniaApp() => AppBuilder.Configure<App>().UsePlatformDetect();\n}\n";
+    let app = "<Application xmlns=\"https://github.com/avaloniaui\"\n             xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"\n             x:Class=\"Demo.App\">\n    <Application.Styles>\n        <FluentTheme />\n    </Application.Styles>\n</Application>\n";
+    let app_code = "using Avalonia;\nusing Avalonia.Markup.Xaml;\n\nnamespace Demo;\n\npublic partial class App : Application\n{\n    public override void Initialize() => AvaloniaXamlLoader.Load(this);\n}\n";
+    let window_text = "<Window xmlns=\"https://github.com/avaloniaui\"\n        xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"\n        xmlns:d=\"http://schemas.microsoft.com/expression/blend/2008\"\n        xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\"\n        mc:Ignorable=\"d\" d:DesignWidth=\"800\" d:DesignHeight=\"450\"\n        x:Class=\"Demo.MainWindow\" Title=\"Demo\">\n    <StackPanel Margin=\"12\">\n        <TextBlock Text=\"Hello\" />\n    </StackPanel>\n</Window>\n";
+    let window_code = "using Avalonia.Controls;\n\nnamespace Demo;\n\npublic partial class MainWindow : Window\n{\n    public MainWindow()\n    {\n        InitializeComponent();\n    }\n}\n";
+    let buttons = "<Styles xmlns=\"https://github.com/avaloniaui\"\n        xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\">\n    <Design.PreviewWith>\n        <Border Padding=\"20\">\n            <Button Classes=\"orange\" Content=\"Orange\" Width=\"120\" Height=\"40\" />\n        </Border>\n    </Design.PreviewWith>\n    <Style Selector=\"Button.orange\">\n        <Setter Property=\"Background\" Value=\"#E2A33F\" />\n    </Style>\n    <Style Selector=\"Button.orange /template/ ContentPresenter\">\n        <Setter Property=\"Background\" Value=\"#E2A33F\" />\n    </Style>\n</Styles>\n";
+    let Some(run) = restored(
+        "xaml-preview",
+        &[
+            ("Demo.csproj", project),
+            ("Program.cs", program),
+            ("App.axaml", app),
+            ("App.axaml.cs", app_code),
+            ("MainWindow.axaml", window_text),
+            ("MainWindow.axaml.cs", window_code),
+        ],
+    ) else {
+        return;
+    };
+    let (main, cx) = run.window(cx);
+    cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
+    let window = run.folder.join("MainWindow.axaml");
+    main.update_in(cx, |m, window_, cx| {
+        m.open_workspace(&run.folder, window_, cx);
+        m.open_file(&window, None, window_, cx);
+    });
+    // The previewer draws the last build.
+    cx.simulate_keystrokes("secondary-shift-b");
+    wait(cx, "the build", |cx| main.read_with(cx, |m, _| !m.is_building() && m.build_outcome().is_some()));
+    cx.dispatch_action(rsharp_app::window::XamlPreview);
+    let frame = |cx: &mut VisualTestContext| main.read_with(cx, |m, _| m.preview_frame());
+    let status = |cx: &mut VisualTestContext| main.read_with(cx, |m, _| m.preview_status()).unwrap_or_default();
+    wait(cx, "the previewer's first frame", |cx| {
+        assert!(!status(cx).contains("could not start") && !status(cx).starts_with("Build"), "{}", status(cx));
+        frame(cx).is_some()
+    });
+    assert_eq!(main.read_with(cx, |m, _| m.preview_error()), None);
+    // Drawn at the size the window's design-time width and height give it.
+    assert_eq!(frame(cx), Some((800, 450)));
+    // A point of the panel below its children, where its background shows.
+    let below = |cx: &mut VisualTestContext| main.read_with(cx, |m, _| m.preview_pixel(400, 300));
+    let orange = Some([0x3F, 0xA3, 0xE2, 0xFF]);
+    assert_ne!(below(cx), orange);
+
+    let buffer = main.read_with(cx, |m, cx| m.editor().unwrap().read(cx).buffer.clone());
+    let replace = |from: &str, to: &str, cx: &mut VisualTestContext| {
+        let text = buffer.read_with(cx, |b, _| b.document.text().to_string()).replacen(from, to, 1);
+        buffer.update(cx, |b, cx| b.replace_all(text, cx));
+    };
+    replace("<StackPanel", "<StackPanel Background=\"#E2A33F\"", cx);
+    wait(cx, "the preview drawing the panel's new background once typing paused", |cx| below(cx) == orange);
+
+    // XAML that does not load leaves the last frame up, the previewer's reason over it.
+    replace("</StackPanel>", "</StackPane>", cx);
+    wait(cx, "the previewer saying why the XAML did not load", |cx| {
+        main.read_with(cx, |m, _| m.preview_error()).is_some()
+    });
+    let error = main.read_with(cx, |m, _| m.preview_error()).unwrap();
+    assert!(error.contains("line 9"), "the error names no line: {error}");
+    assert_eq!(below(cx), orange, "the last frame went");
+    replace("</StackPane>", "</StackPanel>", cx);
+    wait(cx, "the error gone once the XAML loads again", |cx| main.read_with(cx, |m, _| m.preview_error()).is_none());
+
+    // Styles preview as their Design.PreviewWith: the file shown is the one previewed.
+    let styles = run.folder.join("Buttons.axaml");
+    std::fs::write(&styles, buttons).unwrap();
+    main.update_in(cx, |m, window_, cx| m.open_file(&styles, None, window_, cx));
+    wait(cx, "the button Design.PreviewWith holds drawn in the style's colour", |cx| {
+        main.read_with(cx, |m, _| {
+            m.preview_frame()
+                .is_some_and(|(width, height)| (0..width).step_by(4).any(|x| m.preview_pixel(x, height / 2) == orange))
+        })
+    });
+}

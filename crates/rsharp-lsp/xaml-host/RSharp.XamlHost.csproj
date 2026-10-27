@@ -10,5 +10,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../../vendor/passenger/src/Passenger.Xaml/Passenger.Xaml.csproj" />
+    <!-- Avalonia's previewer protocol (MIT), which the preview speaks to the project's Avalonia.Designer.HostApp. -->
+    <PackageReference Include="Avalonia.Remote.Protocol" />
   </ItemGroup>
 </Project>

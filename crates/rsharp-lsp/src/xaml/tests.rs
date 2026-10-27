@@ -110,3 +110,11 @@ fn a_sibling_projects_changed_source_updates_its_xaml_consumers() {
         "the removed referenced property still resolves: {problems:?}"
     );
 }
+
+#[test]
+fn base64_reads_what_dotnet_writes() {
+    assert_eq!(super::base64("TWFu").unwrap(), b"Man");
+    assert_eq!(super::base64("TWE=").unwrap(), b"Ma");
+    assert_eq!(super::base64("TQ==").unwrap(), b"M");
+    assert_eq!(super::base64("/+8=").unwrap(), [0xFF, 0xEF]);
+}
