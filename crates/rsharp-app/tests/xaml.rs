@@ -393,3 +393,60 @@ fn after_a_build_the_xaml_compilers_error_is_marked_on_its_line_until_that_line_
         buffer.read_with(cx, |b, _| b.diagnostics.iter().all(|d| !d.message.starts_with("AVLN")))
     });
 }
+
+#[gpui::test]
+fn an_elements_name_renames_with_its_code_behinds_uses_and_the_code_goes_to_it(cx: &mut TestAppContext) {
+    let project = PROJECT.replace("<OutputType>WinExe</OutputType>", "<OutputType>Library</OutputType>");
+    let window_text = "<Window xmlns=\"https://github.com/avaloniaui\"\n        xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"\n        x:Class=\"Demo.MainWindow\">\n  <StackPanel>\n    <Button Name=\"Go\" Content=\"Go\" />\n    <TextBlock Text=\"{Binding #Go.Content}\" />\n  </StackPanel>\n</Window>\n";
+    let code = "namespace Demo;\n\npublic partial class MainWindow : Avalonia.Controls.Window\n{\n    public MainWindow()\n    {\n        InitializeComponent();\n        Go.Content = \"Start\";\n    }\n}\n";
+    let Some(run) = restored(
+        "xaml-name",
+        &[("Demo.csproj", &project), ("MainWindow.axaml", window_text), ("MainWindow.axaml.cs", code)],
+    ) else {
+        return;
+    };
+    let (main, cx) = run.window(cx);
+    cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
+    let (xaml, behind) = (run.folder.join("MainWindow.axaml"), run.folder.join("MainWindow.axaml.cs"));
+    main.update_in(cx, |m, window, cx| m.open_workspace(&run.folder, window, cx));
+    let active = |main: &Entity<MainWindow>, cx: &mut VisualTestContext| {
+        main.read_with(cx, |m, cx| m.editor().map(|e| e.read(cx).path.clone()))
+    };
+
+    // The field Avalonia's generator makes for the button leads to its name in the XAML, once Roslyn has the project.
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while active(&main, cx).as_ref() != Some(&xaml) {
+        assert!(Instant::now() < deadline, "Go to Declaration on the field never reached the XAML's name");
+        main.update_in(cx, |m, window, cx| m.open_file(&behind, Some((7, 9)), window, cx));
+        cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-b" } else { "f12" });
+        for _ in 0..20 {
+            cx.executor().advance_clock(Duration::from_millis(100));
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    assert!(caret_line(&main, cx).contains("<Button Name=\"|Go\""), "not on the name: {}", caret_line(&main, cx));
+
+    // Find Usages lists where the XAML names it and where the code-behind uses it.
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "alt-f7" } else { "shift-f12" });
+    wait(cx, "Find Usages listing", |cx| main.read_with(cx, |m, _| m.found().is_some()));
+    let found = main.read_with(cx, |m, _| m.found()).unwrap();
+    for place in ["MainWindow.axaml:5", "MainWindow.axaml:6", "MainWindow.axaml.cs:8"] {
+        assert!(found.iter().any(|f| f == place), "Find Usages did not list {place}: {found:?}");
+    }
+
+    // Rename changes the name, the binding that names it and the code-behind's use.
+    main.update_in(cx, |m, window, cx| m.open_file(&xaml, Some((4, 19)), window, cx));
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "shift-f6" } else { "ctrl-r ctrl-r" });
+    cx.run_until_parked();
+    cx.simulate_input("Start");
+    cx.simulate_keystrokes("enter");
+    let text_of = |path: &std::path::PathBuf, cx: &mut VisualTestContext| {
+        cx.update(|_, cx| rsharp_app::buffer::find(path, cx).map(|b| b.read(cx).document.text().to_string()))
+            .unwrap_or_default()
+    };
+    wait(cx, "the code-behind's use renamed", |cx| text_of(&behind, cx).contains("Start.Content = \"Start\";"));
+    let renamed = text_of(&xaml, cx);
+    assert!(renamed.contains("<Button Name=\"Start\""), "the element's name was not renamed:\n{renamed}");
+    assert!(renamed.contains("{Binding #Start.Content}"), "the binding naming it was not renamed:\n{renamed}");
+}

@@ -1614,6 +1614,15 @@ impl MainWindow {
         })
         .detach();
         cx.subscribe_in(&editor, window, |w, _, go: &editor::Navigate, window, cx| w.navigate(go, window, cx)).detach();
+        cx.subscribe_in(&editor, window, |w, _, named: &editor::CodeBehind, window, cx| {
+            w.code_behind(named, window, cx)
+        })
+        .detach();
+        cx.subscribe_in(&editor, window, |w, editor, field: &editor::XamlField, window, cx| {
+            let from = editor.read(cx).path.clone();
+            w.open_xaml_field(field, &from, window, cx)
+        })
+        .detach();
         cx.subscribe_in(&editor, window, |w, editor, open: &crate::refactor_dialog::OpenRefactoring, window, cx| {
             w.open_refactoring(open, editor.clone(), window, cx)
         })

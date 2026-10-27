@@ -8,6 +8,35 @@ use gpui::Task;
 use rsharp_lsp::{CompletionItem, CompletionList, Span, TextEdit};
 use serde_json::json;
 
+/// An element's name in XAML, for the window to find its code-behind's uses through Roslyn: listed (Find Usages), or
+/// renamed to `rename` with them.
+pub struct CodeBehind {
+    pub xaml: PathBuf,
+    pub named: rsharp_lsp::xaml::XamlNamed,
+    pub rename: Option<String>,
+}
+
+/// Go to Declaration from C# reached the field Avalonia's generator makes for a named element of `class`'s XAML.
+pub struct XamlField {
+    pub class: String,
+    pub name: String,
+}
+
+impl gpui::EventEmitter<CodeBehind> for CodeEditor {}
+impl gpui::EventEmitter<XamlField> for CodeEditor {}
+
+/// The class whose generated field a definition answer names: Avalonia's generator's document is `<Class>.g.cs`.
+pub fn generated_field(answer: &serde_json::Value) -> Option<String> {
+    let places = answer.as_array().cloned().unwrap_or_else(|| vec![answer.clone()]);
+    places.iter().find_map(|place| {
+        let uri = place["uri"].as_str().or(place["targetUri"].as_str())?;
+        let query = uri.strip_prefix("roslyn-source-generated://")?.split_once('?')?.1;
+        let field = |key: &str| query.split('&').find_map(|p| p.strip_prefix(key)?.strip_prefix('='));
+        (field("assemblyName")? == "Avalonia.Generators").then_some(())?;
+        Some(field("hintName")?.strip_suffix(".g.cs")?.to_string())
+    })
+}
+
 impl CodeEditor {
     pub(super) fn is_xaml(&self) -> bool {
         rsharp_lsp::xaml::is_xaml(&self.path)
@@ -95,6 +124,24 @@ impl CodeEditor {
         Some(cx.background_executor().spawn(async move {
             host.symbol(&project, &path, &text, at).ok().flatten().map(|s| s.description).filter(|d| !d.is_empty())
         }))
+    }
+
+    /// Find Usages (`rename` None) or Rename in XAML: an element's name, where the file names it and where its
+    /// code-behind uses its field, which the window finds through Roslyn.
+    pub(super) fn xaml_named(&mut self, rename: Option<String>, at: usize, cx: &mut Context<Self>) {
+        let Some((host, project)) = self.buffer.read(cx).xaml.clone() else { return };
+        let (path, text) = (self.path.clone(), self.text.to_string());
+        let at = language::point(&self.text, at);
+        let found = cx.background_executor().spawn(async move { host.symbol(&project, &path, &text, at) });
+        let xaml = self.path.clone();
+        self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
+            let named = found.await.ok().flatten().and_then(|s| s.named);
+            let _ = this.update(cx, |_, cx| match named {
+                Some(named) => cx.emit(CodeBehind { xaml, named, rename }),
+                None if rename.is_some() => cx.emit(Said("Rename in XAML renames an element's name".into())),
+                None => cx.emit(Said("Find Usages in XAML finds an element's name".into())),
+            });
+        }));
     }
 
     /// Go to Declaration in a XAML file: a type's or member's C#, a resource's definition, a named element, a file.
