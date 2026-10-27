@@ -1339,6 +1339,11 @@ impl MainWindow {
                 if self.debug.phase == Phase::Idle {
                     return;
                 }
+                // An adapter that dies as it starts may close its output before its start fails: the failure says why.
+                if self.debug.session.is_none() {
+                    self.debug.pending.push(said);
+                    return;
+                }
                 let name = self.debug_name();
                 match self.debug.terminal {
                     Some(id) => self.finish_with_terminal(id, name, cx),

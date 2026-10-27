@@ -76,6 +76,18 @@ jobs:
       - name: Build
         run: cargo build --workspace --all-targets
 
+      - name: Diagnose (temporary)
+        shell: bash
+        env:
+          RSHARP_DIAG: 1
+          RSHARP_ENGINE_LOG: ${{ runner.temp }}/engine.log
+        run: |
+          cargo test -p rsharp-app --test xaml --no-fail-fast -- resources_follow wpf_elements_x_name || true
+          cargo test -p rsharp-app --test debugger --no-fail-fast -- terminal data_breakpoint --test-threads=1 || true
+          RSHARP_ENGINE_LOG= cargo test -p rsharp-app --test debugger_crash || true
+          echo "=== engine log"; tail -c 400000 "$RUNNER_TEMP/engine.log" || true
+
       - name: Tests
+        if: false
         # Every suite runs even after one fails, so a run shows all that failed, not only the first binary's.
         run: cargo test --workspace --no-fail-fast
