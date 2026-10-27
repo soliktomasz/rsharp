@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Passenger.Xaml in a process of its own, speaking JSON lines as Passenger.Host does: RSharp's editor asks it what a
+       XAML file completes, what it warns of and where a name leads (src/rsharp-lsp/src/xaml.rs is the other side). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>RSharp.XamlHost</RootNamespace>
+    <RollForward>LatestMajor</RollForward>
+    <UseAppHost>false</UseAppHost>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../../vendor/passenger/src/Passenger.Xaml/Passenger.Xaml.csproj" />
+  </ItemGroup>
+</Project>

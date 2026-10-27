@@ -21,7 +21,7 @@ impl Point {
         json!({ "line": self.line, "character": self.character })
     }
 
-    fn from(value: &Value) -> Self {
+    pub(crate) fn from(value: &Value) -> Self {
         let n = |key: &str| value[key].as_u64().unwrap_or(0) as usize;
         Self { line: n("line"), character: n("character") }
     }
@@ -38,7 +38,7 @@ impl Span {
         json!({ "start": self.start.to_json(), "end": self.end.to_json() })
     }
 
-    fn from(value: &Value) -> Self {
+    pub(crate) fn from(value: &Value) -> Self {
         Self { start: Point::from(&value["start"]), end: Point::from(&value["end"]) }
     }
 }

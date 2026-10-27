@@ -1,0 +1,165 @@
+//! RSharp's XAML host (`xaml-host/`, Passenger.Xaml in a process of its own): what an Avalonia or WPF XAML file
+//! completes, warns of and where a name in it leads, asked with the file's text as typed and the project it belongs to.
+
+use crate::host::Connection;
+use crate::{Location, Point, Problem, ServerFailed, Span};
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
+
+/// Whether a file is XAML Passenger.Xaml may read: Avalonia's .axaml (and its old .paml), or WPF's .xaml.
+pub fn is_xaml(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| ["axaml", "paml", "xaml"].iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
+/// One thing completion offers: what the list shows and what goes in, the byte in it the caret stays at (a snippet's
+/// `$0`), and whether completion opens again once it is in (a property's values inside its new quotes).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct XamlItem {
+    pub label: String,
+    pub kind: String,
+    pub insert: String,
+    pub caret: Option<usize>,
+    pub reopen: bool,
+    pub detail: String,
+}
+
+/// A completion list: where the text it replaces starts (it ends at the caret) and its items.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct XamlCompletion {
+    pub start: Point,
+    pub items: Vec<XamlItem>,
+}
+
+/// The name at a place: where it is written, the card that says what it is, and where it leads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct XamlSymbol {
+    pub span: Span,
+    pub description: String,
+    pub targets: Vec<Location>,
+}
+
+/// The folder's XAML host, started on first use and again after it fails.
+#[derive(Clone)]
+pub struct XamlHost {
+    running: Arc<Mutex<Option<Arc<Connection>>>>,
+    dotnet: PathBuf,
+    host: PathBuf,
+}
+
+impl XamlHost {
+    /// None without the host RSharp's build publishes, or without dotnet.
+    pub fn carried() -> Option<Self> {
+        let host = crate::roslyn::carried_xaml_host()?;
+        Some(Self { running: Arc::default(), dotnet: rsharp_core::programs::dotnet()?, host })
+    }
+
+    fn ask(&self, method: &str, params: Value) -> Result<Value, ServerFailed> {
+        let connection = {
+            let mut running = self.running.lock().unwrap();
+            if running.as_ref().is_some_and(|c| c.failed().is_some()) {
+                *running = None;
+            }
+            match running.as_ref() {
+                Some(connection) => connection.clone(),
+                None => {
+                    let mut command = Command::new(&self.dotnet);
+                    command.arg(&self.host).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+                    running.insert(Connection::start(command, "the XAML host", None)?).clone()
+                }
+            }
+        };
+        connection.ask(method, params, |_| {}).map_err(ServerFailed)
+    }
+
+    /// The file's problems as typed; None for a project whose XAML is neither Avalonia's nor WPF's.
+    /// Blocks for the answer, so call it off the UI thread.
+    pub fn check(&self, project: &Path, path: &Path, text: &str) -> Result<Option<Vec<Problem>>, ServerFailed> {
+        let found = self.ask("check", json!({ "project": project, "path": path, "text": text }))?;
+        if found["dialect"].is_null() {
+            return Ok(None);
+        }
+        let problems = found["diagnostics"].as_array().into_iter().flatten();
+        Ok(Some(
+            problems
+                .map(|d| Problem {
+                    span: Span::from(&d["range"]),
+                    error: d["error"] == true,
+                    message: d["message"].as_str().unwrap_or_default().to_string(),
+                })
+                .collect(),
+        ))
+    }
+
+    /// What may go at `at`. Blocks for the answer, so call it off the UI thread.
+    pub fn complete(
+        &self,
+        project: &Path,
+        path: &Path,
+        text: &str,
+        at: Point,
+    ) -> Result<Option<XamlCompletion>, ServerFailed> {
+        let found = self.ask("complete", params(project, path, text, at))?;
+        if found.is_null() {
+            return Ok(None);
+        }
+        let items = found["items"].as_array().into_iter().flatten();
+        Ok(Some(XamlCompletion { start: Point::from(&found["start"]), items: items.map(item).collect() }))
+    }
+
+    /// The name at `at`. Blocks for the answer, so call it off the UI thread.
+    pub fn symbol(
+        &self,
+        project: &Path,
+        path: &Path,
+        text: &str,
+        at: Point,
+    ) -> Result<Option<XamlSymbol>, ServerFailed> {
+        let found = self.ask("symbol", params(project, path, text, at))?;
+        if found.is_null() {
+            return Ok(None);
+        }
+        let targets = found["targets"].as_array().into_iter().flatten();
+        Ok(Some(XamlSymbol {
+            span: Span::from(&found["range"]),
+            description: found["description"].as_str().unwrap_or_default().to_string(),
+            targets: targets
+                .filter_map(|t| {
+                    let at = Point::from(&t["at"]);
+                    Some(Location { path: PathBuf::from(t["path"].as_str()?), span: Span { start: at, end: at } })
+                })
+                .collect(),
+        }))
+    }
+
+    /// Files written on disk, which the projects that hold them read again. Blocks, so call it off the UI thread.
+    pub fn changed(&self, paths: &[PathBuf]) -> Result<(), ServerFailed> {
+        self.ask("changed", json!({ "paths": paths })).map(|_| ())
+    }
+}
+
+fn params(project: &Path, path: &Path, text: &str, at: Point) -> Value {
+    json!({ "project": project, "path": path, "text": text, "line": at.line, "character": at.character })
+}
+
+fn item(found: &Value) -> XamlItem {
+    let mut insert = found["insert"].as_str().unwrap_or_default().to_string();
+    let caret = (found["snippet"] == true).then(|| insert.find("$0")).flatten();
+    if let Some(at) = caret {
+        insert.replace_range(at..at + 2, "");
+    }
+    XamlItem {
+        label: found["label"].as_str().unwrap_or_default().to_string(),
+        kind: found["kind"].as_str().unwrap_or_default().to_string(),
+        insert,
+        caret,
+        reopen: found["reopen"] == true,
+        detail: found["detail"].as_str().unwrap_or_default().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests;

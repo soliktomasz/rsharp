@@ -88,6 +88,9 @@ pub struct Buffer {
     msbuild: Option<(rsharp_lsp::SharedHost, PathBuf, Option<PathBuf>)>,
     pub insight: Option<Arc<rsharp_core::msbuild::insight::ProjectInsight>>,
     inspecting: Option<Task<()>>,
+    /// A XAML file's host and the project it is read against.
+    pub xaml: Option<(rsharp_lsp::xaml::XamlHost, PathBuf)>,
+    checking_xaml: Option<Task<()>>,
 }
 
 impl EventEmitter<BufferEvent> for Buffer {}
@@ -238,6 +241,8 @@ impl Buffer {
             asking_contexts: None,
             msbuild: None,
             insight: None,
+            xaml: None,
+            checking_xaml: None,
             inspecting: None,
         };
         buffer.on_disk = stamp(&buffer.path);
@@ -347,6 +352,7 @@ impl Buffer {
         self.reparse(cx);
         self.check(Duration::from_millis(400), cx);
         self.inspect(Duration::from_millis(500), cx);
+        self.check_xaml(Duration::from_millis(300), cx);
         cx.emit(BufferEvent::Edited { changes, by });
         cx.notify();
     }
@@ -650,6 +656,44 @@ impl Buffer {
                     })
                     .collect();
                 b.insight = Some(Arc::new(insight));
+                cx.notify();
+            });
+        }));
+    }
+
+    /// A XAML file's code help: read against `project` in the XAML host, now and once typing pauses.
+    pub fn attach_xaml(&mut self, host: rsharp_lsp::xaml::XamlHost, project: PathBuf, cx: &mut Context<Self>) {
+        self.xaml = Some((host, project));
+        self.check_xaml(Duration::ZERO, cx);
+    }
+
+    /// The file checked as typed; what the host finds becomes the file's problems.
+    fn check_xaml(&mut self, after: Duration, cx: &mut Context<Self>) {
+        let Some((host, project)) = self.xaml.clone() else { return };
+        let (version, path, text) = (self.document.version(), self.path.clone(), self.document.text().to_string());
+        self.checking_xaml = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(after).await;
+            let found = cx.background_executor().spawn(async move { host.check(&project, &path, &text) }).await;
+            let problems = match found {
+                Ok(problems) => problems.unwrap_or_default(),
+                Err(failed) => {
+                    log::info!("XAML code help: {failed}");
+                    return;
+                }
+            };
+            let _ = this.update(cx, |b, cx| {
+                if b.document.version() != version {
+                    return;
+                }
+                let at = |p: rsharp_lsp::Point| b.document.offset_of_utf16(p.line, p.character);
+                b.diagnostics = problems
+                    .iter()
+                    .map(|p| Diagnostic {
+                        range: at(p.span.start)..at(p.span.end),
+                        error: p.error,
+                        message: p.message.clone(),
+                    })
+                    .collect();
                 cx.notify();
             });
         }));

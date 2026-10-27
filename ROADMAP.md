@@ -446,7 +446,18 @@ Known limits, taken on purpose:
 - Hot Reload is for a program this window launches (above).
 On macOS every case passes; Windows x64 and Linux are CI's.
 
-### Phase 9: Avalonia and WPF (L)
+### Phase 9: Avalonia and WPF (L) — begun
+Begun: the XAML host and its code help. `crates/rsharp-lsp/xaml-host` is Passenger.Xaml behind JSON lines in the
+shape of Passenger.Host's (a ready line, then `check`, `complete`, `symbol` and `changed`, places as LSP's), published
+into `sidecars/xaml`; `rsharp_lsp::xaml::XamlHost` starts it on the first XAML file a window opens. An .axaml, .paml or
+.xaml buffer is read against its project (as an MSBuild file finds one) once it opens and 300 ms after typing pauses,
+its problems marked; completion opens as Passenger's does (a tag's `<`, a start tag's space, a value's quote or brace,
+a path's dot, a word's first letter), a property goes in with its quotes and offers its values, F1 shows the name's
+card, and Go to Declaration opens a type's or member's C#, a resource's definition, a named element or an asset.
+`tests/xaml.rs` holds the first of XamlTests' cases on a restored Avalonia app. Not yet: a library's type decompiled
+or a theme's XAML through Source Link, a restore seen while the file is open (the watcher passes over obj/), the
+build's AVLN errors on their lines, rename, theme variants, assets and colours, formatting, the refactorings and
+create from usage, WPF's cases, the previewers, the inspector and the MCP `app_*` tools.
 - A XAML host: `Passenger.Xaml` behind a thin JSON-lines (or LSP) process, giving completion, diagnostics,
   navigation, formatting, Extract Resource and Style, and create from usage.
 - The previewers: Avalonia.Designer.HostApp, and Passenger's WpfPreview.

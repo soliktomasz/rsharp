@@ -20,6 +20,13 @@ pub(crate) fn carried_host() -> Option<PathBuf> {
     carried().map(|c| c.host)
 }
 
+/// RSharp's XAML host (Passenger.Xaml behind JSON lines) as the build published it, when it did.
+pub(crate) fn carried_xaml_host() -> Option<PathBuf> {
+    let sidecars = env!("RSHARP_SIDECARS");
+    let host = Path::new(sidecars).join("xaml").join("RSharp.XamlHost.dll");
+    (!sidecars.is_empty() && host.is_file()).then_some(host)
+}
+
 fn carried() -> Option<Carried> {
     let (sidecars, server) = (env!("RSHARP_SIDECARS"), env!("RSHARP_ROSLYN_SERVER"));
     if sidecars.is_empty() {

@@ -1,0 +1,4 @@
+<Project>
+  <!-- The package versions Passenger pins, Passenger.Xaml's Roslyn among them. -->
+  <Import Project="../../../vendor/passenger/Directory.Packages.props" />
+</Project>

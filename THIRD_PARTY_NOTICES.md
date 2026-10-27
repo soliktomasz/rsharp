@@ -74,7 +74,9 @@ Passenger.Roslyn.Extension (Roslyn's server's project loader and refactorings wi
 `crates/rsharp-dap/build.rs` publishes Passenger.DebugAdapter (Passenger's own ICorDebug engine behind the Debug
 Adapter Protocol, in a process of its own, with ILSpy's decompiler for code without source). The Host carries
 Microsoft.Build.Locator (MIT, .NET Foundation); the extension is compiled against Roslyn's server with
-Krafs.Publicizer (MIT, Krafs), which carries nothing into the output.
+Krafs.Publicizer (MIT, Krafs), which carries nothing into the output. RSharp's own XAML host
+(`crates/rsharp-lsp/xaml-host/`, published by the same build.rs) is built on Passenger.Xaml and Passenger.Text,
+unchanged, and carries them with Microsoft.CodeAnalysis.CSharp (MIT, .NET Foundation), Passenger.Xaml's C# parser.
 
 ## Ported from Passenger
 

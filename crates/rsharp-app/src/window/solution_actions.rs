@@ -783,6 +783,7 @@ impl MainWindow {
     fn folder_changed(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
         self.refresh_git(cx);
         self.package_sources_changed(&paths, cx);
+        self.xaml_files_changed(&paths, cx);
         let solution = self.tree.as_ref().map(|t| t.solution().path.clone());
         let mut closed = Vec::new();
         for path in &paths {
