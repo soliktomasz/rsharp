@@ -175,3 +175,31 @@ fn a_quote_typed_after_an_attributes_equals_comes_with_its_closer_and_the_closer
         "an apostrophe after a word came with a closer"
     );
 }
+
+#[test]
+fn stepping_over_a_quote_keeps_the_file_saved_and_preserves_redo() {
+    let mut document = Document::new("<Button Width=\"40\" />");
+    document.set_selections(vec![Selection::caret(18)]);
+    typed(&mut document, " ");
+    document.undo();
+    document.mark_saved();
+    document.set_selections(vec![Selection::caret(17)]);
+    let changes = document.apply(type_quote(document.text(), document.selections(), '"'));
+    assert!(changes.is_empty(), "stepping over a quote published a text change");
+    assert!(!document.is_modified(), "stepping over a quote marked the saved file modified");
+    assert_eq!(document.selections(), &[Selection::caret(18)]);
+    assert!(document.redo().is_some(), "stepping over a quote discarded the undone edit");
+    assert_eq!(document.text().to_string(), "<Button Width=\"40\"  />");
+}
+
+#[test]
+fn quotes_at_several_carets_only_edit_where_a_quote_is_inserted() {
+    let mut document = Document::new("=\n\"\n=");
+    document.set_selections(vec![Selection::caret(1), Selection::caret(2), Selection::caret(5)]);
+    let changes = document.apply(type_quote(document.text(), document.selections(), '"'));
+    assert_eq!(changes.len(), 2, "the caret stepping over a quote published an extra edit");
+    assert_eq!(document.text().to_string(), "=\"\"\n\"\n=\"\"");
+    assert_eq!(document.selections(), &[Selection::caret(2), Selection::caret(5), Selection::caret(8)]);
+    document.undo();
+    assert_eq!(document.text().to_string(), "=\n\"\n=", "Undo did not restore the mixed quote edit");
+}

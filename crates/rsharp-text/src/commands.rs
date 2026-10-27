@@ -88,7 +88,7 @@ pub fn backspace(text: &Rope, selections: &[Selection]) -> EditPlan {
 /// quote touches the caret it comes with its closing quote, the caret between them; anything else goes in as typed.
 pub fn type_quote(text: &Rope, selections: &[Selection], quote: char) -> EditPlan {
     let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
-    let plan = plan_back(selections, |s| {
+    let mut plan = plan_back(selections, |s| {
         let before = (s.start() > 0).then(|| text.byte_slice(previous_char(text, s.start())..s.start()).chars().next());
         let after = (s.end() < text.len_bytes()).then(|| text.byte_slice(s.end()..).chars().next());
         let (before, after) = (before.flatten(), after.flatten());
@@ -101,6 +101,8 @@ pub fn type_quote(text: &Rope, selections: &[Selection], quote: char) -> EditPla
             (edit(s.range(), quote.to_string()), 0)
         })
     });
+    // Keep the shifted carets, but stepping over an existing quote must not change the text or undo history.
+    plan.edits.retain(|edit| text.byte_slice(edit.range.clone()) != edit.text.as_str());
     EditPlan { kind: EditKind::Typing, ..plan }
 }
 

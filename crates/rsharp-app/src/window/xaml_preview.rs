@@ -143,6 +143,13 @@ impl MainWindow {
                     Ok(child) => preview._host_app = Some(child),
                     Err(error) => preview.status = format!("The previewer could not start: {error}"),
                 }
+                // Edits before Started had no session to send to; the shared buffer holds their latest text.
+                if preview.typing
+                    && let Some(buffer) = crate::buffer::find(&preview.path, cx)
+                {
+                    let text = buffer.read(cx).document.text().to_string();
+                    self.update_preview(text, cx);
+                }
             }
             Ok(PreviewEvent::Frame(frame)) => {
                 let image = image::RgbaImage::from_raw(frame.width, frame.height, frame.bgra.clone());
@@ -338,5 +345,78 @@ impl MainWindow {
 
     pub fn preview_status(&self) -> Option<String> {
         self.preview.as_ref().map(|p| p.status.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[gpui::test]
+    fn edits_before_the_preview_starts_are_sent_once_its_session_arrives(cx: &mut gpui::TestAppContext) {
+        let Some(host) = rsharp_lsp::xaml::XamlHost::carried() else {
+            eprintln!("skipped: the XAML host was not built");
+            return;
+        };
+        let root = std::env::temp_dir().join(format!("rsharp-preview-startup-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = rsharp_core::paths::canonical(&root);
+        let path = root.join("MainWindow.axaml");
+        std::fs::write(&path, "<Button />").unwrap();
+        cx.update(|cx| {
+            crate::init(root.join("state"), cx);
+            cx.global_mut::<crate::state::Ide>().servers = false;
+            cx.global_mut::<crate::templates::Templates>().enabled = false;
+        });
+        let (main, cx) = cx.add_window_view(MainWindow::new);
+        let buffer = main.update_in(cx, |main, window, cx| {
+            main.open_file(&path, None, window, cx);
+            main.xaml = Some(host);
+            main.start_preview(path.clone(), cx);
+            main.editor().unwrap().read(cx).buffer.clone()
+        });
+        buffer.update(cx, |b, cx| b.replace_all("<TextBlock />".into(), cx));
+        cx.run_until_parked();
+        main.update(cx, |main, cx| {
+            assert!(main.preview.as_ref().unwrap().session.is_none(), "the test edited after startup");
+            // Deliver the protocol's Started event after the edit. No designer is needed for this startup boundary.
+            main.preview_event(
+                Ok(PreviewEvent::Started {
+                    session: "startup-test".into(),
+                    arguments: vec!["--version".into()],
+                    folder: root.clone(),
+                }),
+                cx,
+            );
+            assert!(
+                main.preview.as_ref().unwrap().updating.is_some(),
+                "the edit made before startup was never queued for the new session"
+            );
+        });
+        cx.executor().advance_clock(std::time::Duration::from_millis(300));
+        cx.run_until_parked();
+        main.update(cx, |main, cx| {
+            main.preview_event(
+                Ok(PreviewEvent::Elements(vec![rsharp_lsp::xaml::PreviewElement {
+                    tag: rsharp_lsp::Span {
+                        start: rsharp_lsp::Point { line: 0, character: 0 },
+                        end: rsharp_lsp::Point { line: 0, character: 13 },
+                    },
+                    whole: rsharp_lsp::Span {
+                        start: rsharp_lsp::Point { line: 0, character: 0 },
+                        end: rsharp_lsp::Point { line: 0, character: 13 },
+                    },
+                    bounds: [0., 0., 100., 20.],
+                }])),
+                cx,
+            );
+            assert_eq!(
+                main.preview_outlined(cx),
+                Some([0., 0., 100., 20.]),
+                "startup edits left element selection disabled"
+            );
+            main.stop_preview(cx);
+        });
+        let _ = std::fs::remove_dir_all(root);
     }
 }
