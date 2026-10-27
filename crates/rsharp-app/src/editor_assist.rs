@@ -28,8 +28,9 @@ pub enum Popup {
     Actions { actions: Vec<CodeAction>, selected: usize },
     /// Rename's field over the word being renamed.
     Rename { field: Entity<TextField>, word: Range<usize> },
-    /// Surround With's constructs, the chosen one.
-    Surround { selected: usize },
+    /// Surround With's constructs (each its name, template and the digit that chooses it), the chosen one, and the
+    /// text they go around when that is not the selection's lines (a XAML element).
+    Surround { items: Vec<super::refactor::Surround>, selected: usize, target: Option<Range<usize>> },
 }
 
 /// Go to Declaration's or Find Usages' places, for the window to open: one is gone to, several are listed.
@@ -167,6 +168,14 @@ impl CodeEditor {
         }
     }
 
+    /// Surround With's constructs while its list is open, by name.
+    pub fn surrounds_shown(&self) -> Option<Vec<String>> {
+        match &self.assist.popup {
+            Some(Popup::Surround { items, .. }) => Some(items.iter().map(|i| i.name.to_string()).collect()),
+            _ => None,
+        }
+    }
+
     /// The hover card's or parameter info's text while one is open.
     pub fn popup_text(&self) -> Option<String> {
         match &self.assist.popup {
@@ -201,7 +210,7 @@ impl CodeEditor {
     }
 
     /// The server's edits to this file, as one undo step, the carets carried through them.
-    fn apply_server_edits(&mut self, edits: Vec<Edit>, cx: &mut Context<Self>) {
+    pub(super) fn apply_server_edits(&mut self, edits: Vec<Edit>, cx: &mut Context<Self>) {
         if edits.is_empty() {
             return;
         }
@@ -338,7 +347,7 @@ impl CodeEditor {
         let (selected, len) = match &mut self.assist.popup {
             Some(Popup::Completion { selected, shown, .. }) => (selected, shown.len()),
             Some(Popup::Actions { selected, actions }) => (selected, actions.len()),
-            Some(Popup::Surround { selected }) => (selected, super::refactor::SURROUNDS.len()),
+            Some(Popup::Surround { selected, items, .. }) => (selected, items.len()),
             _ => return false,
         };
         if len > 0 {
@@ -353,10 +362,9 @@ impl CodeEditor {
         match &self.assist.popup {
             Some(Popup::Completion { shown, .. }) if !shown.is_empty() => self.accept_completion(cx),
             Some(Popup::Actions { .. }) => self.choose_action(cx),
-            Some(Popup::Surround { selected }) => {
-                let chosen = *selected;
-                self.assist.popup = None;
-                self.surround(chosen, cx);
+            Some(Popup::Surround { .. }) => {
+                let Some(Popup::Surround { items, selected, target }) = self.assist.popup.take() else { return false };
+                self.surround(&items[selected], target, cx);
             }
             _ => return false,
         }
@@ -671,6 +679,10 @@ impl CodeEditor {
 
     /// Reformat Code: the selection's lines, or the whole file, as the server lays them out with the file's indent.
     pub(super) fn reformat(&mut self, cx: &mut Context<Self>) {
+        if self.is_xaml() {
+            self.xaml_reformat(cx);
+            return;
+        }
         let Some((server, uri)) = self.server(cx) else { return };
         let indent = self.buffer.read(cx).indent;
         let options = json!({ "tabSize": indent.size, "insertSpaces": !indent.tabs });
@@ -1050,11 +1062,13 @@ impl CodeEditor {
                     .collect();
                 frame().left(below.x).top(below.y).w(px(420.)).py(px(4.)).children(rows).into_any_element()
             }
-            Popup::Surround { selected } => {
-                let rows: Vec<_> = super::refactor::SURROUNDS
+            Popup::Surround { items, selected, .. } => {
+                let rows: Vec<_> = items
                     .iter()
                     .enumerate()
-                    .map(|(i, (name, _))| row((*name).to_string(), String::new(), i == *selected))
+                    .map(|(i, item)| {
+                        row(item.name.to_string(), item.digit.map(String::from).unwrap_or_default(), i == *selected)
+                    })
                     .collect();
                 frame().left(below.x).top(below.y).w(px(240.)).py(px(4.)).children(rows).into_any_element()
             }

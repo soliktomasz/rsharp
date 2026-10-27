@@ -49,6 +49,11 @@ impl EditorConfig {
         self.properties.get(key).map(|(v, _)| v.as_str()).filter(|v| *v != "unset")
     }
 
+    /// Every property that applies, `unset` ones left out.
+    pub fn properties(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.properties.iter().map(|(k, (v, _))| (k.as_str(), v.as_str())).filter(|(_, v)| *v != "unset")
+    }
+
     /// The .editorconfig that set a property.
     pub fn source(&self, key: &str) -> Option<&Path> {
         self.properties.get(key).map(|(_, from)| from.as_path())

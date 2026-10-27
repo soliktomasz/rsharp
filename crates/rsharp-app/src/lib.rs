@@ -43,6 +43,7 @@ pub mod test_view;
 pub mod theme;
 pub mod window;
 pub mod workspace;
+pub mod xaml_dialog;
 
 /// What the app needs before its first window: Rider's keys and the state store at `state_root`.
 pub fn init(state_root: std::path::PathBuf, cx: &mut gpui::App) {

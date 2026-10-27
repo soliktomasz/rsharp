@@ -447,26 +447,32 @@ Known limits, taken on purpose:
 On macOS every case passes; Windows x64 and Linux are CI's.
 
 ### Phase 9: Avalonia and WPF (L) — begun
-Begun: the XAML host and its code help. `crates/rsharp-lsp/xaml-host` is Passenger.Xaml behind JSON lines in the
-shape of Passenger.Host's (a ready line, then `check`, `complete`, `symbol` and `changed`, places as LSP's), published
-into `sidecars/xaml`; `rsharp_lsp::xaml::XamlHost` starts it on the first XAML file a window opens. An .axaml, .paml or
-.xaml buffer is read against its project (as an MSBuild file finds one) once it opens and 300 ms after typing pauses,
-its problems marked; completion opens as Passenger's does (a tag's `<`, a start tag's space, a value's quote or brace,
-a path's dot, a word's first letter), a property goes in with its quotes and offers its values, F1 shows the name's
-card, and Go to Declaration opens a type's or member's C#, a resource's definition, a named element or an asset.
-After a build, the XAML compiler's problems (AVLN, MarkupCompile's MC) are marked in each open XAML file on the name
-their place points at, with their code, where the host finds nothing on that line, until the line is edited. An
-element's name finds its uses (Find Usages) and renames with them: where its XAML names it (a binding's `#Name`
-included) and where its code-behind uses the field made for it, Roslyn's references from a mention whose definition is
-Avalonia's generated field; Go to Declaration on that field in C# opens the XAML's name. Alt+Enter lists the fixes
-of the problems on the caret's line (the host's `fixes`, LSP code actions with their edits in them), among them a
-theme variant's missing key added as a copy of the other variant's definition. Fixes that edit C# or create files
-are hidden until create from usage reads current target buffers. An `avares://` path completes from the project's
-assets, a missing one is warned of, and Go to Declaration opens the file it names.
-`tests/xaml.rs` holds the first of XamlTests' cases on a restored Avalonia app. Not yet: a library's type decompiled
-or a theme's XAML through Source Link, a restore seen while the file is open (the watcher passes over obj/), a rename
-undone whole across its files, a typed quote closed (RSharp's editor pairs none), colours, formatting, the
-refactorings and create from usage, WPF's cases, the previewers, the inspector and the MCP `app_*` tools.
+Begun: the XAML host and its code help. `crates/rsharp-lsp/xaml-host` is Passenger.Xaml behind JSON lines in the shape
+of Passenger.Host's (a ready line, then `check`, `complete`, `symbol` and `changed`, places as LSP's), published into
+`sidecars/xaml`; `rsharp_lsp::xaml::XamlHost` starts it on the first XAML file a window opens. An .axaml, .paml or .xaml
+buffer is read against its project (as an MSBuild file finds one) once it opens and 300 ms after typing pauses, its
+problems marked; completion opens as Passenger's does (a tag's `<`, a start tag's space, a value's quote or brace, a
+path's dot, a word's first letter), a property goes in with its quotes and offers its values, F1 shows the name's card,
+and Go to Declaration opens a type's or member's C#, a resource's definition, a named element or an asset. After a
+build, the XAML compiler's problems (AVLN, MarkupCompile's MC) are marked in each open XAML file on the name their place
+points at, with their code, where the host finds nothing on that line, until the line is edited. An element's name finds
+its uses (Find Usages) and renames with them: where its XAML names it (a binding's `#Name` included) and where its
+code-behind uses the field made for it, Roslyn's references from a mention whose definition is Avalonia's generated
+field; Go to Declaration on that field in C# opens the XAML's name. Alt+Enter lists the fixes of the problems on the
+caret's line (the host's `fixes`, LSP code actions with their edits in them), among them a theme variant's missing key
+added as a copy of the other variant's definition. Create from usage's fixes (a binding's property or command in its
+view model, the MVVM Toolkit's way where it is used, and a missing converter's class and resource) make their edits from
+the editor's unsaved texts, which Alt+Enter sends. An `avares://` path completes from the project's assets, a missing
+one is warned of, and Go to Declaration opens the file it names. Reformat Code lays XAML out by Rider's XAML code style
+(Passenger.Xaml's formatter, the host's `format`) with the file's .editorconfig over it, the selection's lines alone
+when there is one, as one undo step. Extract Resource and Extract Style (Refactor menu) ask their options in a dialog of
+their own (`xaml_dialog.rs`) and make the host's changes; Surround With offers XAML's layout elements around the element
+at the caret or those chosen, each chosen by its digit, Rider's `tag` typed in both tags. `tests/xaml.rs` holds
+XamlTests' and XamlEditingTests' Avalonia cases so far, on restored apps. Not yet: a library's type decompiled or a
+theme's XAML through Source Link, a restore seen while the file is open (the watcher passes over obj/), a rename undone
+whole across its files, a typed quote closed (RSharp's editor pairs none), colours, Settings' Code Style: XAML page,
+Refactor This's list, a change across files undone whole (Extract, create from usage), WPF's cases, the previewers, the
+inspector and the MCP `app_*` tools.
 - A XAML host: `Passenger.Xaml` behind a thin JSON-lines (or LSP) process, giving completion, diagnostics,
   navigation, formatting, Extract Resource and Style, and create from usage.
 - The previewers: Avalonia.Designer.HostApp, and Passenger's WpfPreview.
