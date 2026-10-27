@@ -381,7 +381,10 @@ fn after_a_build_the_xaml_compilers_error_is_marked_on_its_line_until_that_line_
         (d, word)
     });
     assert!(marked.error, "the compiler's error is not marked as an error");
-    assert_eq!(marked.message, "AVLN1000: The input string 'wide' was not in a correct format.");
+    assert_eq!(
+        marked.message, "AVLN1000: The input string 'wide' was not in a correct format.",
+        "the editor displayed the wrong build error text"
+    );
     assert_eq!(word, "Width", "the build's problem is not on the attribute its place points at");
 
     // The line edited, the build's word on it is the build's, no longer this text's.

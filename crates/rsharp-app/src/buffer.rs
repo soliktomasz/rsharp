@@ -766,6 +766,7 @@ impl Buffer {
                 let line = text.byte_slice(start..end).to_string();
                 let column = line.char_indices().nth(p.column).map_or(line.len(), |(i, _)| i);
                 let name = column + usize::from(line[column..].starts_with('<'));
+                let name = name + usize::from(line[name..].starts_with('/'));
                 let length = line[name..]
                     .find(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '.' | ':' | '-')))
                     .unwrap_or(line.len() - name);
@@ -783,11 +784,11 @@ impl Buffer {
         cx.notify();
     }
 
-    /// The host's problems, and the build's on the lines it found nothing on.
+    /// The host's problems, and the build's on the lines without a host error.
     fn show_xaml(&mut self) {
         let text = self.document.text();
         let line = |d: &Diagnostic| text.byte_to_line(d.range.start.min(text.len_bytes()));
-        let lines: HashSet<usize> = self.xaml_live.iter().map(line).collect();
+        let lines: HashSet<usize> = self.xaml_live.iter().filter(|d| d.error).map(line).collect();
         let built = self.xaml_built.iter().filter(|(l, _)| !lines.contains(l)).map(|(_, d)| d.clone());
         self.diagnostics = self.xaml_live.iter().cloned().chain(built).collect();
     }
@@ -869,5 +870,68 @@ fn compiler_message(message: &str) -> &str {
     match message.rfind(" Line ") {
         Some(at) if message[at..].to_ascii_lowercase().contains(" position ") => message[..at].trim_end(),
         _ => message,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rsharp_core::build::{Problem, Severity};
+
+    #[gpui::test]
+    fn xaml_build_errors_on_either_closing_tag_delimiter_mark_the_name(cx: &mut gpui::TestAppContext) {
+        let path = std::env::temp_dir().join("rsharp-closing-tag.axaml");
+        let buffer = cx.new(|cx| Buffer::new(path.clone(), b"  </local:Window>\n", cx));
+        for column in [2, 3] {
+            buffer.update(cx, |b, cx| {
+                b.built(
+                    &[Problem {
+                        severity: Severity::Error,
+                        message: "Mismatched tag".into(),
+                        code: "AVLN1000".into(),
+                        path: Some(path.clone()),
+                        project: None,
+                        line: 0,
+                        column,
+                    }],
+                    cx,
+                );
+                let marked = b.document.text().byte_slice(b.diagnostics[0].range.clone()).to_string();
+                assert_eq!(
+                    marked, "local:Window",
+                    "the build error at column {column} did not mark the closing tag's name"
+                );
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn xaml_live_warnings_keep_build_errors_while_live_errors_take_precedence(cx: &mut gpui::TestAppContext) {
+        let path = std::env::temp_dir().join("rsharp-live-warning.axaml");
+        let buffer = cx.new(|cx| Buffer::new(path.clone(), b"<Window />\n", cx));
+        for error in [true, false] {
+            buffer.update(cx, |b, cx| {
+                b.xaml_live = vec![Diagnostic { range: 1..7, error, message: "Live diagnostic".into() }];
+                b.built(
+                    &[Problem {
+                        severity: Severity::Error,
+                        message: "Build error".into(),
+                        code: "AVLN1000".into(),
+                        path: Some(path.clone()),
+                        project: None,
+                        line: 0,
+                        column: 0,
+                    }],
+                    cx,
+                );
+                let messages: Vec<_> = b.diagnostics.iter().map(|d| d.message.as_str()).collect();
+                let expected =
+                    if error { vec!["Live diagnostic"] } else { vec!["Live diagnostic", "AVLN1000: Build error"] };
+                assert_eq!(
+                    messages, expected,
+                    "a live diagnostic with error={error} gave the build error the wrong precedence"
+                );
+            });
+        }
     }
 }
