@@ -458,10 +458,12 @@ After a build, the XAML compiler's problems (AVLN, MarkupCompile's MC) are marke
 their place points at, with their code, where the host finds nothing on that line, until the line is edited. An
 element's name finds its uses (Find Usages) and renames with them: where its XAML names it (a binding's `#Name`
 included) and where its code-behind uses the field made for it, Roslyn's references from a mention whose definition is
-Avalonia's generated field; Go to Declaration on that field in C# opens the XAML's name.
+Avalonia's generated field; Go to Declaration on that field in C# opens the XAML's name. Alt+Enter lists the fixes
+of the problems on the caret's line (the host's `fixes`, LSP code actions with their edits in them), among them a
+theme variant's missing key added as a copy of the other variant's definition.
 `tests/xaml.rs` holds the first of XamlTests' cases on a restored Avalonia app. Not yet: a library's type decompiled
 or a theme's XAML through Source Link, a restore seen while the file is open (the watcher passes over obj/), a rename
-undone whole across its files, theme variants, assets and colours, formatting, the refactorings and create from usage,
+undone whole across its files, assets and colours, formatting, the refactorings and create from usage,
 WPF's cases, the previewers, the inspector and the MCP `app_*` tools.
 - A XAML host: `Passenger.Xaml` behind a thin JSON-lines (or LSP) process, giving completion, diagnostics,
   navigation, formatting, Extract Resource and Style, and create from usage.

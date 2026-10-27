@@ -177,6 +177,12 @@ impl XamlHost {
         }))
     }
 
+    /// The fixes of the problems on `line`, as LSP's code actions with their edits in them. Blocks, so call it off the
+    /// UI thread.
+    pub fn fixes(&self, project: &Path, path: &Path, text: &str, line: usize) -> Result<Value, ServerFailed> {
+        self.ask("fixes", json!({ "project": project, "path": path, "text": text, "line": line }))
+    }
+
     /// Where the XAML of `class` (its full name) names the element `name`. Blocks, so call it off the UI thread.
     pub fn element(&self, project: &Path, class: &str, name: &str) -> Result<Option<Location>, ServerFailed> {
         let found = self.ask("element", json!({ "project": project, "class": class, "name": name }))?;

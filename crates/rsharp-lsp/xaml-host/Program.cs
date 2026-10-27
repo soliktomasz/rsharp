@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Passenger.Text;
 using Passenger.Xaml;
 using Passenger.Xaml.Features;
 using Passenger.Xaml.Projects;
@@ -61,6 +62,7 @@ public static class Program
                 "complete" => Complete(asked),
                 "symbol" => Symbol(asked),
                 "element" => Element(asked),
+                "fixes" => Fixes(asked),
                 "changed" => Changed(asked),
                 "closed" => Closed(asked),
                 var method => throw new InvalidOperationException($"the XAML host has no method {method}"),
@@ -183,6 +185,52 @@ public static class Program
         }
         return answer;
     }
+
+    /// <summary>The fixes of the problems on a line, as LSP's code actions with their edits made from each file's text as
+    /// it stands (an open file's as typed): Passenger's XamlFix, its other files changed or made with it.</summary>
+    private static JsonNode Fixes(JsonNode asked)
+    {
+        JsonArray actions = [];
+        if (Read(asked) is not { File: var file })
+        {
+            return actions;
+        }
+        int line = asked["line"]!.GetValue<int>();
+        foreach (XamlDiagnostic diagnostic in XamlDiagnostics.Of(file).Where(d => Point(file.Text, d.Range.Start)["line"]!.GetValue<int>() == line))
+        {
+            foreach (XamlFix fix in diagnostic.Fixes)
+            {
+                JsonArray changes = [];
+                foreach (XamlFileChange change in fix.Others.Prepend(new XamlFileChange(fix.Path, fix.Edits)))
+                {
+                    string uri = new Uri(change.Path).AbsoluteUri;
+                    string text = change.Made ?? TextOf(change.Path, file);
+                    if (change.Made is not null)
+                    {
+                        changes.Add(new JsonObject { ["kind"] = "create", ["uri"] = uri });
+                        changes.Add(Edits(uri, string.Empty, [new TextEdit(0, 0, change.Made)]));
+                    }
+                    if (change.Edits is not null)
+                    {
+                        changes.Add(Edits(uri, text, change.Edits(text)));
+                    }
+                }
+                actions.Add(new JsonObject
+                {
+                    ["title"] = fix.Title,
+                    ["kind"] = "quickfix",
+                    ["edit"] = new JsonObject { ["documentChanges"] = changes },
+                });
+            }
+        }
+        return actions;
+    }
+
+    private static JsonObject Edits(string uri, string text, IEnumerable<TextEdit> edits) => new()
+    {
+        ["textDocument"] = new JsonObject { ["uri"] = uri },
+        ["edits"] = new JsonArray([.. edits.Select(e => (JsonNode)new JsonObject { ["range"] = Range(text, e.Start, e.End), ["newText"] = e.Text })]),
+    };
 
     /// <summary>Where the XAML of a class names an element: what the field Avalonia's generator makes for it leads to.</summary>
     private static JsonNode? Element(JsonNode asked)
