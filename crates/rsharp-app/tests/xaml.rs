@@ -454,6 +454,34 @@ fn an_elements_name_renames_with_its_code_behinds_uses_and_the_code_goes_to_it(c
 const PALETTE: &str = "<ResourceDictionary xmlns=\"https://github.com/avaloniaui\"\n                    xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\">\n    <ResourceDictionary.ThemeDictionaries>\n        <ResourceDictionary x:Key=\"Dark\">\n            <SolidColorBrush x:Key=\"Accent\" Color=\"#3D7BF5\" />\n            <SolidColorBrush x:Key=\"Muted\" Color=\"#868A91\" />\n        </ResourceDictionary>\n        <ResourceDictionary x:Key=\"Light\">\n            <SolidColorBrush x:Key=\"Accent\" Color=\"#3574F0\" />\n            <SolidColorBrush x:Key=\"Muted\" Color=\"#6C707E\" />\n        </ResourceDictionary>\n    </ResourceDictionary.ThemeDictionaries>\n</ResourceDictionary>\n";
 const APP: &str = "<Application xmlns=\"https://github.com/avaloniaui\"\n             xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"\n             x:Class=\"Demo.App\">\n  <Application.Resources>\n    <ResourceDictionary>\n      <ResourceDictionary.MergedDictionaries>\n        <ResourceInclude Source=\"avares://Demo/Styles/Palette.axaml\" />\n      </ResourceDictionary.MergedDictionaries>\n    </ResourceDictionary>\n  </Application.Resources>\n</Application>\n";
 
+#[test]
+fn xaml_fixes_do_not_offer_to_change_or_create_csharp_from_disk_text() {
+    let Some(run) = restored(
+        "xaml-fixes-csharp",
+        &[
+            ("Demo.csproj", PROJECT),
+            ("MainWindow.axaml", WINDOW),
+            ("MainWindow.axaml.cs", CODE),
+            ("MainViewModel.cs", VIEW_MODEL),
+        ],
+    ) else {
+        return;
+    };
+    let host = rsharp_lsp::xaml::XamlHost::carried().unwrap();
+    let project = run.folder.join("Demo.csproj");
+    let path = run.folder.join("MainWindow.axaml");
+    for (binding, problem) in [
+        ("{Binding Missing}", "Cannot resolve property 'Missing' on MainViewModel"),
+        ("{Binding Greeting, Converter={StaticResource MissingConverter}}", "Resource 'MissingConverter' is not found"),
+    ] {
+        let text = WINDOW.replace("{Binding Greeting}", binding);
+        let problems = host.check(&project, &path, &text).unwrap().unwrap();
+        assert!(problems.iter().any(|p| p.message == problem), "the missing member or converter was not diagnosed");
+        let actions = rsharp_lsp::code_actions(&host.fixes(&project, &path, &text, 6).unwrap());
+        assert!(actions.is_empty(), "a fix could change unsaved C# using disk positions: {actions:?}");
+    }
+}
+
 #[gpui::test]
 fn a_key_one_theme_variant_lacks_is_warned_of_and_the_fix_adds_it_to_that_variant(cx: &mut TestAppContext) {
     let window_text = "<Window xmlns=\"https://github.com/avaloniaui\"\n        xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"\n        x:Class=\"Demo.MainWindow\">\n  <Button Content=\"Go\" Foreground=\"{DynamicResource Danger}\" />\n</Window>\n";

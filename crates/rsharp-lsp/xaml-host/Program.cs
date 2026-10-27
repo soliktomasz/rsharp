@@ -186,8 +186,7 @@ public static class Program
         return answer;
     }
 
-    /// <summary>The fixes of the problems on a line, as LSP's code actions with their edits made from each file's text as
-    /// it stands (an open file's as typed): Passenger's XamlFix, its other files changed or made with it.</summary>
+    /// <summary>The fixes of the problems on a line that edit an existing XAML file, as LSP code actions.</summary>
     private static JsonNode Fixes(JsonNode asked)
     {
         JsonArray actions = [];
@@ -200,21 +199,13 @@ public static class Program
         {
             foreach (XamlFix fix in diagnostic.Fixes)
             {
-                JsonArray changes = [];
-                foreach (XamlFileChange change in fix.Others.Prepend(new XamlFileChange(fix.Path, fix.Edits)))
+                // shortcut: hide fixes that edit C# or make other files, until create from usage reads current target buffers.
+                if (!file.Project.Files.ContainsKey(fix.Path) || fix.Others.Count != 0)
                 {
-                    string uri = new Uri(change.Path).AbsoluteUri;
-                    string text = change.Made ?? TextOf(change.Path, file);
-                    if (change.Made is not null)
-                    {
-                        changes.Add(new JsonObject { ["kind"] = "create", ["uri"] = uri });
-                        changes.Add(Edits(uri, string.Empty, [new TextEdit(0, 0, change.Made)]));
-                    }
-                    if (change.Edits is not null)
-                    {
-                        changes.Add(Edits(uri, text, change.Edits(text)));
-                    }
+                    continue;
                 }
+                string text = TextOf(fix.Path, file);
+                JsonArray changes = [Edits(new Uri(fix.Path).AbsoluteUri, text, fix.Edits(text))];
                 actions.Add(new JsonObject
                 {
                     ["title"] = fix.Title,
