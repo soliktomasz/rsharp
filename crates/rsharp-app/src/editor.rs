@@ -301,6 +301,8 @@ struct Layout {
     chevrons: Vec<(Bounds<Pixels>, FoldRegion)>,
     placeholders: Vec<(Bounds<Pixels>, FoldRegion)>,
     git_changes: Vec<(Bounds<Pixels>, DiffHunk)>,
+    /// The colour swatches, each with its colour's place in the buffer's list.
+    swatches: Vec<(Bounds<Pixels>, usize)>,
 }
 
 impl CodeEditor {
@@ -942,6 +944,15 @@ impl CodeEditor {
             self.toggle_fold(fold, cx);
             return;
         }
+        if let Some(index) = self
+            .layout
+            .as_ref()
+            .and_then(|l| l.swatches.iter().find(|(b, _)| b.contains(&event.position)).map(|(_, index)| *index))
+        {
+            self.selecting = false;
+            self.pick_colour(index, window, cx);
+            return;
+        }
         // Rider's gutter: a click in the breakpoint column sets or clears one on its line, a Shift+click a tracepoint;
         // pressed on the execution arrow, it starts the arrow's drag, which the release ends.
         if let Some(line) = self.gutter_line(event.position) {
@@ -1547,6 +1558,10 @@ struct Prepainted {
     /// The file's breakpoints and the line the debugger is stopped at.
     breakpoints: Vec<crate::buffer::BreakpointMark>,
     execution_line: Option<usize>,
+    /// Each colour the file writes or names, by its line, its colour and its place in the buffer's list; and the
+    /// gutter's column for their swatches, none in a file without colours.
+    swatches: Vec<(usize, Hsla, usize)>,
+    swatch_column: Pixels,
 }
 
 impl IntoElement for EditorElement {
@@ -1604,13 +1619,16 @@ impl Element for EditorElement {
                 .width;
             // The numbers, then the folding column against the code.
             let show_numbers = settings.show_line_numbers && editor.console.is_none();
+            // Rider's colour swatches, in a column of their own beside the numbers while the file has colours.
+            let swatch_column =
+                if editor.console.is_none() && !editor.buffer.read(cx).colours.is_empty() { px(16.) } else { px(0.) };
             let gutter_width = if editor.console.is_some() {
                 px(8.)
             } else if show_numbers {
                 char_width * digits as f32 + px(32.)
             } else {
                 px(24.)
-            };
+            } + swatch_column;
             let text_left = bounds.origin.x + gutter_width + px(TEXT_PAD) - px(16.);
             editor.columns = Some(((bounds.right() - text_left - px(TEXT_PAD)) / char_width).floor().max(8.) as usize);
             editor.reveal_carets();
@@ -1646,6 +1664,12 @@ impl Element for EditorElement {
             let buffer = buffer.read(cx);
             let breakpoints = buffer.breakpoints.clone();
             let execution_line = buffer.execution_line;
+            let swatches: Vec<(usize, Hsla, usize)> = buffer
+                .colours
+                .iter()
+                .enumerate()
+                .filter_map(|(i, c)| Some((c.line, swatch_colour(&c.colour)?, i)))
+                .collect();
             let inline_values = buffer.inline_values.clone();
             let exception = buffer.exception.clone();
             let syntax: Vec<Highlight> =
@@ -1754,6 +1778,8 @@ impl Element for EditorElement {
                 show_whitespace: settings.show_whitespace,
                 breakpoints,
                 execution_line,
+                swatches,
+                swatch_column,
             }
         })
     }
@@ -1788,6 +1814,7 @@ impl Element for EditorElement {
         let caret_rows: Vec<usize> = selections.iter().map(|s| editor.rows.row_of(&text, s.head)).collect();
         let top_of = |row: usize| state.text_origin.y + line_height * row as f32;
         let mut chevrons = Vec::new();
+        let mut swatches = Vec::new();
         let mut placeholders = Vec::new();
         let mut git_changes = Vec::new();
 
@@ -1918,11 +1945,26 @@ impl Element for EditorElement {
                 }
                 if let Some(Some(number)) = state.line_numbers.get(i) {
                     let _ = number.paint(
-                        point(bounds.origin.x + state.gutter_width - number.width - px(20.), top),
+                        point(bounds.origin.x + state.gutter_width - number.width - px(20.) - state.swatch_column, top),
                         line_height,
                         window,
                         cx,
                     );
+                }
+                if span.first
+                    && let Some(&(_, colour, index)) = state.swatches.iter().find(|(line, ..)| *line == span.line)
+                {
+                    let swatch = Bounds::new(
+                        point(bounds.origin.x + state.gutter_width - px(32.), top + (line_height - px(12.)) / 2.),
+                        size(px(12.), px(12.)),
+                    );
+                    window.paint_quad(
+                        fill(swatch, colour)
+                            .corner_radii(px(2.))
+                            .border_widths(px(1.))
+                            .border_color(theme::control_border()),
+                    );
+                    swatches.push((swatch, index));
                 }
                 if let Some(Some((fold, folded))) = state.fold_marks.get(i).filter(|_| span.first) {
                     let fold = fold.clone();
@@ -2002,6 +2044,7 @@ impl Element for EditorElement {
                 chevrons,
                 placeholders,
                 git_changes,
+                swatches,
             })
         });
     }
@@ -2210,4 +2253,11 @@ mod tests {
         assert_eq!(shaped.text_index(6), 4, "a place inside the hint is not the hint's own byte");
         assert_eq!(shaped.text_index(12), 5, "a place past the hint is not shifted back by its length");
     }
+}
+
+/// A colour as the XAML host gives it, `#AARRGGBB`, as the swatch paints it.
+fn swatch_colour(hex: &str) -> Option<Hsla> {
+    let value = u32::from_str_radix(hex.strip_prefix('#')?, 16).ok()?;
+    let part = |shift: u32| ((value >> shift) & 0xFF) as f32 / 255.;
+    Some(gpui::Rgba { r: part(16), g: part(8), b: part(0), a: part(24) }.into())
 }

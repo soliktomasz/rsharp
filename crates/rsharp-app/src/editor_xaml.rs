@@ -286,6 +286,95 @@ impl CodeEditor {
         }));
     }
 
+    /// The colour picker over a swatch, its colour written as XAML writes one (`#RRGGBB`, its alpha first when not
+    /// opaque), selected to type over.
+    // shortcut: a field taking a colour as written, not Rider's colour wheel; draw one once a field is too little.
+    pub(super) fn pick_colour(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(colour) = self.buffer.read(cx).colours.get(index).cloned() else { return };
+        if colour.write.is_none() {
+            cx.emit(Said("This colour is not written where it can be changed".into()));
+            return;
+        }
+        let hex = colour.colour.strip_prefix("#FF").map_or(colour.colour.clone(), |rgb| format!("#{rgb}"));
+        let field = cx.new(|cx| {
+            let mut field = crate::field::TextField::new("Colour", cx);
+            field.set_text(&hex, cx);
+            field.select_all(cx);
+            field
+        });
+        // After the click that opened it, which gives the editor the keys as it ends.
+        let focus = field.focus_handle(cx);
+        window.defer(cx, move |window, _| window.focus(&focus));
+        let line = self.text.line_to_byte(colour.line.min(self.text.len_lines().saturating_sub(1)));
+        self.show(Popup::Colour { field, index }, line, cx);
+    }
+
+    /// Enter in the picker: the colour typed written back where the swatch's colour is written, as it was written.
+    pub(super) fn finish_colour(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Popup::Colour { field, index }) = self.assist.popup.take() else { return };
+        window.focus(&self.focus);
+        let typed = field.read(cx).text().trim().to_string();
+        let buffer = self.buffer.read(cx);
+        let (Some(colour), Some((host, _))) = (buffer.colours.get(index).cloned(), buffer.colour_host()) else {
+            return;
+        };
+        let Some(write) = colour.write.clone() else { return };
+        let written = colour.written.clone();
+        let told = host.clone();
+        let made = cx.background_executor().spawn(async move { host.recolour(&written, &typed).map(|m| (m, typed)) });
+        self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
+            let made = made.await;
+            let _ = this.update(cx, |e, cx| match made {
+                Ok((Some(text), _)) if write.path == e.path => {
+                    let edits = language::edits(&e.text, &[rsharp_lsp::TextEdit { span: write.span, text }]);
+                    e.apply_server_edits(edits, cx);
+                }
+                Ok((Some(text), _)) => {
+                    let edit = rsharp_lsp::WorkspaceEdit {
+                        files: vec![(write.path.clone(), vec![rsharp_lsp::TextEdit { span: write.span, text }])],
+                        ..Default::default()
+                    };
+                    match language::apply_workspace_edit(&edit, None, cx) {
+                        // Told at once, not left to the folder's watcher: every open file naming it is checked again.
+                        Ok(()) => cx
+                            .background_executor()
+                            .spawn(async move {
+                                if let Err(failed) = told.changed(&[write.path]) {
+                                    log::info!("XAML colours: {failed}");
+                                }
+                            })
+                            .detach(),
+                        Err(why) => cx.emit(Said(why)),
+                    }
+                }
+                Ok((None, typed)) => cx.emit(Said(format!("'{typed}' is not a colour"))),
+                Err(failed) => cx.emit(Said(format!("The colour was not written: {}", failed.0))),
+            });
+        }));
+        cx.notify();
+    }
+
+    /// Test access: the colours the gutter shows, each by its line and `#AARRGGBB`.
+    pub fn colour_marks(&self, cx: &App) -> Vec<(usize, String)> {
+        self.buffer.read(cx).colours.iter().map(|c| (c.line, c.colour.clone())).collect()
+    }
+
+    /// Test access: where the swatch on `line` was drawn, if it was.
+    pub fn swatch_point(&self, line: usize, cx: &App) -> Option<gpui::Point<gpui::Pixels>> {
+        let colours = &self.buffer.read(cx).colours;
+        let (bounds, _) =
+            self.layout.as_ref()?.swatches.iter().find(|(_, i)| colours.get(*i).is_some_and(|c| c.line == line))?;
+        Some(bounds.center())
+    }
+
+    /// Test access: the colour typed in the picker while it is open.
+    pub fn picking_colour(&self, cx: &App) -> Option<String> {
+        match &self.assist.popup {
+            Some(Popup::Colour { field, .. }) => Some(field.read(cx).text().to_string()),
+            _ => None,
+        }
+    }
+
     /// Go to Declaration in a XAML file: a type's or member's C#, a resource's definition, a named element, a file.
     pub(super) fn xaml_declaration(&mut self, cx: &mut Context<Self>) {
         let Some((host, project)) = self.buffer.read(cx).xaml.clone() else { return };

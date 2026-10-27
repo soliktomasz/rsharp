@@ -470,12 +470,15 @@ their own (`xaml_dialog.rs`) and make the host's changes; Surround With offers X
 at the caret or those chosen, each chosen by its digit, Rider's `tag` typed in both tags. WPF's XAML is read the same
 way: WpfXamlTests' cases and XamlEditingTests' WPF ones run on Passenger's WPF gallery, which EnableWindowsTargeting
 restores and builds off Windows; Go to Declaration on MarkupCompile's field (`obj/…/File.g.cs`) follows its `#line` to
-the XAML's name. `tests/xaml.rs` holds XamlTests', XamlEditingTests' and WpfXamlTests' cases on restored apps, but the
-preview's and a library's decompiled type. Not yet: a library's type decompiled or a theme's XAML through Source Link, a
-restore seen while the file is open (the watcher passes over obj/), a rename undone whole across its files, a typed
-quote closed (RSharp's editor pairs none), colours, Settings' Code Style: XAML page, Refactor This's list, a change
-across files undone whole (Extract, create from usage), the previewers (WPF's off Windows says it previews only there),
-the inspector and the MCP `app_*` tools.
+the XAML's name. Colours show as gutter swatches, in a column of their own while a file has some (a XAML file's, a
+resource's by its Dark variant, and a C# file's while the window's XAML host runs), and a click opens a picker whose
+colour is written back where and as it was written (the host's `colours` and `recolour`). `tests/xaml.rs` holds
+XamlTests', XamlEditingTests' and WpfXamlTests' cases on restored apps, but the preview's and a library's decompiled
+type. Not yet: a library's type decompiled or a theme's XAML through Source Link, a restore seen while the file is open
+(the watcher passes over obj/), a rename undone whole across its files, a typed quote closed (RSharp's editor pairs
+none), a colour wheel (the picker takes a colour as written), Settings' Code Style: XAML page, Refactor This's list, a
+change across files undone whole (Extract, create from usage), the previewers (WPF's off Windows says it previews only
+there), the inspector and the MCP `app_*` tools.
 - A XAML host: `Passenger.Xaml` behind a thin JSON-lines (or LSP) process, giving completion, diagnostics,
   navigation, formatting, Extract Resource and Style, and create from usage.
 - The previewers: Avalonia.Designer.HostApp, and Passenger's WpfPreview.

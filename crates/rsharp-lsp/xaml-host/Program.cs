@@ -67,6 +67,8 @@ public static class Program
                 "format" => Format(asked),
                 "surround" => Surround(asked),
                 "extract" => Extract(asked),
+                "colours" => ColoursOf(asked),
+                "recolour" => Recolour(asked),
                 "changed" => Changed(asked),
                 "closed" => Closed(asked),
                 var method => throw new InvalidOperationException($"the XAML host has no method {method}"),
@@ -300,6 +302,61 @@ public static class Program
         ResourcePlace into = places[asked["place"]!.GetValue<int>()];
         IReadOnlyList<XamlFileChange> changes = XamlRefactorings.ExtractResource(file, value, name, into, everywhere);
         return new JsonObject { ["edit"] = WorkspaceEdit(changes, file), ["title"] = into.Title, ["uses"] = everywhere ? value.Uses.Count : 1 };
+    }
+
+    /// <summary>The colours a XAML file (its theme <c>variant</c>'s, a resource's) or a C# file writes or names: each one's
+    /// line, its colour, where a colour chosen for it is written (a file and a range in its text, none for one nothing
+    /// can change in place) and the use itself, which <c>recolour</c> is given back.</summary>
+    private static JsonNode ColoursOf(JsonNode asked)
+    {
+        string path = asked["path"]!.GetValue<string>();
+        string text = asked["text"]!.GetValue<string>();
+        IReadOnlyList<ColourUse> uses;
+        if (path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+        {
+            uses = Colours.InCSharp(Colours.Parse(text));
+        }
+        else if (Read(asked) is { File: var file })
+        {
+            uses = Colours.InXaml(file, asked["variant"]?.GetValue<string>());
+        }
+        else
+        {
+            return new JsonArray();
+        }
+        JsonArray found = [];
+        foreach (ColourUse use in uses)
+        {
+            string target = use.WritePath ?? path;
+            string written = target == path ? text : Texts.TryGetValue(target, out string? open) ? open : File.Exists(target) ? File.ReadAllText(target) : string.Empty;
+            JsonObject colour = new()
+            {
+                ["line"] = Point(text, use.Offset)["line"]!.GetValue<int>(),
+                ["colour"] = $"#{use.Colour.A:X2}{use.Colour.R:X2}{use.Colour.G:X2}{use.Colour.B:X2}",
+                ["use"] = new JsonObject { ["form"] = use.Form.ToString(), ["receiver"] = use.Receiver },
+            };
+            if (use.WriteRange is { } range && range.End <= written.Length)
+            {
+                colour["path"] = target;
+                colour["range"] = Range(written, range.Start, range.End);
+                colour["use"]!["written"] = written[range.Start..range.End];
+            }
+            found.Add(colour);
+        }
+        return found;
+    }
+
+    /// <summary>A colour written as the use it replaces was written (a name, <c>#RRGGBB</c>, a call's arguments, a hex
+    /// number).</summary>
+    private static JsonNode? Recolour(JsonNode asked)
+    {
+        JsonNode use = asked["use"]!;
+        if (KnownColours.Parse(asked["colour"]!.GetValue<string>()) is not { } colour)
+        {
+            return null;
+        }
+        ColourUse made = new(0, colour, null, null, Enum.Parse<ColourForm>(use["form"]!.GetValue<string>()), use["receiver"]!.GetValue<string>());
+        return Colours.Written(made, colour, use["written"]?.GetValue<string>() ?? string.Empty);
     }
 
     private static JsonArray Titles(IReadOnlyList<ResourcePlace> places) => [.. places.Select(p => (JsonNode)p.Title)];

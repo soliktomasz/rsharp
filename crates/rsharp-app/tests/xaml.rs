@@ -1815,3 +1815,82 @@ fn wpf_a_binding_path_and_a_converter_nothing_has_offer_to_create_them(cx: &mut 
         "using CommunityToolkit.Mvvm.ComponentModel;\nusing CommunityToolkit.Mvvm.Input;\n\nnamespace Gallery.ViewModels;\n\npublic partial class ShopViewModel : ObservableObject\n{\n    [ObservableProperty]\n    private string? _name;\n\n    [ObservableProperty]\n    private string? _title;\n\n    [RelayCommand]\n    private void Buy()\n    {\n    }\n}\n"
     );
 }
+
+#[gpui::test]
+fn colours_show_as_gutter_swatches_and_one_chosen_in_the_picker_is_written_back_as_it_was_written(
+    cx: &mut TestAppContext,
+) {
+    let window_text = "<Window xmlns=\"https://github.com/avaloniaui\"\n        xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"\n        x:Class=\"Demo.MainWindow\"\n        Title=\"Gallery\">\n    <StackPanel Margin=\"12\" Spacing=\"8\">\n        <TextBlock Name=\"Title\" Text=\"Hello\" />\n        <Button Name=\"Go\" Content=\"Go\" Background=\"{StaticResource Accent}\" />\n    </StackPanel>\n</Window>\n";
+    let code = "namespace Demo;\n\npublic partial class MainWindow : Avalonia.Controls.Window\n{\n    public MainWindow()\n    {\n        InitializeComponent();\n        Go.Content = \"Start\";\n    }\n}\n";
+    let Some(run) = restored(
+        "xaml-colours",
+        &[
+            ("Demo.csproj", PROJECT),
+            ("App.axaml", APP),
+            ("App.axaml.cs", "namespace Demo;\n\npublic partial class App : Avalonia.Application { }\n"),
+            ("Styles/Palette.axaml", PALETTE),
+            ("MainWindow.axaml", window_text),
+            ("MainWindow.axaml.cs", code),
+        ],
+    ) else {
+        return;
+    };
+    let (main, cx) = run.window(cx);
+    cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
+    let (window, palette, behind) = (
+        run.folder.join("MainWindow.axaml"),
+        run.folder.join("Styles/Palette.axaml"),
+        run.folder.join("MainWindow.axaml.cs"),
+    );
+    main.update_in(cx, |m, window_, cx| {
+        m.open_workspace(&run.folder, window_, cx);
+        m.open_file(&window, None, window_, cx);
+    });
+    let editor = main.read_with(cx, |m, _| m.editor().unwrap());
+    let colour_on = |editor: &Entity<rsharp_app::editor::CodeEditor>, line: usize, cx: &mut VisualTestContext| {
+        editor.read_with(cx, |e, cx| e.colour_marks(cx).into_iter().find(|(l, _)| *l == line).map(|(_, c)| c))
+    };
+
+    // The button's background names the palette's Accent: its swatch is the Dark theme's, which RSharp shows.
+    let button = 6;
+    wait(cx, "the swatch of the brush the button's background names", |cx| colour_on(&editor, button, cx).is_some());
+    assert_eq!(colour_on(&editor, button, cx).as_deref(), Some("#FF3D7BF5"));
+    let swatch =
+        editor.read_with(cx, |e, cx| e.swatch_point(button, cx)).expect("no swatch was drawn on the button's line");
+    cx.simulate_click(swatch, gpui::Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(editor.read_with(cx, |e, cx| e.picking_colour(cx)).as_deref(), Some("#3D7BF5"));
+    cx.simulate_input("#E2A33F");
+    assert_eq!(editor.read_with(cx, |e, cx| e.picking_colour(cx)).as_deref(), Some("#E2A33F"));
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert_eq!(editor.read_with(cx, |e, cx| e.picking_colour(cx)), None, "the picker stayed open");
+    // Written where the brush is defined, in the palette's Dark dictionary; the Light one keeps its own.
+    wait(cx, "the colour written into the palette", |_| {
+        std::fs::read_to_string(&palette).unwrap_or_default().contains("Color=\"#E2A33F\"")
+    });
+    let written = std::fs::read_to_string(&palette).unwrap();
+    assert!(written.contains("<SolidColorBrush x:Key=\"Accent\" Color=\"#E2A33F\" />"), "{written}");
+    assert!(written.contains("<SolidColorBrush x:Key=\"Accent\" Color=\"#3574F0\" />"), "{written}");
+    wait(cx, "the swatch following the palette", |cx| colour_on(&editor, button, cx).as_deref() == Some("#FFE2A33F"));
+
+    // C#'s colours too, written back in the form they were written.
+    main.update_in(cx, |m, window_, cx| m.open_file(&behind, Some((7, 29)), window_, cx));
+    let code_editor = main.read_with(cx, |m, _| m.editor().unwrap());
+    cx.simulate_keystrokes("enter");
+    cx.simulate_input(
+        "Go.Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromRgb(0x33, 0x66, 0x99));",
+    );
+    let line = code_editor.read_with(cx, |e, _| e.caret().line);
+    wait(cx, "the swatch of the colour FromRgb makes", |cx| colour_on(&code_editor, line, cx).is_some());
+    assert_eq!(colour_on(&code_editor, line, cx).as_deref(), Some("#FF336699"));
+    let swatch = code_editor.read_with(cx, |e, cx| e.swatch_point(line, cx)).expect("no swatch on the call's line");
+    cx.simulate_click(swatch, gpui::Modifiers::default());
+    cx.run_until_parked();
+    cx.simulate_input("#AA0000");
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    wait(cx, "the call written back as a call", |cx| {
+        code_editor.read_with(cx, |e, _| e.text().to_string()).contains("Avalonia.Media.Color.FromRgb(170, 0, 0));")
+    });
+}

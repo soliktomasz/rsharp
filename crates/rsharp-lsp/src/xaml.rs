@@ -54,6 +54,16 @@ pub struct XamlNamed {
     pub files: Vec<PathBuf>,
 }
 
+/// A colour a XAML or C# file writes or names: its line, the colour as `#AARRGGBB`, where a colour chosen for it is
+/// written (none for one nothing can change in place), and the use, which [`XamlHost::recolour`] is given back.
+#[derive(Clone, Debug, PartialEq)]
+pub struct XamlColour {
+    pub line: usize,
+    pub colour: String,
+    pub write: Option<Location>,
+    pub written: Value,
+}
+
 /// The folder's XAML host, started on first use and again after it fails.
 #[derive(Clone)]
 pub struct XamlHost {
@@ -241,6 +251,39 @@ impl XamlHost {
             asked.extend(more);
         }
         self.ask("extract", asked)
+    }
+
+    /// The colours `text` writes or names: a XAML file's against its project, its theme `variant`'s where a resource
+    /// has several; a C# file's from its syntax. Blocks, so call it off the UI thread.
+    pub fn colours(
+        &self,
+        project: &Path,
+        path: &Path,
+        text: &str,
+        variant: &str,
+    ) -> Result<Vec<XamlColour>, ServerFailed> {
+        let found =
+            self.ask("colours", json!({ "project": project, "path": path, "text": text, "variant": variant }))?;
+        Ok(found
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|c| XamlColour {
+                line: c["line"].as_u64().unwrap_or(0) as usize,
+                colour: c["colour"].as_str().unwrap_or_default().to_string(),
+                write: c["path"]
+                    .as_str()
+                    .map(|path| Location { path: PathBuf::from(path), span: Span::from(&c["range"]) }),
+                written: c["use"].clone(),
+            })
+            .collect())
+    }
+
+    /// `colour` (`#RRGGBB`, a name) written as the use it replaces was written; None for what is no colour.
+    /// Blocks, so call it off the UI thread.
+    pub fn recolour(&self, written: &Value, colour: &str) -> Result<Option<String>, ServerFailed> {
+        let made = self.ask("recolour", json!({ "use": written, "colour": colour }))?;
+        Ok(made.as_str().map(str::to_string))
     }
 
     /// Where the XAML of `class` (its full name) names the element `name`. Blocks, so call it off the UI thread.
