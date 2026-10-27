@@ -15,13 +15,22 @@ const LONGEST: Duration = Duration::from_secs(1);
 /// Folders whose changes say nothing a person sees: build output, dependencies, and Git's own store.
 const PASSED: &[&str] = &["bin", "obj", "node_modules", ".git", ".vs", ".idea"];
 
+/// What a restore writes under obj/, handed over apart from build output: [`is_restore`] tells it.
+const RESTORED: &str = "project.assets.json";
+
+/// Whether a changed path is a restore's record of a project's packages, which only the XAML code help reads.
+pub fn is_restore(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name == RESTORED)
+}
+
 /// Watches until dropped.
 pub struct Watcher {
     _watcher: notify::RecommendedWatcher,
 }
 
 /// Whether a change under `folder` is one to hand over: not build output or Git's objects, but Git's HEAD, index and
-/// refs, which say a commit or checkout was made elsewhere.
+/// refs, which say a commit or checkout was made elsewhere, and a restore's `project.assets.json` under obj/ (a
+/// project's own or `artifacts/obj/<Project>/`), which says the packages a project's XAML reads changed.
 fn counts(folder: &Path, path: &Path) -> bool {
     let Ok(inside) = path.strip_prefix(folder) else { return false };
     let parts: Vec<String> = inside
@@ -36,6 +45,7 @@ fn counts(folder: &Path, path: &Path) -> bool {
         Some(at) if parts[at] == ".git" => {
             matches!(parts.get(at + 1).map(String::as_str), Some("HEAD" | "index" | "refs"))
         }
+        Some(at) if parts[at] == "obj" => parts.last().is_some_and(|name| name == RESTORED),
         Some(_) => false,
     }
 }

@@ -1,9 +1,26 @@
 //! The XAML Preview (Passenger's XamlPreview and AvaloniaPreviewHost): an Avalonia file drawn by the project's own
 //! Avalonia.Designer.HostApp on its last build, the file's text sent as it is typed, started again after each build.
-//! The XAML host speaks Avalonia's previewer protocol; RSharp starts the HostApp it names, under the Lifeline.
+//! The XAML host speaks Avalonia's previewer protocol; RSharp starts the HostApp it names, under the Lifeline. The
+//! file's elements come with their boxes (XamlPreview's PreviewElements): a click in the frame selects the start tag of
+//! the element under it, and the element at the caret is outlined over the frame.
 
 use super::*;
 use rsharp_lsp::xaml::{PreviewEvent, PreviewFrame};
+use std::cell::Cell;
+use std::ops::Range;
+use std::rc::Rc;
+
+/// How wide the outline around the element at the caret is, outside its box.
+const OUTLINE_WIDTH: f32 = 2.;
+
+/// An element of the previewed file: its start tag and its whole markup as bytes of the text, and its box in the frame
+/// at 96 DPI (x, y, width, height).
+#[derive(Clone, Debug)]
+struct Drawn {
+    tag: Range<usize>,
+    whole: Range<usize>,
+    bounds: [f32; 4],
+}
 
 /// The file being previewed and what the previewer last said of it.
 pub(super) struct Preview {
@@ -17,6 +34,11 @@ pub(super) struct Preview {
     _events: Task<()>,
     updating: Option<Task<()>>,
     _edits: Option<gpui::Subscription>,
+    /// Parents before children, as the frame last drew them; none while typing has yet to reach the previewer.
+    elements: Vec<Drawn>,
+    typing: bool,
+    /// Where the frame was last painted on the window and how much it was made smaller to fit, for a click.
+    placed: Rc<Cell<Option<(gpui::Point<Pixels>, f32)>>>,
 }
 
 impl MainWindow {
@@ -76,6 +98,11 @@ impl MainWindow {
         });
         let edits = cx.subscribe(&buffer, |w, buffer, event: &crate::buffer::BufferEvent, cx| {
             if matches!(event, crate::buffer::BufferEvent::Edited { .. }) {
+                // The elements name places in the text before this edit, until the previewer draws this one.
+                if let Some(preview) = &mut w.preview {
+                    preview.elements.clear();
+                    preview.typing = true;
+                }
                 let text = buffer.read(cx).document.text().to_string();
                 w.update_preview(text, cx);
             }
@@ -90,6 +117,9 @@ impl MainWindow {
             _events: events,
             updating: None,
             _edits: Some(edits),
+            elements: Vec::new(),
+            typing: false,
+            placed: Rc::default(),
         });
         cx.notify();
     }
@@ -113,6 +143,13 @@ impl MainWindow {
                     Ok(child) => preview._host_app = Some(child),
                     Err(error) => preview.status = format!("The previewer could not start: {error}"),
                 }
+                // Edits before Started had no session to send to; the shared buffer holds their latest text.
+                if preview.typing
+                    && let Some(buffer) = crate::buffer::find(&preview.path, cx)
+                {
+                    let text = buffer.read(cx).document.text().to_string();
+                    self.update_preview(text, cx);
+                }
             }
             Ok(PreviewEvent::Frame(frame)) => {
                 let image = image::RgbaImage::from_raw(frame.width, frame.height, frame.bgra.clone());
@@ -132,6 +169,17 @@ impl MainWindow {
                     .into();
             }
             Ok(PreviewEvent::Empty(false)) => {}
+            Ok(PreviewEvent::Elements(_)) if preview.typing => {}
+            Ok(PreviewEvent::Elements(elements)) => {
+                let Some(buffer) = crate::buffer::find(&preview.path, cx) else { return };
+                let document = &buffer.read(cx).document;
+                let at = |p: rsharp_lsp::Point| document.offset_of_utf16(p.line, p.character);
+                let range = |s: rsharp_lsp::Span| at(s.start)..at(s.end);
+                preview.elements = elements
+                    .into_iter()
+                    .map(|e| Drawn { tag: range(e.tag), whole: range(e.whole), bounds: e.bounds })
+                    .collect();
+            }
             Err(Ok(Some(why))) => preview.status = why,
             Err(Ok(None)) => {}
             Err(Err(failed)) => preview.status = format!("The previewer stopped: {failed}"),
@@ -143,8 +191,10 @@ impl MainWindow {
     fn update_preview(&mut self, text: String, cx: &mut Context<Self>) {
         let (Some(preview), Some(host)) = (&mut self.preview, self.xaml.clone()) else { return };
         let Some(session) = preview.session.clone() else { return };
-        preview.updating = Some(cx.spawn(async move |_, cx| {
+        preview.updating = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(std::time::Duration::from_millis(300)).await;
+            // From here the elements that come are of this text's frame.
+            let _ = this.update(cx, |w, _| w.preview.iter_mut().for_each(|p| p.typing = false));
             let sent = cx.background_executor().spawn(async move { host.preview_update(&session, &text) }).await;
             if let Err(failed) = sent {
                 log::info!("XAML Preview: {failed}");
@@ -167,7 +217,7 @@ impl MainWindow {
         self.preview.as_ref().map(|p| p.path.file_name().unwrap_or_default().to_string_lossy().into_owned())
     }
 
-    pub(super) fn preview_content(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn preview_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(preview) = &self.preview else {
             return empty_text("XAML Preview draws the Avalonia file open in the editor.")
                 .track_focus(&self.preview_focus)
@@ -181,12 +231,45 @@ impl MainWindow {
             crate::dock::Place::LeftTop | crate::dock::Place::LeftBottom => Some(self.dock.left_width),
             _ => None,
         };
+        let outlined = self.outlined(cx).map(|e| e.bounds);
         let frame = preview.frame.as_ref().map(|(image, frame)| {
             // At the size it has at 96 DPI, as Avalonia's designer lays it out.
             let (width, height) =
                 (frame.width as f32 * 96. / frame.dpi as f32, frame.height as f32 * 96. / frame.dpi as f32);
             let fit = room.map_or(1., |room| ((room - 32.) / width).clamp(0.1, 1.));
-            gpui::img(gpui::ImageSource::Render(image.clone())).w(px(width * fit)).h(px(height * fit))
+            let placed = preview.placed.clone();
+            div()
+                .relative()
+                .w(px(width * fit))
+                .h(px(height * fit))
+                .debug_selector(|| "xaml preview frame".into())
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|w, e: &MouseDownEvent, window, cx| w.choose_in_preview(e.position, window, cx)),
+                )
+                .child(gpui::img(gpui::ImageSource::Render(image.clone())).size_full())
+                .child(
+                    gpui::canvas(
+                        |_, _, _| (),
+                        move |bounds, _, window, _| {
+                            placed.set(Some((bounds.origin, fit)));
+                            let Some([x, y, w, h]) = outlined else { return };
+                            let (grow, at) = (OUTLINE_WIDTH, |v: f32| px(v * fit));
+                            let outline = gpui::Bounds::new(
+                                bounds.origin + gpui::point(at(x) - px(grow), at(y) - px(grow)),
+                                gpui::size(at(w) + px(2. * grow), at(h) + px(2. * grow)),
+                            );
+                            window.paint_quad(
+                                gpui::outline(outline, theme::accent(), gpui::BorderStyle::Solid)
+                                    .border_widths(px(grow)),
+                            );
+                        },
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+                )
         });
         div()
             .id("xaml-preview")
@@ -200,6 +283,48 @@ impl MainWindow {
             .children(error)
             .children(frame.map(|f| div().p(px(8.)).child(f)))
             .into_any_element()
+    }
+
+    /// The editor showing the previewed file, when it is the one the keys go to.
+    fn previewed_editor(&self, cx: &App) -> Option<Entity<CodeEditor>> {
+        let path = &self.preview.as_ref()?.path;
+        self.active_editor().filter(|e| &e.read(cx).path == path).cloned()
+    }
+
+    /// The innermost drawn element whose markup holds the caret, which the frame outlines.
+    fn outlined(&self, cx: &App) -> Option<&Drawn> {
+        let caret = self.previewed_editor(cx)?.read(cx).primary().head;
+        let elements = &self.preview.as_ref()?.elements;
+        elements.iter().filter(|e| e.whole.contains(&caret)).min_by_key(|e| e.whole.len())
+    }
+
+    /// A click in the frame: the deepest element drawn there has its start tag selected, the caret at its start.
+    fn choose_in_preview(&mut self, at: gpui::Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(preview) = &self.preview else { return };
+        let Some((origin, fit)) = preview.placed.get() else { return };
+        let (x, y) = (f32::from(at.x - origin.x) / fit, f32::from(at.y - origin.y) / fit);
+        let inside = |e: &&Drawn| {
+            let [left, top, w, h] = e.bounds;
+            x >= left && x < left + w && y >= top && y < top + h
+        };
+        let Some(tag) = preview.elements.iter().rfind(inside).map(|e| e.tag.clone()) else { return };
+        let Some(editor) = self.previewed_editor(cx) else { return };
+        editor.update(cx, |e, cx| e.select(rsharp_text::Selection { anchor: tag.end, head: tag.start }, cx));
+        window.focus(&editor.focus_handle(cx));
+        cx.notify();
+    }
+
+    /// Test access: the box the outline is drawn around, in the frame's units, and each drawn element's start tag and
+    /// box.
+    pub fn preview_outlined(&self, cx: &App) -> Option<[f32; 4]> {
+        self.outlined(cx).map(|e| e.bounds)
+    }
+
+    pub fn preview_elements(&self, cx: &App) -> Vec<(String, [f32; 4])> {
+        let Some(preview) = &self.preview else { return Vec::new() };
+        let Some(buffer) = crate::buffer::find(&preview.path, cx) else { return Vec::new() };
+        let text = buffer.read(cx).document.text();
+        preview.elements.iter().map(|e| (text.byte_slice(e.tag.clone()).to_string(), e.bounds)).collect()
     }
 
     /// Test access: the frame the preview shows, by its size in pixels, and the BGRA of a pixel in it.
@@ -220,5 +345,78 @@ impl MainWindow {
 
     pub fn preview_status(&self) -> Option<String> {
         self.preview.as_ref().map(|p| p.status.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[gpui::test]
+    fn edits_before_the_preview_starts_are_sent_once_its_session_arrives(cx: &mut gpui::TestAppContext) {
+        let Some(host) = rsharp_lsp::xaml::XamlHost::carried() else {
+            eprintln!("skipped: the XAML host was not built");
+            return;
+        };
+        let root = std::env::temp_dir().join(format!("rsharp-preview-startup-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = rsharp_core::paths::canonical(&root);
+        let path = root.join("MainWindow.axaml");
+        std::fs::write(&path, "<Button />").unwrap();
+        cx.update(|cx| {
+            crate::init(root.join("state"), cx);
+            cx.global_mut::<crate::state::Ide>().servers = false;
+            cx.global_mut::<crate::templates::Templates>().enabled = false;
+        });
+        let (main, cx) = cx.add_window_view(MainWindow::new);
+        let buffer = main.update_in(cx, |main, window, cx| {
+            main.open_file(&path, None, window, cx);
+            main.xaml = Some(host);
+            main.start_preview(path.clone(), cx);
+            main.editor().unwrap().read(cx).buffer.clone()
+        });
+        buffer.update(cx, |b, cx| b.replace_all("<TextBlock />".into(), cx));
+        cx.run_until_parked();
+        main.update(cx, |main, cx| {
+            assert!(main.preview.as_ref().unwrap().session.is_none(), "the test edited after startup");
+            // Deliver the protocol's Started event after the edit. No designer is needed for this startup boundary.
+            main.preview_event(
+                Ok(PreviewEvent::Started {
+                    session: "startup-test".into(),
+                    arguments: vec!["--version".into()],
+                    folder: root.clone(),
+                }),
+                cx,
+            );
+            assert!(
+                main.preview.as_ref().unwrap().updating.is_some(),
+                "the edit made before startup was never queued for the new session"
+            );
+        });
+        cx.executor().advance_clock(std::time::Duration::from_millis(300));
+        cx.run_until_parked();
+        main.update(cx, |main, cx| {
+            main.preview_event(
+                Ok(PreviewEvent::Elements(vec![rsharp_lsp::xaml::PreviewElement {
+                    tag: rsharp_lsp::Span {
+                        start: rsharp_lsp::Point { line: 0, character: 0 },
+                        end: rsharp_lsp::Point { line: 0, character: 13 },
+                    },
+                    whole: rsharp_lsp::Span {
+                        start: rsharp_lsp::Point { line: 0, character: 0 },
+                        end: rsharp_lsp::Point { line: 0, character: 13 },
+                    },
+                    bounds: [0., 0., 100., 20.],
+                }])),
+                cx,
+            );
+            assert_eq!(
+                main.preview_outlined(cx),
+                Some([0., 0., 100., 20.]),
+                "startup edits left element selection disabled"
+            );
+            main.stop_preview(cx);
+        });
+        let _ = std::fs::remove_dir_all(root);
     }
 }

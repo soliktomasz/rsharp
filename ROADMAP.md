@@ -476,13 +476,17 @@ colour is written back where and as it was written (the host's `colours` and `re
 Avalonia file with the project's own Avalonia.Designer.HostApp on its last build (the host speaks
 Avalonia.Remote.Protocol, RSharp starts the HostApp under the Lifeline), follows the text as typed, keeps the last frame
 with the reason when the XAML does not load, draws styles as their Design.PreviewWith and starts again after a build.
+On Avalonia 12 the HostApp runs under RSharp's own entry (`xaml-host/preview/`), which turns on the loader's
+CreateSourceInfo and sends each element's place and box, so a click in the frame selects the element's start tag and
+the element at the caret is outlined: ahead of Passenger, whose previewer gives them for WPF alone. A quote typed in
+XAML comes with its closer, steps over it and goes with it on Backspace; a restore's `project.assets.json` under obj/
+reaches the XAML host while a file is open; Settings' Code Style: XAML is what Reformat Code lays out by under the
+.editorconfig, whose values keep their letter case (XAML Styler's rule groups).
 `tests/xaml.rs` holds XamlTests', XamlEditingTests' and WpfXamlTests' cases on restored apps, the preview's included.
-Not yet: a library's type decompiled or a theme's XAML through Source Link, a restore seen
-while the file is open (the watcher passes over obj/), a rename undone whole across its files, a typed quote closed
-(RSharp's editor pairs none), a colour wheel (the picker takes a colour as written), Settings' Code Style: XAML page,
-Refactor This's list, a change across files undone whole (Extract, create from usage), WPF's previewer (Passenger's
-WpfPreview, Windows only), a click in the preview choosing its element and the caret outlining it, the inspector and the
-MCP `app_*` tools.
+Not yet: a library's type decompiled or a theme's XAML through Source Link, a rename undone whole across its files, a
+colour wheel (the picker takes a colour as written), Refactor This's list, a change across files undone whole
+(Extract, create from usage), WPF's previewer (Passenger's WpfPreview, Windows only), brackets paired in every language
+as Passenger's editor pairs them, the inspector and the MCP `app_*` tools.
 - A XAML host: `Passenger.Xaml` behind a thin JSON-lines (or LSP) process, giving completion, diagnostics,
   navigation, formatting, Extract Resource and Style, and create from usage.
 - The previewers: Avalonia.Designer.HostApp, and Passenger's WpfPreview.

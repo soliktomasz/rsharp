@@ -3,7 +3,7 @@
 //! very server version Passenger pins, whose folder this finds in the NuGet cache. Where they went is compiled in
 //! (RSHARP_SIDECARS, RSHARP_ROSLYN_SERVER). A machine without dotnet or the submodule's checkout builds without them, said
 //! as a warning, and runs the person's own `roslyn-language-server` tool instead. RSharp's own XAML host (`xaml-host/`,
-//! Passenger.Xaml behind JSON lines) is published beside them into `sidecars/xaml`.
+//! Passenger.Xaml behind JSON lines) is published beside them into `sidecars/xaml`, its previewer's entry into `sidecars/xaml/preview`.
 
 use std::path::{Path, PathBuf};
 
@@ -17,7 +17,15 @@ fn main() {
     }
     println!("cargo:rerun-if-changed={}", passenger.join("Passenger.Xaml").display());
     println!("cargo:rerun-if-changed={}", passenger.join("Passenger.Text").display());
-    for input in ["Program.cs", "RSharp.XamlHost.csproj", "packages.lock.json"] {
+    for input in [
+        "Program.cs",
+        "Preview.cs",
+        "RSharp.XamlHost.csproj",
+        "packages.lock.json",
+        "preview/Program.cs",
+        "preview/RSharp.Preview.csproj",
+        "preview/packages.lock.json",
+    ] {
         println!("cargo:rerun-if-changed={}", manifest.join("xaml-host").join(input).display());
     }
     for input in ["Directory.Packages.props", "Directory.Build.props", "Directory.Build.targets", "global.json"] {
@@ -61,6 +69,11 @@ fn main() {
     run(
         &["publish", "-c", "Release", "-o", xaml_out.to_str().unwrap()],
         &manifest.join("xaml-host/RSharp.XamlHost.csproj"),
+    );
+    // The previewer's entry, which the host names to the HostApp's dotnet (Preview.cs's Entry).
+    run(
+        &["publish", "-c", "Release", "-o", xaml_out.join("preview").to_str().unwrap()],
+        &manifest.join("xaml-host/preview/RSharp.Preview.csproj"),
     );
     let server = run(&["msbuild", "-t:FindRoslynServer", "-getProperty:RoslynServerFolder"], &extension);
     let server = server.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or_default().to_string();

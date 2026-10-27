@@ -780,10 +780,15 @@ impl MainWindow {
     /// What another program changed in the folder: the tree reads those places again, an open file its text (one with
     /// unsaved edits kept as it is), a file not open is kept in Local History as an External change, the solution is
     /// read again when it changed, and the projects whose inputs changed are evaluated again.
-    fn folder_changed(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+    fn folder_changed(&mut self, mut paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        self.xaml_files_changed(&paths, cx);
+        // A restore's record is the XAML code help's alone: never the tree's, Local History's or Git's.
+        paths.retain(|path| !rsharp_core::watcher::is_restore(path));
+        if paths.is_empty() {
+            return;
+        }
         self.refresh_git(cx);
         self.package_sources_changed(&paths, cx);
-        self.xaml_files_changed(&paths, cx);
         let solution = self.tree.as_ref().map(|t| t.solution().path.clone());
         let mut closed = Vec::new();
         for path in &paths {

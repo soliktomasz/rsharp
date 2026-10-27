@@ -132,3 +132,74 @@ fn the_word_at_the_caret_finds_whole_words_and_a_part_of_one_finds_every_copy() 
     let part = select_all_occurrences(&text, &[Selection { anchor: 0, head: 3 }]);
     assert_eq!(part.len(), 3, "a selection of part of a word did not find every copy");
 }
+
+/// What a XAML file shows after typing, a quote at a time as the editor types one there, the caret as `|`.
+fn typed_in_markup(start: &str, keys: &str) -> String {
+    let at = start.find('|').unwrap();
+    let mut document = Document::new(&start.replace('|', ""));
+    document.set_selections(vec![Selection::caret(at)]);
+    for c in keys.chars() {
+        let plan = match c {
+            '"' | '\'' => type_quote(document.text(), document.selections(), c),
+            '\u{8}' => backspace_quotes(document.text(), document.selections()),
+            _ => EditPlan { kind: EditKind::Typing, ..insert(document.text(), document.selections(), &c.to_string()) },
+        };
+        document.apply(plan);
+    }
+    let mut text = document.text().to_string();
+    text.insert(document.selections()[0].head, '|');
+    text
+}
+
+#[test]
+fn a_quote_typed_after_an_attributes_equals_comes_with_its_closer_and_the_closer_typed_steps_over_it() {
+    assert_eq!(
+        typed_in_markup("<Button Width=|", "\""),
+        "<Button Width=\"|\"",
+        "the value's quote came without its closer"
+    );
+    assert_eq!(
+        typed_in_markup("<Button Width=|", "\"40\" "),
+        "<Button Width=\"40\" |",
+        "the closing quote typed went in beside the one there instead of stepping over it"
+    );
+    assert_eq!(
+        typed_in_markup("<Button Width=|", "'x'"),
+        "<Button Width='x'|",
+        "a single quote did not pair as a double does"
+    );
+    assert_eq!(typed_in_markup("<Button Width=|", "\"\u{8}"), "<Button Width=|", "Backspace left half of the pair");
+    assert_eq!(
+        typed_in_markup("<TextBlock Text=\"don|\" />", "'"),
+        "<TextBlock Text=\"don'|\" />",
+        "an apostrophe after a word came with a closer"
+    );
+}
+
+#[test]
+fn stepping_over_a_quote_keeps_the_file_saved_and_preserves_redo() {
+    let mut document = Document::new("<Button Width=\"40\" />");
+    document.set_selections(vec![Selection::caret(18)]);
+    typed(&mut document, " ");
+    document.undo();
+    document.mark_saved();
+    document.set_selections(vec![Selection::caret(17)]);
+    let changes = document.apply(type_quote(document.text(), document.selections(), '"'));
+    assert!(changes.is_empty(), "stepping over a quote published a text change");
+    assert!(!document.is_modified(), "stepping over a quote marked the saved file modified");
+    assert_eq!(document.selections(), &[Selection::caret(18)]);
+    assert!(document.redo().is_some(), "stepping over a quote discarded the undone edit");
+    assert_eq!(document.text().to_string(), "<Button Width=\"40\"  />");
+}
+
+#[test]
+fn quotes_at_several_carets_only_edit_where_a_quote_is_inserted() {
+    let mut document = Document::new("=\n\"\n=");
+    document.set_selections(vec![Selection::caret(1), Selection::caret(2), Selection::caret(5)]);
+    let changes = document.apply(type_quote(document.text(), document.selections(), '"'));
+    assert_eq!(changes.len(), 2, "the caret stepping over a quote published an extra edit");
+    assert_eq!(document.text().to_string(), "=\"\"\n\"\n=\"\"");
+    assert_eq!(document.selections(), &[Selection::caret(2), Selection::caret(5), Selection::caret(8)]);
+    document.undo();
+    assert_eq!(document.text().to_string(), "=\n\"\n=", "Undo did not restore the mixed quote edit");
+}

@@ -30,6 +30,104 @@ pub struct AppSettings {
     /// Debug's restart after a save's rude edit. Nothing asks, the Run console taking no input until the terminal
     /// (Phase 6).
     pub hot_reload_restart_on_rude_edit: bool,
+    /// Editor | Code Style | XAML: how Reformat Code lays out XAML, under each file's .editorconfig.
+    pub xaml_format: XamlFormat,
+}
+
+/// Rider's XAML code style (Passenger's XamlFormatSettings, by its names, which the XAML host reads): its XML formatter's
+/// options at Rider's defaults, and XAML Styler's attribute order and empty-element style, off as Rider has them.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(default, rename_all = "camelCase")]
+pub struct XamlFormat {
+    pub attribute_style: AttributeStyle,
+    pub attribute_indent: AttributeIndent,
+    pub spaces_around_equals: bool,
+    pub space_after_last_attribute: bool,
+    pub space_before_self_closing: bool,
+    pub keep_line_breaks: bool,
+    pub max_blank_lines: u32,
+    pub multiline_elements_on_new_line: bool,
+    pub singleline_elements_on_new_line: bool,
+    pub breaks_inside_elements_with_children: bool,
+    pub breaks_inside_multiline_elements: bool,
+    pub child_indent: ContentIndent,
+    pub text_indent: ContentIndent,
+    pub blank_line_after_processing_instructions: bool,
+    pub wrap_tags: bool,
+    pub wrap_around_elements: bool,
+    pub right_margin: u32,
+    pub reorder_attributes: bool,
+    /// XAML Styler's rule groups, a group to each `;`.
+    pub attribute_order: String,
+    pub collapse_empty_elements: bool,
+}
+
+/// Attributes format, in Rider's order.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum AttributeStyle {
+    OnSingleLine,
+    FirstAttributeOnSingleLine,
+    OnDifferentLines,
+    #[default]
+    DoNotTouch,
+}
+
+/// Attributes indenting, in Rider's order.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum AttributeIndent {
+    SingleIndent,
+    DoubleIndent,
+    #[default]
+    AlignByFirstAttribute,
+}
+
+/// Indent inside element, in Rider's order.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ContentIndent {
+    DoNotTouch,
+    #[default]
+    OneIndent,
+    ZeroIndent,
+    RemoveIndent,
+}
+
+impl XamlFormat {
+    /// XAML Styler's default rule groups (Passenger's XamlFormatSettings.DefaultAttributeOrder).
+    pub const DEFAULT_ATTRIBUTE_ORDER: &'static str = "x:Class; xmlns, xmlns:x; xmlns:*; x:Key, Key, x:Name, Name, x:Uid, \
+        Uid, Title; Grid.Row, Grid.RowSpan, Grid.Column, Grid.ColumnSpan, Canvas.Left, Canvas.Top, Canvas.Right, \
+        Canvas.Bottom; Width, Height, MinWidth, MinHeight, MaxWidth, MaxHeight; Margin, Padding, HorizontalAlignment, \
+        VerticalAlignment, HorizontalContentAlignment, VerticalContentAlignment, Panel.ZIndex; *:*, *; PageSource, \
+        PageIndex, Offset, Color, TargetName, Property, Value, StartPoint, EndPoint; mc:Ignorable, d:IsDataSource, \
+        d:LayoutOverrides, d:IsStaticText; Storyboard.*, From, To, Duration";
+    pub const BLANK_LINES: RangeInclusive<f32> = 0.0..=100.0;
+    pub const MARGINS: RangeInclusive<f32> = 0.0..=1000.0;
+}
+
+impl Default for XamlFormat {
+    fn default() -> Self {
+        Self {
+            attribute_style: AttributeStyle::DoNotTouch,
+            attribute_indent: AttributeIndent::AlignByFirstAttribute,
+            spaces_around_equals: false,
+            space_after_last_attribute: false,
+            space_before_self_closing: true,
+            keep_line_breaks: true,
+            max_blank_lines: 2,
+            multiline_elements_on_new_line: true,
+            singleline_elements_on_new_line: false,
+            breaks_inside_elements_with_children: true,
+            breaks_inside_multiline_elements: true,
+            child_indent: ContentIndent::OneIndent,
+            text_indent: ContentIndent::OneIndent,
+            blank_line_after_processing_instructions: true,
+            wrap_tags: true,
+            wrap_around_elements: true,
+            right_margin: 120,
+            reorder_attributes: false,
+            attribute_order: Self::DEFAULT_ATTRIBUTE_ORDER.into(),
+            collapse_empty_elements: false,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -53,6 +151,7 @@ impl Default for AppSettings {
             build_results: BuildResults::Errors,
             hot_reload: false,
             hot_reload_restart_on_rude_edit: true,
+            xaml_format: XamlFormat::default(),
         }
     }
 }
@@ -70,6 +169,12 @@ impl AppSettings {
         self.editor_font_size = self.editor_font_size.clamp(*Self::FONT_SIZES.start(), *Self::FONT_SIZES.end());
         self.editor_line_spacing =
             self.editor_line_spacing.clamp(*Self::LINE_SPACINGS.start(), *Self::LINE_SPACINGS.end());
+        let xaml = &mut self.xaml_format;
+        xaml.max_blank_lines = xaml.max_blank_lines.min(*XamlFormat::BLANK_LINES.end() as u32);
+        xaml.right_margin = xaml.right_margin.min(*XamlFormat::MARGINS.end() as u32);
+        if xaml.attribute_order.trim().is_empty() {
+            xaml.attribute_order = XamlFormat::DEFAULT_ATTRIBUTE_ORDER.into();
+        }
         self
     }
 

@@ -138,6 +138,42 @@ fn a_binding_dot_closes_the_previous_list_even_without_members(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn a_package_restored_while_its_xaml_is_open_has_its_types_read_once_the_restore_lands(cx: &mut TestAppContext) {
+    let text = "<Window xmlns=\"https://github.com/avaloniaui\"\n        xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\"\n        xmlns:h=\"using:Avalonia.Headless\"\n        x:Class=\"Demo.MainWindow\">\n    <Window.Resources>\n        <h:AvaloniaHeadlessPlatformOptions x:Key=\"Headless\" />\n    </Window.Resources>\n    <TextBlock Text=\"Welcome\" />\n</Window>\n";
+    let Some(run) = restored(
+        "xaml-restore",
+        &[("Demo.csproj", PROJECT), ("MainWindow.axaml", text), ("MainWindow.axaml.cs", CODE)],
+    ) else {
+        return;
+    };
+    let (main, cx) = run.window(cx);
+    cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
+    main.update_in(cx, |m, window, cx| {
+        m.open_workspace(&run.folder, window, cx);
+        m.open_file(&run.folder.join("MainWindow.axaml"), None, window, cx);
+    });
+    let buffer = main.read_with(cx, |m, cx| m.editor().unwrap().read(cx).buffer.clone());
+    wait(cx, "the type of a package the app does not reference marked", |cx| {
+        buffer.read_with(cx, |b, _| b.diagnostics.iter().any(|d| d.message.contains("AvaloniaHeadlessPlatformOptions")))
+    });
+
+    // The package added where the project file does not name it, so only its restore says so, and restored as a
+    // terminal's dotnet restore would: the restore's assets, under obj/, are what the XAML reads it from.
+    std::fs::write(
+        run.folder.join("Directory.Build.props"),
+        "<Project>\n  <ItemGroup>\n    <PackageReference Include=\"Avalonia.Headless\" Version=\"12.1.4\" />\n  </ItemGroup>\n</Project>\n",
+    )
+    .unwrap();
+    pump(cx, Duration::from_secs(1));
+    let dotnet = rsharp_core::programs::dotnet().unwrap();
+    let restore = rsharp_core::dotnet::command(&dotnet, ["restore", "-v", "q"], &run.folder).output().unwrap();
+    assert!(restore.status.success(), "{}", String::from_utf8_lossy(&restore.stdout));
+    wait(cx, "the package's type resolved once its restore landed", |cx| {
+        buffer.read_with(cx, |b, _| b.diagnostics.is_empty())
+    });
+}
+
+#[gpui::test]
 fn a_saved_source_change_rechecks_open_xaml(cx: &mut TestAppContext) {
     let text = WINDOW.replace("Greeting", "Added");
     let Some(run) = restored(
@@ -613,9 +649,9 @@ fn an_avares_path_completes_from_the_projects_assets_is_warned_of_when_missing_a
     assert_eq!(shown(&main, cx).first().map(String::as_str), Some("avares://Demo/Assets/logo.png"));
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
-    // shortcut: RSharp's editor pairs no quotes (Passenger's closes a typed one), so the closing quote is typed here.
+    // The quote typed came with its closer: the path goes in before it, and the quote typed next steps over it.
     assert!(
-        caret_line(&main, cx).ends_with("<Image Source=\"avares://Demo/Assets/logo.png|"),
+        caret_line(&main, cx).ends_with("<Image Source=\"avares://Demo/Assets/logo.png|\""),
         "the path did not go in: {}",
         caret_line(&main, cx)
     );
@@ -735,6 +771,44 @@ fn reformat_code_lays_xaml_out_by_riders_code_style_and_the_editorconfig_changin
     assert!(
         configured.starts_with("<Window\n    x:Class=\"Demo.MainWindow\"\n    xmlns=\""),
         "the root's attributes:\n{configured}"
+    );
+
+    // Settings' Code Style: XAML, where no .editorconfig says otherwise: each attribute on a line of its own, one
+    // indent in, in the order written.
+    std::fs::remove_file(run.folder.join(".editorconfig")).unwrap();
+    buffer.update(cx, |b, cx| b.replace_all(untidy.clone(), cx));
+    cx.update(|_, cx| {
+        let mut chosen = rsharp_app::settings::settings(cx).clone();
+        chosen.xaml_format.attribute_style = rsharp_app::settings::AttributeStyle::OnDifferentLines;
+        chosen.xaml_format.attribute_indent = rsharp_app::settings::AttributeIndent::SingleIndent;
+        rsharp_app::settings::apply(chosen, cx);
+    });
+    main.update_in(cx, |m, window_, cx| m.open_file(&window, Some((0, 0)), window_, cx));
+    cx.simulate_keystrokes(reformat);
+    wait(cx, "the reformat by Settings' code style", |cx| text(cx) != untidy);
+    let styled = text(cx);
+    assert!(
+        styled
+            .contains("<Button\n            Grid.Row=\"1\"\n            Content=\"Go\"\n            x:Name=\"Pay\"\n"),
+        "Settings' code style was not followed:\n{styled}"
+    );
+
+    // XAML Styler's rule groups as the .editorconfig writes them, their letter case kept: Content, then x:Name, then
+    // the attributes no group names in the order written.
+    std::fs::write(
+        run.folder.join(".editorconfig"),
+        "root = true\n\n[*.{axaml,xaml}]\nxaml_enable_attribute_reordering = true\nxaml_attribute_ordering_rule_groups = Content; x:Name\n",
+    )
+    .unwrap();
+    buffer.update(cx, |b, cx| b.replace_all(untidy.clone(), cx));
+    main.update_in(cx, |m, window_, cx| m.open_file(&window, Some((0, 0)), window_, cx));
+    cx.simulate_keystrokes(reformat);
+    wait(cx, "the reformat by the .editorconfig's rule groups", |cx| text(cx) != untidy);
+    let ordered = text(cx);
+    assert!(
+        ordered
+            .contains("<Button\n            Content=\"Go\"\n            x:Name=\"Pay\"\n            Grid.Row=\"1\"\n"),
+        "the rule groups lost their letter case:\n{ordered}"
     );
 }
 
@@ -2024,6 +2098,44 @@ fn the_preview_draws_a_window_from_the_last_build_follows_its_text_and_draws_sty
     let below = |cx: &mut VisualTestContext| main.read_with(cx, |m, _| m.preview_pixel(400, 300));
     let orange = Some([0x3F, 0xA3, 0xE2, 0xFF]);
     assert_ne!(below(cx), orange);
+
+    // The file's elements come with their boxes: the caret in the TextBlock's tag outlines it, under the panel's margin.
+    let editor = main.read_with(cx, |m, _| m.editor().unwrap());
+    let offset_of = |what: &str, cx: &mut VisualTestContext| {
+        editor.read_with(cx, |e, _| e.text().to_string()).find(what).unwrap_or_else(|| panic!("no {what} in the file"))
+    };
+    let caret = offset_of("<TextBlock", cx) + 3;
+    editor.update(cx, |e, cx| e.select(rsharp_text::Selection::caret(caret), cx));
+    let outlined = |cx: &mut VisualTestContext| main.read_with(cx, |m, cx| m.preview_outlined(cx));
+    wait(cx, "the TextBlock at the caret outlined", |cx| outlined(cx).is_some_and(|[_, _, _, h]| h < 100.));
+    assert_eq!(
+        outlined(cx).map(|[x, y, w, _]| (x, y, w)),
+        Some((12., 12., 776.)),
+        "the TextBlock is not in the margin"
+    );
+    let tags: Vec<String> = main.read_with(cx, |m, cx| m.preview_elements(cx)).into_iter().map(|(t, _)| t).collect();
+    assert_eq!(
+        tags.iter().map(|t| t.split_whitespace().next().unwrap_or_default()).collect::<Vec<_>>(),
+        ["<Window", "<StackPanel", "<TextBlock"],
+        "the drawn elements are not the file's, parents first: {tags:?}"
+    );
+
+    // A click below the TextBlock is on the panel: its start tag is selected, the caret at its start, and it is outlined.
+    let frame_bounds = cx.debug_bounds("xaml preview frame").expect("the preview's frame is on screen");
+    let fit = f32::from(frame_bounds.size.width) / 800.;
+    cx.simulate_click(
+        frame_bounds.origin + gpui::point(gpui::px(400. * fit), gpui::px(300. * fit)),
+        Default::default(),
+    );
+    cx.run_until_parked();
+    let (start, end) = (offset_of("<StackPanel", cx), offset_of("<TextBlock", cx));
+    let tag_end = start + editor.read_with(cx, |e, _| e.text().to_string())[start..end].find('>').unwrap() + 1;
+    assert_eq!(
+        editor.read_with(cx, |e, _| e.primary()),
+        rsharp_text::Selection { anchor: tag_end, head: start },
+        "the click did not select the panel's start tag"
+    );
+    assert_eq!(outlined(cx), Some([12., 12., 776., 426.]), "the panel is not outlined");
 
     let buffer = main.read_with(cx, |m, cx| m.editor().unwrap().read(cx).buffer.clone());
     let replace = |from: &str, to: &str, cx: &mut VisualTestContext| {

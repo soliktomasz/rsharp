@@ -6,13 +6,16 @@ using Avalonia.Remote.Protocol;
 using Avalonia.Remote.Protocol.Designer;
 using Avalonia.Remote.Protocol.Viewport;
 using Passenger.Xaml.Projects;
+using Passenger.Xaml.Syntax;
 
 namespace RSharp.XamlHost;
 
 /// <summary>An Avalonia file's preview, as Passenger's AvaloniaPreviewHost draws it: the host listens on loopback for the
 /// project's Avalonia.Designer.HostApp, which RSharp starts on the project's last build (so it ends with the IDE), speaks
 /// Avalonia.Remote.Protocol to it, and relays each frame and each XAML that did not load as a partial reply of the
-/// <c>preview</c> request, which lasts until <c>preview_stop</c>.</summary>
+/// <c>preview</c> request, which lasts until <c>preview_stop</c>. On Avalonia 12 the HostApp runs under RSharp's own entry
+/// (<c>preview/</c>), which sends each design window's elements and their boxes back here, made the file's elements: what a
+/// click in the frame chooses and the caret outlines, which Passenger's previewer gives for WPF alone.</summary>
 internal static class Previews
 {
     private static readonly ConcurrentDictionary<string, Session> Sessions = new(StringComparer.Ordinal);
@@ -24,6 +27,11 @@ internal static class Previews
         public string ProjectPath { get; } = projectPath;
         public double Dpi { get; set; } = 96;
         public string Text { get; set; } = string.Empty;
+
+        /// <summary>The text last sent to the previewer, whose places the elements it draws name.</summary>
+        public string Loaded { get; set; } = string.Empty;
+
+        public TcpListener? Elements { get; set; }
         public IAvaloniaRemoteTransportConnection? Connection { get; set; }
         public IDisposable? Listening { get; set; }
         public TaskCompletionSource Ended { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -90,12 +98,29 @@ internal static class Previews
         JsonArray arguments =
         [
             "exec", "--runtimeconfig", Path.Combine(folder, name + ".runtimeconfig.json"), "--depsfile", Path.Combine(folder, name + ".deps.json"),
-            designer, "--transport", $"tcp-bson://127.0.0.1:{port}/", "--method", "avalonia-remote", "--session-id", id, output,
         ];
+        if (Entry(inputs) is { } entry)
+        {
+            session.Elements = new TcpListener(IPAddress.Loopback, 0);
+            session.Elements.Start();
+            arguments.Add(entry);
+            arguments.Add(designer);
+            arguments.Add(((IPEndPoint)session.Elements.LocalEndpoint).Port.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            _ = Task.Run(() => Hear(session));
+        }
+        else
+        {
+            arguments.Add(designer);
+        }
+        foreach (string argument in (string[])["--transport", $"tcp-bson://127.0.0.1:{port}/", "--method", "avalonia-remote", "--session-id", id, output])
+        {
+            arguments.Add(argument);
+        }
         Partial(session, new JsonObject { ["started"] = new JsonObject { ["session"] = id, ["arguments"] = arguments, ["folder"] = folder } });
         await session.Ended.Task;
         session.Connection?.Dispose();
         session.Listening?.Dispose();
+        session.Elements?.Stop();
         Sessions.TryRemove(id, out _);
         return new JsonObject();
     }
@@ -138,6 +163,7 @@ internal static class Previews
 
     private static void Send(Session session)
     {
+        session.Loaded = session.Text;
         _ = session.Send(new UpdateXamlMessage { Xaml = session.Text, AssemblyPath = session.Output, XamlFileProjectPath = session.ProjectPath });
     }
 
@@ -173,6 +199,73 @@ internal static class Previews
 
     private static void Partial(Session session, JsonObject partial) =>
         Program.Write(new JsonObject { ["id"] = session.Request, ["partial"] = partial });
+
+    /// <summary>The entry's lines, one per layout of a design window, each passed on as the file's elements, until the
+    /// preview ends.</summary>
+    private static async Task Hear(Session session)
+    {
+        try
+        {
+            using TcpClient client = await session.Elements!.AcceptTcpClientAsync();
+            using StreamReader reader = new(client.GetStream());
+            while (await reader.ReadLineAsync() is { } line)
+            {
+                Partial(session, new JsonObject { ["elements"] = ElementsOf(session, JsonNode.Parse(line)!.AsArray()) });
+            }
+        }
+        catch (Exception error) when (error is SocketException or IOException or ObjectDisposedException or System.Text.Json.JsonException)
+        {
+            // The preview ended, or its previewer did: the frames say so.
+        }
+    }
+
+    /// <summary>The file's elements the previewer drew, parents before children, each once: its start tag, its whole
+    /// markup and its box in the frame's units. A place is the tag's '&lt;' or its name: one past it is inside the
+    /// element either way.</summary>
+    /// <para>shortcut: places are read in the text last sent, so elements that come while a later text is on its way are
+    /// off until its own come; carry a version through the entry if typing shows it.</para>
+    private static JsonArray ElementsOf(Session session, JsonArray drawn)
+    {
+        string text = session.Loaded;
+        XmlTree tree = XmlTree.Parse(text);
+        List<int> lines = [0];
+        for (int at = text.IndexOf('\n'); at >= 0; at = text.IndexOf('\n', at + 1))
+        {
+            lines.Add(at + 1);
+        }
+        HashSet<XmlElement> seen = [];
+        JsonArray elements = [];
+        foreach (JsonNode? place in drawn)
+        {
+            int line = place!["Line"]!.GetValue<int>() - 1;
+            // Line 0 is the file's root, which the loader makes with no place of its own.
+            XmlElement? element = line < 0 ? tree.Root
+                : line < lines.Count ? tree.ElementAt(Math.Min(lines[line] + Math.Max(place["Column"]!.GetValue<int>() - 1, 0) + 1, text.Length))
+                : null;
+            if (element is null || element.IsPropertyElement || !seen.Add(element))
+            {
+                continue;
+            }
+            elements.Add(new JsonObject
+            {
+                ["tag"] = Program.Range(text, element.Start, element.StartTagEnd),
+                ["whole"] = Program.Range(text, element.Start, element.End),
+                ["box"] = new JsonArray(place["X"]!.GetValue<double>(), place["Y"]!.GetValue<double>(), place["Width"]!.GetValue<double>(), place["Height"]!.GetValue<double>()),
+            });
+        }
+        return elements;
+    }
+
+    /// <summary>RSharp's own entry to the previewer, for a project on Avalonia 12, whose loader records where elements are
+    /// written; null for an older Avalonia, whose previewer runs as it is.</summary>
+    private static string? Entry(ProjectInputs inputs)
+    {
+        string entry = Path.Combine(AppContext.BaseDirectory, "preview", "RSharp.Preview.dll");
+        return inputs.PackageFolders.TryGetValue("Avalonia", out string? package) && Version.TryParse(Path.GetFileName(package).Split('-')[0], out Version? version)
+            && version.Major >= 12 && File.Exists(entry)
+            ? entry
+            : null;
+    }
 
     /// <summary>What the host said of a XAML it could not load, with the line it names.</summary>
     private static string Describe(UpdateXamlResultMessage result)

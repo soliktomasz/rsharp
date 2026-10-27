@@ -110,3 +110,44 @@ fn a_number_out_of_range_blocks_ok_and_says_why(cx: &mut TestAppContext) {
     assert_eq!(in_force.line_height(), AppSettings { editor_font_size: 16., ..in_force.clone() }.line_height());
     assert!(main_cx.update(|_, cx| settings_dialog::window(cx)).is_some(), "Apply closed Settings");
 }
+
+#[gpui::test]
+fn the_xaml_code_style_page_is_found_by_search_and_its_choices_are_kept_for_reformat_code(cx: &mut TestAppContext) {
+    // Rider's Editor | Code Style | XAML, which Reformat Code lays XAML out by under each file's .editorconfig.
+    let run = Run::new("settings-xaml", &[]);
+    let (_, main_cx) = run.window(cx);
+    let mut dialog_cx = open_settings(main_cx);
+
+    dialog_cx.simulate_input("attributes format");
+    assert_eq!(
+        dialog(&mut dialog_cx, |d, cx| d.page_names(cx)),
+        ["Code Style: XAML"],
+        "searching 'attributes format' left other pages"
+    );
+    click(&mut dialog_cx, "choice: Attributes format");
+    click(&mut dialog_cx, "Attributes format: Each attribute on separate lines");
+    click(&mut dialog_cx, "check: Spaces around '=' in attribute");
+
+    click(&mut dialog_cx, "field: Maximum blank lines between tags");
+    dialog_cx.simulate_keystrokes("secondary-a");
+    dialog_cx.simulate_input("1.5");
+    dialog_cx.run_until_parked();
+    assert_eq!(
+        dialog(&mut dialog_cx, |d, _| d.problem().map(str::to_string)).as_deref(),
+        Some("Maximum blank lines between tags must be a number from 0 to 100"),
+        "a count of blank lines that is no whole number was taken"
+    );
+    dialog_cx.simulate_keystrokes("secondary-a");
+    dialog_cx.simulate_input("1");
+    click(&mut dialog_cx, "button: OK");
+
+    let style = main_cx.update(|_, cx| settings(cx).xaml_format.clone());
+    assert_eq!(style.attribute_style, rsharp_app::settings::AttributeStyle::OnDifferentLines);
+    assert!(style.spaces_around_equals, "Spaces around '=' was not put in force");
+    assert_eq!(style.max_blank_lines, 1, "the count typed was not put in force");
+    main_cx.update(|_, cx| rsharp_app::state::store(cx).flush());
+    let kept: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(run.state.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(kept["xamlFormat"]["attributeStyle"], "OnDifferentLines", "the code style was not written by its names");
+    assert_eq!(kept["xamlFormat"]["maxBlankLines"], 1);
+}

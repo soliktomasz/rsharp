@@ -213,28 +213,26 @@ impl CodeEditor {
         }));
     }
 
-    /// Reformat Code in XAML: the selection's lines, or the whole file, by Rider's XAML code style with the file's
+    /// Reformat Code in XAML: the selection's lines, or the whole file, by Settings' Code Style: XAML with the file's
     /// .editorconfig over it (read as it is now), as one undo step.
-    // shortcut: Rider's defaults stand under the .editorconfig, with no Settings page of their own (Passenger's Code
-    // Style: XAML); add it once someone wants a style without an .editorconfig.
     pub(super) fn xaml_reformat(&mut self, cx: &mut Context<Self>) {
         let Some((host, _)) = self.buffer.read(cx).xaml.clone() else { return };
         let (path, text, version) = (self.path.clone(), self.text.to_string(), self.version);
         let indent = self.buffer.read(cx).indent;
+        let style = serde_json::to_value(&crate::settings::settings(cx).xaml_format).unwrap_or_default();
         let selection = self.primary();
         let range = (!selection.is_empty()).then(|| rsharp_lsp::Span {
             start: language::point(&self.text, selection.start()),
             end: language::point(&self.text, selection.end()),
         });
         let found = cx.background_executor().spawn(async move {
-            // shortcut: values come lower case from RSharp's .editorconfig reading, so a custom
-            // xaml_attribute_ordering_rule_groups loses its letter case; keep values' case once someone sets one.
+            // As written: XAML Styler's rule groups name attributes in their own letter case.
             let config: serde_json::Map<String, serde_json::Value> =
                 rsharp_core::editorconfig::EditorConfig::for_file(&path)
-                    .properties()
+                    .properties_as_written()
                     .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
                     .collect();
-            host.format(&text, &config, (indent.size, indent.tabs), range)
+            host.format(&text, &style, &config, (indent.size, indent.tabs), range)
         });
         self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
             let formatted = match found.await {

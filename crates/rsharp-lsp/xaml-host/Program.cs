@@ -23,6 +23,7 @@ public static class Program
     private static readonly ConcurrentDictionary<string, Lazy<XamlProjectBuilder?>> Builders = new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, string> Texts = new(StringComparer.Ordinal);
     private static readonly string? DotnetRoot = Path.GetDirectoryName(Environment.ProcessPath);
+    private static readonly JsonSerializerOptions StyleNames = new(JsonSerializerDefaults.Web) { Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } };
     private static TextWriter protocol = TextWriter.Null;
 
     public static int Main()
@@ -229,7 +230,9 @@ public static class Program
     {
         string text = asked["text"]!.GetValue<string>();
         JsonObject config = asked["editorconfig"]!.AsObject();
-        XamlFormatSettings settings = new XamlFormatSettings().Over(key => config[key]?.GetValue<string>());
+        // Settings' Code Style: XAML, by XamlFormatSettings' own names; Rider's defaults where none is sent.
+        XamlFormatSettings style = asked["settings"]?.Deserialize<XamlFormatSettings>(StyleNames) ?? new XamlFormatSettings();
+        XamlFormatSettings settings = style.Clamped().Over(key => config[key]?.GetValue<string>());
         IndentOptions indent = new(asked["indentSize"]!.GetValue<int>(), asked["tabs"]!.GetValue<bool>());
         TextRange? within = asked["range"] is { } range
             ? TextRange.FromBounds(Offset(text, range["start"]!), Offset(text, range["end"]!))
@@ -489,7 +492,7 @@ public static class Program
         return new JsonObject { ["line"] = line, ["character"] = offset - lineStart };
     }
 
-    private static JsonObject Range(string text, int start, int end) => new() { ["start"] = Point(text, start), ["end"] = Point(text, end) };
+    internal static JsonObject Range(string text, int start, int end) => new() { ["start"] = Point(text, start), ["end"] = Point(text, end) };
 
     private static JsonObject Point(SourceText text, int offset)
     {

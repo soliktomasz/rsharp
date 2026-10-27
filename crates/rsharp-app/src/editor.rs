@@ -467,6 +467,11 @@ impl CodeEditor {
         self.set_carets(vec![Selection { anchor: range.start, head: range.end }], cx);
     }
 
+    /// Selects as a caret and its anchor, as a click in the XAML Preview selects a start tag from its end.
+    pub fn select(&mut self, selection: Selection, cx: &mut Context<Self>) {
+        self.set_carets(vec![selection], cx);
+    }
+
     /// Applies an edit made from outside the editor (the find bar's replace) as one undo step.
     pub fn apply_plan(&mut self, plan: EditPlan, cx: &mut Context<Self>) {
         self.apply(plan, cx);
@@ -1262,7 +1267,11 @@ moves! {
     PageUp => |e, cx| { let p = e.page(); e.vertical(-p, false, cx) };
     PageDown => |e, cx| { let p = e.page(); e.vertical(p, false, cx) };
     SelectAll => |e, cx| { let len = e.text.len_bytes(); e.set_selections(vec![Selection { anchor: 0, head: len }]); cx.notify() };
-    Backspace => |e, cx| { let plan = backspace(&e.text, e.carets.as_slice()); e.apply(plan, cx); e.backspaced(cx) };
+    Backspace => |e, cx| {
+        let plan = if e.is_xaml() { backspace_quotes(&e.text, e.carets.as_slice()) } else { backspace(&e.text, e.carets.as_slice()) };
+        e.apply(plan, cx);
+        e.backspaced(cx)
+    };
     Delete => |e, cx| { let plan = delete(&e.text, e.carets.as_slice()); e.apply(plan, cx) };
     Newline => |e, cx| { if e.popup_choose(cx) { return } if e.console_input { cx.emit(ConsoleInput("\n".into())); return } let indent = e.buffer.read(cx).indent; let plan = newline(&e.text, e.carets.as_slice(), &indent); e.apply(plan, cx) };
     Tab => |e, cx| { if e.popup_choose(cx) || e.next_template_stop(cx) || e.expand_template(cx) { return } let indent = e.buffer.read(cx).indent; let plan = tab(&e.text, e.carets.as_slice(), &indent); e.apply(plan, cx) };
@@ -1468,8 +1477,12 @@ impl EntityInputHandler for CodeEditor {
                 }
             }
             None => {
-                let plan = insert(&self.text, self.carets.as_slice(), text);
-                let plan = EditPlan { kind: EditKind::Typing, ..plan };
+                let plan = match text {
+                    "\"" | "'" if self.is_xaml() => {
+                        type_quote(&self.text, self.carets.as_slice(), text.as_bytes()[0] as char)
+                    }
+                    _ => EditPlan { kind: EditKind::Typing, ..insert(&self.text, self.carets.as_slice(), text) },
+                };
                 self.apply(plan, cx);
                 self.typed(text, cx);
                 return;
