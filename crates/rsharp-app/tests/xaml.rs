@@ -26,6 +26,15 @@ fn wait(cx: &mut VisualTestContext, what: &str, done: impl Fn(&mut VisualTestCon
     }
 }
 
+fn pump(cx: &mut VisualTestContext, duration: Duration) {
+    let deadline = Instant::now() + duration;
+    while Instant::now() < deadline {
+        cx.executor().advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(30));
+    }
+}
+
 fn shown(main: &Entity<MainWindow>, cx: &mut VisualTestContext) -> Vec<String> {
     main.read_with(cx, |m, cx| m.editor().and_then(|e| e.read(cx).completion_shown()).unwrap_or_default())
 }
@@ -538,4 +547,78 @@ fn a_key_one_theme_variant_lacks_is_warned_of_and_the_fix_adds_it_to_that_varian
         "the fix did not add the key to Light:\n{fixed}"
     );
     wait(cx, "both warnings gone", |cx| messages(&palette, cx).is_empty() && messages(&view, cx).is_empty());
+}
+
+#[gpui::test]
+fn an_avares_path_completes_from_the_projects_assets_is_warned_of_when_missing_and_goes_to_its_file(
+    cx: &mut TestAppContext,
+) {
+    let project = PROJECT.replace(
+        "</ItemGroup>",
+        "</ItemGroup>\n  <ItemGroup>\n    <AvaloniaResource Include=\"Assets\\**\" />\n  </ItemGroup>",
+    );
+    let Some(run) = restored(
+        "xaml-assets",
+        &[
+            ("Demo.csproj", &project),
+            ("App.axaml", APP),
+            ("App.axaml.cs", "namespace Demo;\n\npublic partial class App : Avalonia.Application { }\n"),
+            ("Styles/Palette.axaml", PALETTE),
+            ("MainWindow.axaml", WINDOW),
+            ("MainWindow.axaml.cs", CODE),
+            ("MainViewModel.cs", VIEW_MODEL),
+            ("Assets/logo.png", "\u{89}PNG\r\n\u{1a}\n"),
+        ],
+    ) else {
+        return;
+    };
+    let (main, cx) = run.window(cx);
+    cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
+    let window = run.folder.join("MainWindow.axaml");
+    main.update_in(cx, |m, window_, cx| {
+        m.open_workspace(&run.folder, window_, cx);
+        m.open_file(&window, Some((5, 38)), window_, cx);
+    });
+
+    // A source's quote offers the project's assets as avares:// paths, narrowed as typed.
+    cx.simulate_keystrokes("enter");
+    cx.simulate_input("<Image Source=");
+    cx.simulate_input("\"");
+    offered(&main, cx, "the project's asset as an avares:// path", "avares://Demo/Assets/logo.png");
+    assert!(shown(&main, cx).iter().any(|l| l == "avares://Demo/Styles/Palette.axaml"), "{:?}", shown(&main, cx));
+    for c in "logo".chars() {
+        cx.simulate_input(&c.to_string());
+    }
+    cx.run_until_parked();
+    assert_eq!(shown(&main, cx).first().map(String::as_str), Some("avares://Demo/Assets/logo.png"));
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    // shortcut: RSharp's editor pairs no quotes (Passenger's closes a typed one), so the closing quote is typed here.
+    assert!(
+        caret_line(&main, cx).ends_with("<Image Source=\"avares://Demo/Assets/logo.png|"),
+        "the path did not go in: {}",
+        caret_line(&main, cx)
+    );
+    cx.simulate_input("\"");
+    cx.simulate_input(" />");
+    let buffer = main.read_with(cx, |m, cx| m.editor().unwrap().read(cx).buffer.clone());
+    let no_problem = |cx: &mut VisualTestContext| buffer.read_with(cx, |b, _| b.diagnostics.is_empty());
+    pump(cx, Duration::from_secs(2));
+    assert!(no_problem(cx), "an asset that is there was marked");
+
+    // An asset that is not there is warned of.
+    let text = buffer.read_with(cx, |b, _| b.document.text().to_string());
+    let text = text.replace("logo.png\"", "logo2.png\"");
+    buffer.update(cx, |b, cx| b.replace_all(text, cx));
+    wait(cx, "the warning on the asset that is not there", |cx| buffer.read_with(cx, |b, _| !b.diagnostics.is_empty()));
+    let marked =
+        buffer.read_with(cx, |b, _| b.diagnostics.iter().map(|d| (d.message.clone(), d.error)).collect::<Vec<_>>());
+    assert_eq!(marked, [("'avares://Demo/Assets/logo2.png' is not found".to_string(), false)]);
+
+    // Go to Declaration on an include's path opens the file it names.
+    main.update_in(cx, |m, window_, cx| m.open_file(&run.folder.join("App.axaml"), Some((6, 50)), window_, cx));
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-b" } else { "f12" });
+    wait(cx, "Palette.axaml opened", |cx| {
+        main.read_with(cx, |m, cx| m.editor().is_some_and(|e| e.read(cx).path.ends_with("Styles/Palette.axaml")))
+    });
 }
