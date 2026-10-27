@@ -940,6 +940,22 @@ fn extract_resource_moves_a_value_into_this_files_or_the_applications_resources_
     );
     assert!(made.contains("<Button Name=\"Go\" Content=\"Go\" Classes=\"buttonStyle\" />"), "{made}");
     wait(cx, "the style and the button that takes it marked with nothing", clean);
+
+    // The file edited while the dialog is open: its edit, made from the file as it was, is refused.
+    let (line, column) = after(&text(cx), "Text=\"Hel");
+    main.update_in(cx, |m, window_, cx| m.open_file(&window, Some((line, column)), window_, cx));
+    cx.dispatch_action(ExtractResource);
+    wait(cx, "Extract Resource's dialog on the title", |cx| dialog(cx).is_some());
+    let resource = dialog(cx).unwrap();
+    let edited = text(cx).replace("Spacing=\"8\"", "Spacing=\"16\"");
+    buffer.update(cx, |b, cx| b.replace_all(edited, cx));
+    resource.update(cx, |d, cx| d.accept(cx));
+    wait(cx, "the stale extraction refused", |cx| resource.read_with(cx, |d, _| d.problem().is_some()));
+    assert_eq!(
+        resource.read_with(cx, |d, _| d.problem().map(str::to_string)).as_deref(),
+        Some("Extract Resource was not made: the file was edited meanwhile")
+    );
+    assert!(!text(cx).contains("StaticResource TextBlockText"), "the stale edit was applied:\n{}", text(cx));
 }
 
 const MVVM: &str = "using System.ComponentModel;\nusing System.Runtime.CompilerServices;\n\nnamespace CommunityToolkit.Mvvm.ComponentModel\n{\n    [System.AttributeUsage(System.AttributeTargets.Field)]\n    public sealed class ObservablePropertyAttribute : System.Attribute\n    {\n    }\n\n    public class ObservableObject : INotifyPropertyChanged\n    {\n        public event PropertyChangedEventHandler? PropertyChanged;\n\n        protected bool SetProperty<T>(ref T field, T value, [CallerMemberName] string? name = null)\n        {\n            field = value;\n            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));\n            return true;\n        }\n    }\n}\n\nnamespace CommunityToolkit.Mvvm.Input\n{\n    [System.AttributeUsage(System.AttributeTargets.Method)]\n    public sealed class RelayCommandAttribute : System.Attribute\n    {\n    }\n}\n";

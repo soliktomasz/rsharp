@@ -273,11 +273,15 @@ impl CodeEditor {
         // shortcut: Avalonia's Panel is offered by the file's extension (.axaml, .paml), not its project's dialect; ask
         // the host's dialect once an Avalonia project's .xaml file is seen.
         let avalonia = self.path.extension().is_some_and(|e| e == "axaml" || e == "paml");
-        let text = self.text.to_string();
+        let (text, version) = (self.text.to_string(), self.version);
         let found = cx.background_executor().spawn(async move { host.surround_target(&text, span) });
         self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
             let target = found.await.ok().flatten();
             let _ = this.update(cx, |e, cx| {
+                // Its places are the text's as asked: typed over since, they no longer point at the element.
+                if e.version != version {
+                    return;
+                }
                 let Some((span, count)) = target else {
                     cx.emit(Said("Surround With in XAML wraps elements: put the caret in one".into()));
                     return;

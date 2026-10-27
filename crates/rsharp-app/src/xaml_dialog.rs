@@ -126,8 +126,13 @@ impl XamlDialog {
         self.working = Some(cx.spawn(async move |this, cx| {
             let answer = answer.await.map_err(|e| e.0);
             let _ = this.update(cx, |dialog, cx| {
+                // The edit was made from the file as the dialog opened on it; one edited since would take it misplaced.
+                let current =
+                    crate::buffer::find(&dialog.open.path, cx).map(|b| b.read(cx).document.text().to_string());
+                let stale = current.is_some_and(|text| text != dialog.open.text);
                 let made = answer.and_then(|a| match a["problem"].as_str() {
                     Some(problem) => Err(problem.to_string()),
+                    None if stale => Err(format!("{} was not made: the file was edited meanwhile", extract.title())),
                     None => {
                         let edit = rsharp_lsp::workspace_edit(&a["edit"]);
                         crate::language::apply_workspace_edit(&edit, None, cx)?;
