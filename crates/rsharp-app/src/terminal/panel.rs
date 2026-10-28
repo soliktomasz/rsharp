@@ -97,21 +97,13 @@ impl TerminalPanel {
         self.active = self.tabs.len() - 1;
         self.focus_requested = true;
         self.show(cx);
-        let starting = cx.background_executor().spawn(async move {
-            eprintln!("DIAG {:?} panel: Session::start begins", std::time::SystemTime::now());
-            let started = Session::start(command, 80, 24).map(Arc::new);
-            eprintln!("DIAG {:?} panel: Session::start ended ok={}", std::time::SystemTime::now(), started.is_ok());
-            started
-        });
+        let starting = cx.background_executor().spawn(async move { Session::start(command, 80, 24).map(Arc::new) });
         self.starters.push(cx.spawn(async move |this, cx| {
             let result = starting.await;
             let _ = this.update(cx, |panel, cx| {
                 if let Some(tab) = panel.tabs.iter_mut().find(|t| t.id == id) {
                     match result {
-                        Ok(session) => {
-                            eprintln!("DIAG {:?} panel: tab has its session", std::time::SystemTime::now());
-                            tab.session = Some(session)
-                        }
+                        Ok(session) => tab.session = Some(session),
                         Err(error) => tab.problem = Some(error),
                     }
                     panel.show(cx);
