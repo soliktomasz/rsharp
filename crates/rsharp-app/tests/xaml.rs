@@ -230,7 +230,7 @@ fn resources_follow_unsaved_edits_until_the_last_editor_closes(cx: &mut TestAppC
     wait(cx, "the other buffer sees the unsaved resource", |cx| buffer.read_with(cx, |b, _| b.diagnostics.is_empty()));
     cx.dispatch_action(rsharp_app::window::SplitRight);
     cx.run_until_parked();
-    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-w" } else { "ctrl-f4" });
+    cx.simulate_keystrokes("secondary-w");
     cx.run_until_parked();
     buffer.update(cx, |b, cx| b.replace_all(window_text.replace("Ghost", "Missing"), cx));
     wait(cx, "the surviving editor still checks dependent resources", |cx| {
@@ -240,7 +240,7 @@ fn resources_follow_unsaved_edits_until_the_last_editor_closes(cx: &mut TestAppC
     wait(cx, "closing one split keeps the unsaved resource", |cx| {
         buffer.read_with(cx, |b, _| b.diagnostics.is_empty())
     });
-    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-w" } else { "ctrl-f4" });
+    cx.simulate_keystrokes("secondary-w");
     wait(cx, "the discarded resource is missing again", |cx| {
         buffer.read_with(cx, |b, _| b.diagnostics.iter().any(|d| d.message.contains("'Ghost'")))
     });
@@ -1193,6 +1193,9 @@ fn wpf_gallery(name: &str) -> Option<Run> {
     restored(
         name,
         &[
+            // The Host builds with the SDK its .NET 10 runtime can load: restored by a newer one, the project names a
+            // WindowsDesktop reference pack the Host's SDK does not, and a fresh package cache has only that one.
+            ("global.json", "{ \"sdk\": { \"version\": \"10.0.100\", \"rollForward\": \"latestFeature\" } }\n"),
             ("Gallery.csproj", WPF_PROJECT),
             ("App.xaml", WPF_APP),
             ("App.xaml.cs", WPF_APP_CODE),
@@ -1517,15 +1520,23 @@ fn a_wpf_elements_x_name_renames_with_its_code_behinds_uses_and_the_code_goes_to
 
     // The field MarkupCompile makes for the button leads to its name in the XAML, once Roslyn has the project.
     let deadline = Instant::now() + Duration::from_secs(120);
-    while active(cx).as_ref() != Some(&xaml) {
+    let mut landed = None;
+    while landed.as_ref() != Some(&xaml) {
         assert!(
             Instant::now() < deadline,
-            "Go to Declaration on the field never reached the XAML's name: {:?}",
-            active(cx)
+            "Go to Declaration on the field never reached the XAML's name: it went to {landed:?}, saying {:?}; the code-behind's problems: {:?}",
+            main.read_with(cx, |m, _| m.said().map(str::to_string)),
+            cx.update(|_, cx| rsharp_app::buffer::find(&behind, cx).map(|b| b
+                .read(cx)
+                .diagnostics
+                .iter()
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()))
         );
         place_after(&main, &behind, "        G", cx);
         cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-b" } else { "f12" });
         pump(cx, Duration::from_secs(2));
+        landed = active(cx);
     }
     assert!(caret_line(&main, cx).contains("<Button x:Name=\"|Go\""), "not on the name: {}", caret_line(&main, cx));
 

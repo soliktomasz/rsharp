@@ -48,6 +48,8 @@ pub(super) struct DebugState {
     recent_attached: Option<rsharp_core::debug::DotnetProcess>,
     /// The Terminal tab the program runs in, when the configuration starts it there.
     terminal: Option<usize>,
+    /// Waits for that tab's program to start, to answer the adapter with its process.
+    terminal_wait: Option<gpui::Subscription>,
     /// What the adapter said while the session was still starting.
     pending: Vec<Said>,
     /// The session while it waits for its program's runtime, so Stop can end it from its first moment, as Rider's can.
@@ -207,6 +209,7 @@ impl DebugState {
             attached: None,
             recent_attached: None,
             terminal: None,
+            terminal_wait: None,
             pending: Vec::new(),
             starting: None,
             hot_reload: None,
@@ -457,36 +460,21 @@ impl MainWindow {
         self.dock.show(Tool::Terminal);
         self.debug.terminal = Some(id);
         self.said = Some("The program runs in the terminal".into());
-        let panel = self.terminal.clone();
-        cx.spawn(async move |_, cx| {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-            loop {
-                let state = panel
-                    .read_with(cx, |panel, _| {
-                        if let Some(problem) = panel.problem(id) {
-                            return Some(Err(problem.to_string()));
-                        }
-                        panel.session(id).map(|session| Ok(session.pid))
-                    })
-                    .unwrap_or(None);
-                match state {
-                    Some(Ok(pid)) => {
-                        let _ = reply.send(Ok(rsharp_dap::RunInTerminalAnswer { process_id: pid }));
-                        return;
-                    }
-                    Some(Err(problem)) => {
-                        let _ = reply.send(Err(problem));
-                        return;
-                    }
-                    None if std::time::Instant::now() > deadline => {
-                        let _ = reply.send(Err("The terminal did not start within 30 seconds".into()));
-                        return;
-                    }
-                    None => cx.background_executor().timer(std::time::Duration::from_millis(20)).await,
-                }
+        // Answered the moment the tab has its program: a timer polling for it fell minutes behind on a busy Linux runner,
+        // past the adapter's 30 s. That limit still ends the wait for a tab that never starts.
+        let mut reply = Some(reply);
+        self.debug.terminal_wait = Some(cx.observe(&self.terminal.clone(), move |_, panel, cx| {
+            let answer = match panel.read(cx).problem(id) {
+                Some(problem) => Err(problem.to_string()),
+                None => match panel.read(cx).session(id) {
+                    Some(session) => Ok(rsharp_dap::RunInTerminalAnswer { process_id: session.pid }),
+                    None => return,
+                },
+            };
+            if let Some(reply) = reply.take() {
+                let _ = reply.send(answer);
             }
-        })
-        .detach();
+        }));
         cx.notify();
     }
 
@@ -1337,6 +1325,11 @@ impl MainWindow {
             Said::Terminated | Said::Ended => {
                 // The exit status Said::Exited gave stands: a termination after it is the same session ending again.
                 if self.debug.phase == Phase::Idle {
+                    return;
+                }
+                // An adapter that dies as it starts may close its output before its start fails: the failure says why.
+                if self.debug.session.is_none() {
+                    self.debug.pending.push(said);
                     return;
                 }
                 let name = self.debug_name();

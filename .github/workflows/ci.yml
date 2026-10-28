@@ -76,6 +76,16 @@ jobs:
       - name: Build
         run: cargo build --workspace --all-targets
 
+      # Debugging another process asks macOS for its task port, which a member of _developer gets after a password
+      # prompt; the runner has no one to answer it, so the first attach waits for ever and every later one behind it.
+      # As Passenger's own CI does: the runner joins _developer and the right asks its members nothing.
+      - name: Let the debugger take hold of the runner's processes
+        if: runner.os == 'macOS'
+        run: |
+          sudo dseditgroup -o edit -a "$USER" -t user _developer
+          sudo dscacheutil -flushcache
+          sudo security authorizationdb write system.privilege.taskport is-developer
+
       - name: Tests
         # Every suite runs even after one fails, so a run shows all that failed, not only the first binary's.
         run: cargo test --workspace --no-fail-fast
