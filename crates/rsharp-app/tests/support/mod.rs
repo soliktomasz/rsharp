@@ -41,49 +41,6 @@ impl Run {
 
 impl Drop for Run {
     fn drop(&mut self) {
-        // DIAGNOSE (temporary): what a failed test's IDE logged and what MarkupCompile generated.
-        if std::thread::panicking() && std::env::var_os("RSHARP_DIAG").is_some() {
-            eprintln!(
-                "=== rsharp.log\n{}",
-                std::fs::read_to_string(self.state.join("logs/rsharp.log")).unwrap_or_default()
-            );
-            fn walk(dir: &std::path::Path) {
-                for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        walk(&path);
-                    } else if path.to_string_lossy().ends_with(".g.cs") || path.to_string_lossy().ends_with(".g.i.cs") {
-                        let text = std::fs::read_to_string(&path).unwrap_or_default();
-                        let lines: Vec<_> =
-                            text.lines().filter(|l| l.contains("#line") || l.contains(" Go;")).collect();
-                        eprintln!("=== {}\n{}", path.display(), lines.join("\n"));
-                    }
-                }
-            }
-            walk(&self.folder.join("obj"));
-            if self.folder.join("Gallery.csproj").is_file() {
-                let out = std::process::Command::new("dotnet")
-                    .args(["msbuild", "-nologo", "-v:n", "-t:Compile;CoreCompile;DesignTimeMarkupCompilation"])
-                    .args(["-p:DesignTimeBuild=true", "-p:BuildingProject=false", "-p:SkipCompilerExecution=true"])
-                    .args(["-p:ProvideCommandLineArgs=true"])
-                    .current_dir(&self.folder)
-                    .output();
-                if let Ok(out) = out {
-                    let text = String::from_utf8_lossy(&out.stdout);
-                    let lines: Vec<_> = text
-                        .lines()
-                        .filter(|l| {
-                            l.contains("MarkupCompile")
-                                || l.contains("error")
-                                || l.contains("warning")
-                                || l.contains("MC")
-                        })
-                        .collect();
-                    eprintln!("=== CLI design-time build ({})\n{}", out.status, lines.join("\n"));
-                }
-                walk(&self.folder.join("obj"));
-            }
-        }
         let _ = std::fs::remove_dir_all(self.folder.parent().unwrap());
     }
 }
