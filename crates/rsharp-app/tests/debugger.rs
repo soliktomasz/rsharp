@@ -697,18 +697,18 @@ fn a_debug_configuration_that_runs_in_a_terminal_starts_its_program_there() {
         "the folder's own configuration runs the program in a terminal"
     );
     cx.simulate_keystrokes("f5");
-    let started = pump(cx, |cx| main.read_with(cx, |main, _| main.debug_terminal().is_some()));
+    // The tab itself: a program this short may have ended, and the session let go of its tab, by the first look.
+    let tab = |main: &Entity<MainWindow>, cx: &mut VisualTestContext| {
+        main.read_with(cx, |main, cx| main.terminal().read(cx).active_session())
+    };
+    let started = pump(cx, |cx| tab(&main, cx).is_some());
     assert!(
         started,
         "the program's Terminal tab did not start: {:?}",
         main.read_with(cx, |main, _| main.said().map(str::to_string))
     );
     let text = |main: &Entity<MainWindow>, cx: &mut VisualTestContext| {
-        main.read_with(cx, |main, cx| {
-            let Some(id) = main.debug_terminal() else { return String::new() };
-            let panel = main.terminal().read(cx);
-            panel.session(id).map(|session| session.screen.lock().unwrap().visible_text()).unwrap_or_default()
-        })
+        tab(main, cx).map(|session| session.screen.lock().unwrap().visible_text()).unwrap_or_default()
     };
     let wrote = pump(cx, |cx| text(&main, cx).contains("hello from the terminal"));
     assert!(wrote, "the program's output reached its Terminal tab: {:?}", text(&main, cx));
