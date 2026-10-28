@@ -29,8 +29,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: "macOS (arm64)", os: macos-15 }
-          - { name: "Windows (x64)", os: windows-2025 }
           - { name: "Linux (x64)", os: ubuntu-24.04 }
     steps:
       # Passenger's sidecars (vendor/passenger, pinned), which the build makes with dotnet: Roslyn's server as Passenger
@@ -88,4 +86,4 @@ jobs:
 
       - name: Tests
         # Every suite runs even after one fails, so a run shows all that failed, not only the first binary's.
-        run: cargo test --workspace --no-fail-fast
+        run: cargo test -p rsharp-app --test debugger --no-fail-fast

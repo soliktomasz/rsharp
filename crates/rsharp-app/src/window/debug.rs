@@ -434,6 +434,7 @@ impl MainWindow {
         reply: std::sync::mpsc::Sender<Result<rsharp_dap::RunInTerminalAnswer, String>>,
         cx: &mut Context<Self>,
     ) {
+        eprintln!("DIAG {:?} ui: runInTerminal reached the window", std::time::SystemTime::now());
         let Some((program, arguments)) = request.args.split_first() else {
             let _ = reply.send(Err("The debugger asked for a terminal with no program to start".into()));
             return;
@@ -471,6 +472,7 @@ impl MainWindow {
                     .unwrap_or(None);
                 match state {
                     Some(Ok(pid)) => {
+                        eprintln!("DIAG {:?} ui: terminal session {pid} found", std::time::SystemTime::now());
                         let _ = reply.send(Ok(rsharp_dap::RunInTerminalAnswer { process_id: pid }));
                         return;
                     }

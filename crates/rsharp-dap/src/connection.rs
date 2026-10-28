@@ -157,6 +157,7 @@ impl Connection {
                         "request_seq": id,
                         "command": what,
                     });
+                    eprintln!("DIAG {:?} dap: adapter asked {what}", std::time::SystemTime::now());
                     match requests(what, &arguments) {
                         Ok(body) => {
                             answer["success"] = json!(true);
@@ -167,7 +168,8 @@ impl Connection {
                             answer["message"] = json!(message);
                         }
                     }
-                    let _ = self.write(&answer);
+                    let wrote = self.write(&answer);
+                    eprintln!("DIAG {:?} dap: answered {what}: {wrote:?} {answer}", std::time::SystemTime::now());
                 }
                 _ => {}
             }
