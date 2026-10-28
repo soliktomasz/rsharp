@@ -1119,6 +1119,9 @@ fn wpf_gallery(name: &str) -> Option<Run> {
     restored(
         name,
         &[
+            // The Host builds with the SDK its .NET 10 runtime can load: restored by a newer one, the project names a
+            // WindowsDesktop reference pack the Host's SDK does not, and a fresh package cache has only that one.
+            ("global.json", "{ \"sdk\": { \"version\": \"10.0.100\", \"rollForward\": \"latestFeature\" } }\n"),
             ("Gallery.csproj", WPF_PROJECT),
             ("App.xaml", WPF_APP),
             ("App.xaml.cs", WPF_APP_CODE),
