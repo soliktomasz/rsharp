@@ -77,19 +77,27 @@ jobs:
         run: cargo build --workspace --all-targets
 
       - name: Diagnose (temporary)
+        if: runner.os == 'macOS'
         shell: bash
         env:
           RSHARP_DIAG: 1
-          RSHARP_ENGINE_LOG: ${{ runner.temp }}/engine.log
+          RSHARP_ENGINE_LOG: ${{ runner.temp }}/diag/engine.log
+          MSBUILDDEBUGENGINE: 1
+          MSBUILDDEBUGPATH: ${{ runner.temp }}/diag/msbuild
         run: |
+          mkdir -p "$RUNNER_TEMP/diag"
           cargo test -p rsharp-app --test xaml --no-fail-fast -- wpf_elements_x_name || true
-          case "$RUNNER_OS" in
-            Linux) cargo test -p rsharp-app --test debugger --no-fail-fast || true ;;
-            Windows) cargo test -p rsharp-app --test debugger --no-fail-fast -- data_breakpoint || true ;;
-            macOS) cargo test -p rsharp-dap --test passenger --no-fail-fast || true ;;
-          esac
-          echo "=== engine log"
-          grep -aE "Starting$|Launching|ConfigurationDone|Attach|Let process|handshake|terminal|Terminal|xception|ailed|rror|Data|write|Continue|Disconnect|Terminat" "$RUNNER_TEMP/engine.log" | grep -avE "Module loaded|symbols" | tail -c 900000 || true
+          unset MSBUILDDEBUGENGINE
+          # The cascade starts some 40 sessions in; twenty minutes reaches it and a few sessions after.
+          perl -e 'alarm shift; exec @ARGV' 1200 cargo test -p rsharp-dap --test passenger --no-fail-fast -- --test-threads=1 || true
+          ps -axo pid,ppid,stat,etime,command | grep -aiE "dotnet|Passenger|Debuggee|ConsoleApp" | grep -v grep || true
+
+      - name: Diagnostic logs (temporary)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-macos
+          path: ${{ runner.temp }}/diag
 
       - name: Tests
         if: false
