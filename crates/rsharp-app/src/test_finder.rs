@@ -118,7 +118,7 @@ impl TestFinder {
             let config = EditorConfig::for_file(path);
             let charset = config.get("charset").and_then(encodings::Charset::from_editorconfig);
             let text = Rope::from_str(&encodings::decode(&bytes, charset).0);
-            let tree = rsharp_languages::parse(&text, None);
+            let tree = rsharp_languages::parse(rsharp_languages::Grammar::CSharp, &text, None);
             self.on_disk.insert(path.into(), (stamp, rsharp_languages::testing::read(&tree, &text)));
         }
         self.on_disk.get(path).map(|(_, tests)| tests)

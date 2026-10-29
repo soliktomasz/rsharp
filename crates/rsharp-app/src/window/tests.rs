@@ -499,7 +499,7 @@ impl MainWindow {
         let context = self.active_editor().and_then(|e| {
             let e = e.read(cx);
             let b = e.buffer.read(cx);
-            if b.tree_version != b.document.version() {
+            if b.tree_version != b.document.version() || b.grammar != Some(rsharp_languages::Grammar::CSharp) {
                 return None;
             }
             let (owner, method) =

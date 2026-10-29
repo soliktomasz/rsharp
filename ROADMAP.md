@@ -497,7 +497,13 @@ as Passenger's editor pairs them, the inspector and the MCP `app_*` tools.
 Passenger: `Passenger.Xaml`, `Xaml/`, `LiveTree/`, the Inspectors; issues #186, #187, #191–#202.
 Done when: AvaloniaGallery and WpfGallery pass Passenger's XAML editing tests in RSharp.
 
-### Phase 10: Web languages and other files (M)
+### Phase 10: Web languages and other files (M) — begun
+Begun: colours for other files. XML (XAML and MSBuild among it), JSON, CSS, JavaScript, TypeScript and TSX, HTML,
+Markdown and YAML are tree-sitter's grammars, parsed incrementally as C# is and coloured by each grammar's own
+highlights query in Rider's colours (a tag, an attribute's name and value, an entity, a JSON or YAML key, a heading,
+code, a link), and their elements, objects, blocks and sections fold. Not yet: a language inside another (HTML's
+script and style, a Markdown fence, Markdown's inline emphasis and links), Razor's colours, a Markdown heading drawn
+bold, and the language servers below.
 - The web language servers bundle (TypeScript, HTML, CSS, JSON, ESLint), driven by the `rsharp-lsp` client on
   Node.js, plus Prettier.
 - Colours for other files: tree-sitter grammars (XML, JSON, CSS, JS/TS, HTML, Markdown, YAML) in place of

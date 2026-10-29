@@ -684,12 +684,13 @@ impl CodeEditor {
         let text = &self.text;
         let len = text.len_bytes();
         let line = text.byte_to_line(self.primary().head);
-        let tree = self.buffer.read(cx).tree.as_ref()?;
+        let buffer = self.buffer.read(cx);
+        let (grammar, tree) = (buffer.grammar?, buffer.tree.as_ref()?);
         let around = text.line_to_byte(line)..line_end(text, line);
         let lines =
             |f: &FoldRegion| text.byte_to_line(f.range.start.min(len))..=text.byte_to_line(f.range.end.min(len));
         let wanted = |f: &FoldRegion| folded.is_none_or(|want| self.folded.contains(f) == want);
-        let regions = folds_in(tree, text, around);
+        let regions = folds_in(grammar, tree, text, around);
         let starts = regions.iter().find(|f| *lines(f).start() == line && *lines(f).end() > line && wanted(f));
         starts.or_else(|| regions.iter().rev().find(|f| lines(f).contains(&line) && wanted(f))).cloned()
     }
@@ -1316,7 +1317,8 @@ moves! {
     CollapseRegion => |e, cx| { if let Some(region) = e.fold_at_caret(Some(false), cx) { e.toggle_fold(region, cx) } };
     ExpandAll => |e, cx| e.set_folded(Vec::clear, cx);
     CollapseAll => |e, cx| {
-        let all = e.buffer.read(cx).tree.as_ref().map(|tree| folds(tree, &e.text)).unwrap_or_default();
+        let buffer = e.buffer.read(cx);
+        let all = buffer.grammar.zip(buffer.tree.as_ref()).map(|(g, tree)| folds(g, tree, &e.text)).unwrap_or_default();
         e.set_folded(|folded| *folded = all, cx)
     };
     ToggleSoftWrap => |e, cx| { e.soft_wrap = !e.soft_wrap; e.autoscroll = true; cx.notify() };
@@ -1685,8 +1687,9 @@ impl Element for EditorElement {
                 .collect();
             let inline_values = buffer.inline_values.clone();
             let exception = buffer.exception.clone();
+            let parsed = buffer.grammar.zip(buffer.tree.as_ref());
             let syntax: Vec<Highlight> =
-                buffer.tree.as_ref().map(|tree| highlights(tree, text, byte_range.clone())).unwrap_or_default();
+                parsed.map(|(g, tree)| highlights(g, tree, text, byte_range.clone())).unwrap_or_default();
             // Roslyn's colours win where it named a word; the syntax's fill the rest.
             let tokens: Vec<(Range<usize>, Hsla)> = editor
                 .assist
@@ -1713,7 +1716,7 @@ impl Element for EditorElement {
             let mut line_numbers = Vec::with_capacity(shown.len());
             let mut fold_marks = Vec::with_capacity(shown.len());
             // The regions on screen, found in the tree; a folded one is among them, its first line being shown.
-            let regions = buffer.tree.as_ref().map(|tree| folds_in(tree, text, byte_range.clone())).unwrap_or_default();
+            let regions = parsed.map(|(g, tree)| folds_in(g, tree, text, byte_range.clone())).unwrap_or_default();
             for row in &shown {
                 let content: String = text.byte_slice(row.start..row.end).to_string();
                 let runs = runs_for(&content, row.start, &colours, &code_font);

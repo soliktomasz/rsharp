@@ -1,17 +1,21 @@
-//! Colour before any language server answers. C# is tree-sitter's grammar, parsed incrementally (a parse
-//! reuses the tree before the edit) on any thread, and coloured from syntax alone by the grammar's own
-//! highlights query, read only over the lines asked for.
+//! Colour before any language server answers. C# is tree-sitter's grammar, and so is every other file this colours
+//! (XML, JSON, CSS, JavaScript and TypeScript, HTML, Markdown, YAML), parsed incrementally (a parse reuses the tree
+//! before the edit) on any thread, and coloured from syntax alone by the grammar's own highlights query, read only
+//! over the lines asked for.
 // shortcut: syntax colours only, so a type is coloured only where its syntax shows it; Roslyn's semantic tokens
 // (Passenger's SemanticHighlighter) are the layer that colours every type reference.
 
 use rsharp_text::{Change, Rope};
 use std::ops::Range;
+use std::path::Path;
 use std::sync::OnceLock;
 use tree_sitter::{InputEdit, Language, Node, Parser, Point, Query, QueryCursor, StreamingIterator, Tree};
 
 pub mod testing;
 
-/// What a piece of C# is, in Rider's colour scheme's terms.
+/// What a piece of a file is, in Rider's colour scheme's terms: C#'s, then the markup's and data's (Rider's XML_TAG,
+/// XML_ATTRIBUTE_NAME and _VALUE, XML_ENTITY_REFERENCE, JSON.PROPERTY_KEY, YAML_SCALAR_KEY, MARKDOWN_HEADER_LEVEL_1,
+/// MARKDOWN_CODE_SPAN and MARKDOWN_LINK_DESTINATION).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Kind {
     Keyword,
@@ -24,6 +28,15 @@ pub enum Kind {
     Method,
     Property,
     Namespace,
+    Tag,
+    AttributeName,
+    AttributeValue,
+    Entity,
+    JsonKey,
+    YamlKey,
+    Heading,
+    Code,
+    LinkDestination,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -32,21 +45,117 @@ pub struct Highlight {
     pub kind: Kind,
 }
 
-fn language() -> Language {
-    tree_sitter_c_sharp::LANGUAGE.into()
+/// The tree-sitter grammar a file is parsed and coloured by, chosen by its name as Passenger's `Language.ForPath`.
+// shortcut: a language inside another (an HTML file's <script> and <style>, a Markdown fence, Markdown's inline
+// emphasis and links) keeps its host's colour; colour it through the grammars' injection queries when one is asked for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum Grammar {
+    CSharp,
+    Xml,
+    Json,
+    Css,
+    JavaScript,
+    TypeScript,
+    Tsx,
+    Html,
+    Markdown,
+    Yaml,
 }
 
-fn query() -> &'static Query {
-    static QUERY: OnceLock<Query> = OnceLock::new();
-    QUERY.get_or_init(|| {
-        Query::new(&language(), tree_sitter_c_sharp::HIGHLIGHTS_QUERY).expect("the grammar's own query compiles")
-    })
+impl Grammar {
+    const ALL: usize = 10;
+
+    pub fn for_path(path: &Path) -> Option<Grammar> {
+        let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+        Some(match extension.as_str() {
+            "cs" | "csx" => Grammar::CSharp,
+            "csproj" | "fsproj" | "vbproj" | "proj" | "props" | "targets" | "xml" | "axaml" | "xaml" | "paml"
+            | "slnx" | "resx" | "config" | "nuspec" | "manifest" | "runsettings" | "xsd" | "xslt" | "xsl" | "svg"
+            | "plist" | "storyboard" => Grammar::Xml,
+            "json" | "jsonc" => Grammar::Json,
+            "css" => Grammar::Css,
+            "js" | "mjs" | "cjs" | "jsx" => Grammar::JavaScript,
+            "ts" | "mts" | "cts" => Grammar::TypeScript,
+            "tsx" => Grammar::Tsx,
+            "html" | "htm" => Grammar::Html,
+            "md" | "markdown" => Grammar::Markdown,
+            "yml" | "yaml" => Grammar::Yaml,
+            _ => return None,
+        })
+    }
+
+    fn language(self) -> Language {
+        match self {
+            Grammar::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
+            Grammar::Xml => tree_sitter_xml::LANGUAGE_XML.into(),
+            Grammar::Json => tree_sitter_json::LANGUAGE.into(),
+            Grammar::Css => tree_sitter_css::LANGUAGE.into(),
+            Grammar::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
+            Grammar::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            Grammar::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
+            Grammar::Html => tree_sitter_html::LANGUAGE.into(),
+            Grammar::Markdown => tree_sitter_md::LANGUAGE.into(),
+            Grammar::Yaml => tree_sitter_yaml::LANGUAGE.into(),
+        }
+    }
+
+    /// The grammar's own highlights query, compiled the first time a file of it is coloured. TypeScript's adds to
+    /// JavaScript's, as its package lists them; JSX's tags are JavaScript's and TSX's.
+    fn query(self) -> &'static Query {
+        static QUERIES: [OnceLock<Query>; Grammar::ALL] = [const { OnceLock::new() }; Grammar::ALL];
+        QUERIES[self as usize].get_or_init(|| {
+            let js = tree_sitter_javascript::HIGHLIGHT_QUERY;
+            let jsx = tree_sitter_javascript::JSX_HIGHLIGHT_QUERY;
+            let ts = tree_sitter_typescript::HIGHLIGHTS_QUERY;
+            let source = match self {
+                Grammar::CSharp => tree_sitter_c_sharp::HIGHLIGHTS_QUERY.to_string(),
+                Grammar::Xml => tree_sitter_xml::XML_HIGHLIGHT_QUERY.to_string(),
+                Grammar::Json => tree_sitter_json::HIGHLIGHTS_QUERY.to_string(),
+                Grammar::Css => tree_sitter_css::HIGHLIGHTS_QUERY.to_string(),
+                Grammar::JavaScript => format!("{js}\n{jsx}"),
+                Grammar::TypeScript => format!("{js}\n{ts}"),
+                Grammar::Tsx => format!("{js}\n{jsx}\n{ts}"),
+                Grammar::Html => tree_sitter_html::HIGHLIGHTS_QUERY.to_string(),
+                Grammar::Markdown => tree_sitter_md::HIGHLIGHT_QUERY_BLOCK.to_string(),
+                Grammar::Yaml => tree_sitter_yaml::HIGHLIGHTS_QUERY.to_string(),
+            };
+            Query::new(&self.language(), &source).expect("the grammar's own query compiles")
+        })
+    }
+
+    /// The nodes that fold as a body: what is between a pair of braces, an element, a Markdown section.
+    fn bodies(self) -> &'static [&'static str] {
+        match self {
+            Grammar::CSharp => &[
+                "block",
+                "declaration_list",
+                "accessor_list",
+                "switch_body",
+                "enum_member_declaration_list",
+                "initializer_expression",
+            ],
+            Grammar::Xml | Grammar::Html => &["element", "script_element", "style_element"],
+            Grammar::Json => &["object", "array"],
+            Grammar::Css => &["block"],
+            Grammar::JavaScript | Grammar::TypeScript | Grammar::Tsx => &[
+                "statement_block",
+                "class_body",
+                "object",
+                "switch_body",
+                "interface_body",
+                "enum_body",
+                "object_type",
+            ],
+            Grammar::Markdown => &["section", "fenced_code_block"],
+            Grammar::Yaml => &["block_mapping_pair"],
+        }
+    }
 }
 
 /// Parses `text`, reusing `old` (already told the edits since, by [`edit`]) where nothing changed.
-pub fn parse(text: &Rope, old: Option<&Tree>) -> Tree {
+pub fn parse(grammar: Grammar, text: &Rope, old: Option<&Tree>) -> Tree {
     let mut parser = Parser::new();
-    parser.set_language(&language()).expect("the grammar matches tree-sitter's version");
+    parser.set_language(&grammar.language()).expect("the grammar matches tree-sitter's version");
     let mut read = |byte: usize, _: Point| -> &[u8] {
         if byte >= text.len_bytes() {
             return &[];
@@ -76,15 +185,15 @@ pub struct FoldRegion {
 
 /// Every region that folds, sorted by start, as Rider's: a body in braces, a run of usings, a comment over several
 /// lines (or a run of line comments), and `#region` to `#endregion`.
-pub fn folds(tree: &Tree, text: &Rope) -> Vec<FoldRegion> {
-    folds_in(tree, text, 0..text.len_bytes())
+pub fn folds(grammar: Grammar, tree: &Tree, text: &Rope) -> Vec<FoldRegion> {
+    folds_in(grammar, tree, text, 0..text.len_bytes())
 }
 
 /// The regions that fold among the nodes that meet `range`: what the lines on screen need, found in time that
 /// grows with them and the tree's depth, not with the file.
-pub fn folds_in(tree: &Tree, text: &Rope, range: Range<usize>) -> Vec<FoldRegion> {
+pub fn folds_in(grammar: Grammar, tree: &Tree, text: &Rope, range: Range<usize>) -> Vec<FoldRegion> {
     let mut out = Vec::new();
-    visit(tree.root_node(), text, &range, &mut out);
+    visit(grammar.bodies(), tree.root_node(), text, &range, &mut out);
     out.sort_by_key(|f| (f.range.start, std::cmp::Reverse(f.range.end)));
     out
 }
@@ -93,12 +202,12 @@ fn fold_kind(node: &Node, text: &Rope) -> Option<FoldKind> {
     match node.kind() {
         "using_directive" => Some(FoldKind::Usings),
         "comment" if text.byte_slice(node.byte_range()).chars().take(3).eq("///".chars()) => Some(FoldKind::DocComment),
-        "comment" => Some(FoldKind::Comment),
+        "comment" | "Comment" => Some(FoldKind::Comment),
         _ => None,
     }
 }
 
-fn visit(node: Node, text: &Rope, range: &Range<usize>, out: &mut Vec<FoldRegion>) {
+fn visit(bodies: &[&str], node: Node, text: &Rope, range: &Range<usize>, out: &mut Vec<FoldRegion>) {
     let line = |byte: usize| text.byte_to_line(byte.min(text.len_bytes()));
     let close = |run: &mut Option<(FoldKind, Range<usize>)>, out: &mut Vec<FoldRegion>| {
         if let Some((kind, range)) = run.take()
@@ -154,14 +263,7 @@ fn visit(node: Node, text: &Rope, range: &Range<usize>, out: &mut Vec<FoldRegion
         } else {
             close(&mut run, out);
             match child.kind() {
-                "block"
-                | "declaration_list"
-                | "accessor_list"
-                | "switch_body"
-                | "enum_member_declaration_list"
-                | "initializer_expression"
-                    if !past && line(span.start) < line(span.end) =>
-                {
+                body if bodies.contains(&body) && !past && line(span.start) < line(span.end) => {
                     out.push(FoldRegion { range: span.clone(), kind: FoldKind::Body });
                 }
                 "preproc_region" if !past => regions.push(span.start),
@@ -174,7 +276,7 @@ fn visit(node: Node, text: &Rope, range: &Range<usize>, out: &mut Vec<FoldRegion
                 _ => {}
             }
             if !past && child.child_count() > 0 && span.end >= range.start {
-                visit(child, text, range, out);
+                visit(bodies, child, text, range, out);
             }
         }
         if !cursor.goto_next_sibling() {
@@ -282,8 +384,8 @@ pub fn edit(tree: &mut Tree, change: &Change) {
 }
 
 /// The colours within `range` (the lines on screen), each piece once, in order.
-pub fn highlights(tree: &Tree, text: &Rope, range: Range<usize>) -> Vec<Highlight> {
-    let query = query();
+pub fn highlights(grammar: Grammar, tree: &Tree, text: &Rope, range: Range<usize>) -> Vec<Highlight> {
+    let query = grammar.query();
     let mut cursor = QueryCursor::new();
     cursor.set_byte_range(range);
     let source = |node: Node| text.byte_slice(node.byte_range()).chunks().map(str::as_bytes);
@@ -294,7 +396,7 @@ pub fn highlights(tree: &Tree, text: &Rope, range: Range<usize>) -> Vec<Highligh
     while let Some((found, index)) = captures.next() {
         let capture = found.captures[*index];
         let mut range = capture.node.byte_range();
-        let Some(kind) = kind_of(&query.capture_names()[capture.index as usize], &capture.node, text) else {
+        let Some(kind) = kind_of(grammar, query.capture_names()[capture.index as usize], &capture.node, text) else {
             continue;
         };
         while held.first().is_some_and(|h| h.range.start <= range.start) {
@@ -347,20 +449,92 @@ fn string_pieces(node: &Node) -> Vec<Range<usize>> {
     pieces
 }
 
-fn kind_of(capture: &str, node: &Node, text: &Rope) -> Option<Kind> {
-    Some(match capture {
-        "keyword" | "type.builtin" | "constant.builtin" => Kind::Keyword,
-        "string" => Kind::String,
-        "string.escape" => Kind::StringEscape,
-        "number" => Kind::Number,
-        "comment" if text.byte_slice(node.byte_range()).chars().take(3).eq("///".chars()) => Kind::DocComment,
-        "comment" => Kind::Comment,
-        "type" | "constructor" | "attribute" => Kind::Type,
-        "function" => Kind::Method,
-        "property.definition" => Kind::Property,
-        "module" => Kind::Namespace,
-        _ => return None,
+fn kind_of(grammar: Grammar, capture: &str, node: &Node, text: &Rope) -> Option<Kind> {
+    let node_kind = node.kind();
+    Some(match (grammar, capture) {
+        (_, "comment") if text.byte_slice(node.byte_range()).chars().take(3).eq("///".chars()) => Kind::DocComment,
+        (_, "comment") => Kind::Comment,
+        (Grammar::CSharp, _) => match capture {
+            "keyword" | "type.builtin" | "constant.builtin" => Kind::Keyword,
+            "string" => Kind::String,
+            "string.escape" => Kind::StringEscape,
+            "number" => Kind::Number,
+            "type" | "constructor" | "attribute" => Kind::Type,
+            "function" => Kind::Method,
+            "property.definition" => Kind::Property,
+            "module" => Kind::Namespace,
+            _ => return None,
+        },
+        // The whole tag in the tag's colour (its brackets and its =), as Rider's XML_TAG; a quote is its value's.
+        (Grammar::Xml | Grammar::Html, _) => match capture {
+            "tag" | "keyword" | "constant" if node_kind == "doctype" => Kind::Tag,
+            "tag" | "keyword" => Kind::Tag,
+            "punctuation.delimiter" | "punctuation.bracket" | "operator"
+                if matches!(node_kind, "<" | ">" | "</" | "/>" | "<?" | "?>" | "<!" | "=") =>
+            {
+                Kind::Tag
+            }
+            "property" | "attribute" => Kind::AttributeName,
+            "string" | "string.special" | "number" | "boolean" => Kind::AttributeValue,
+            "constant" | "constant.builtin" => Kind::Entity,
+            _ => return None,
+        },
+        (Grammar::Json, _) => match capture {
+            "string.special.key" => Kind::JsonKey,
+            "string" if is_key(node) => Kind::JsonKey,
+            "string" => Kind::String,
+            "escape" => Kind::StringEscape,
+            "number" => Kind::Number,
+            "constant.builtin" => Kind::Keyword,
+            _ => return None,
+        },
+        // Selectors in the tag's colour, property names in the keyword's, values plain, units with their numbers.
+        (Grammar::Css, _) => match capture {
+            "property" if node_kind == "property_name" => Kind::Keyword,
+            "tag" | "property" | "attribute" => Kind::Tag,
+            "keyword" => Kind::Keyword,
+            "string" => Kind::String,
+            "number" | "type" | "string.special" => Kind::Number,
+            "function" => Kind::Method,
+            _ => return None,
+        },
+        (Grammar::JavaScript | Grammar::TypeScript | Grammar::Tsx, _) => match capture {
+            "keyword" | "constant.builtin" | "type.builtin" => Kind::Keyword,
+            "variable.builtin" if matches!(node_kind, "this" | "super") => Kind::Keyword,
+            "string" | "string.special" => Kind::String,
+            "number" => Kind::Number,
+            "function" | "function.method" | "function.builtin" => Kind::Method,
+            "type" | "constructor" => Kind::Type,
+            "property" => Kind::Property,
+            "tag" => Kind::Tag,
+            "attribute" => Kind::AttributeName,
+            _ => return None,
+        },
+        (Grammar::Markdown, _) => match capture {
+            "text.title" => Kind::Heading,
+            "punctuation.special" => Kind::Keyword,
+            "text.literal" => Kind::Code,
+            "text.uri" => Kind::LinkDestination,
+            _ => return None,
+        },
+        // Keys in their colour, quoted scalars as strings, every plain scalar plain, as Rider's lexer.
+        (Grammar::Yaml, _) => match capture {
+            "property" => Kind::YamlKey,
+            "string" if matches!(node_kind, "double_quote_scalar" | "single_quote_scalar") && is_key(node) => {
+                Kind::YamlKey
+            }
+            "string" if matches!(node_kind, "double_quote_scalar" | "single_quote_scalar") => Kind::String,
+            "attribute" => Kind::Keyword,
+            _ => return None,
+        },
     })
+}
+
+/// Whether a JSON string or a YAML scalar is a key: its pair's `key`, itself or through YAML's flow node.
+fn is_key(node: &Node) -> bool {
+    let Some(parent) = node.parent() else { return false };
+    let (holder, pair) = if parent.kind() == "flow_node" { (parent, parent.parent()) } else { (*node, Some(parent)) };
+    pair.and_then(|p| p.child_by_field_name("key")).is_some_and(|key| key.id() == holder.id())
 }
 
 #[cfg(test)]
@@ -369,7 +543,7 @@ mod tests {
     fn a_declaration_is_found_from_a_name_in_it_with_its_doc_comment_and_a_parameter_refused() {
         let code = "class A\n{\n    /// Says it.\n    void Say(int times) { }\n    int a, b;\n}\n";
         let text = super::Rope::from(code);
-        let tree = super::parse(&text, None);
+        let tree = super::parse(super::Grammar::CSharp, &text, None);
         let method = super::declaration_at(&tree, &text, code.find("Say(").unwrap()).ok().unwrap();
         assert_eq!((&code[method.range.clone()], method.kind), ("/// Says it.\n    void Say(int times) { }", "method"));
         assert!(
@@ -395,8 +569,8 @@ mod tests {
     #[test]
     fn csharp_has_rider_colours_before_any_server_answers() {
         let text = Rope::from_str(SOURCE);
-        let tree = parse(&text, None);
-        let h = highlights(&tree, &text, 0..text.len_bytes());
+        let tree = parse(Grammar::CSharp, &text, None);
+        let h = highlights(Grammar::CSharp, &tree, &text, 0..text.len_bytes());
         assert_eq!(kind_at(&h, SOURCE, "public"), Some(Kind::Keyword));
         assert_eq!(kind_at(&h, SOURCE, "Program"), Some(Kind::Type));
         assert_eq!(kind_at(&h, SOURCE, "Main"), Some(Kind::Method));
@@ -413,30 +587,113 @@ mod tests {
     #[test]
     fn typing_never_colours_differently_from_a_fresh_parse() {
         let mut document = Document::new(SOURCE);
-        let mut tree = parse(document.text(), None);
+        let mut tree = parse(Grammar::CSharp, document.text(), None);
         let at = SOURCE.find("    static").unwrap();
         document.set_selections(vec![Selection::caret(at)]);
         for key in ["    int count = 0;\n", "\"unfinished", "\n"] {
             for change in document.apply(insert(document.text(), document.selections(), key)) {
                 edit(&mut tree, &change);
             }
-            tree = parse(document.text(), Some(&tree));
-            let fresh = parse(document.text(), None);
+            tree = parse(Grammar::CSharp, document.text(), Some(&tree));
+            let fresh = parse(Grammar::CSharp, document.text(), None);
             let all = 0..document.text().len_bytes();
             assert_eq!(
-                highlights(&tree, document.text(), all.clone()),
-                highlights(&fresh, document.text(), all),
+                highlights(Grammar::CSharp, &tree, document.text(), all.clone()),
+                highlights(Grammar::CSharp, &fresh, document.text(), all),
                 "after typing {key:?}, the reused parse coloured the file differently"
             );
         }
+    }
+
+    /// The kind each `word` (its first occurrence in `source`) is coloured as, by the grammar for `name`.
+    fn colours(name: &str, source: &str, words: &[&str]) -> Vec<Option<Kind>> {
+        let grammar = Grammar::for_path(std::path::Path::new(name)).expect("the file has a grammar");
+        let text = Rope::from_str(source);
+        let h = highlights(grammar, &parse(grammar, &text, None), &text, 0..text.len_bytes());
+        words.iter().map(|w| kind_at(&h, source, w)).collect()
+    }
+
+    #[test]
+    fn other_files_have_rider_colours_from_their_own_grammars() {
+        use Kind::*;
+        let xml = "<?xml version=\"1.0\"?>\n<!-- note -->\n<Project Sdk=\"Microsoft.NET.Sdk\">&amp;</Project>\n";
+        assert_eq!(
+            colours("App.csproj", xml, &["<Project", "Project", "Sdk", "\"Microsoft", "&amp;", "<!--"]),
+            [Some(Tag), Some(Tag), Some(AttributeName), Some(AttributeValue), Some(Entity), Some(Comment)],
+            "an MSBuild file's tags, attributes, values, entities and comments are not Rider's"
+        );
+        let json = "{ \"name\": \"app\", \"n\": 4, \"on\": true } // c\n";
+        assert_eq!(
+            colours("tsconfig.json", json, &["\"name\"", "\"app\"", "4", "true", "// c"]),
+            [Some(JsonKey), Some(String), Some(Number), Some(Keyword), Some(Comment)],
+            "JSON's keys are not told apart from its values"
+        );
+        let css = ".card > a:hover { color: #fff; margin: 4px; }\n";
+        assert_eq!(
+            colours("site.css", css, &["card", "a:", "hover", "color", "#fff", "4px"]),
+            [Some(Tag), Some(Tag), Some(Tag), Some(Keyword), Some(Number), Some(Number)],
+            "CSS's selectors, property names and values are not Rider's"
+        );
+        let ts = "class Box { size: number = 3; open(): void { this.show(\"x\"); } }\n";
+        assert_eq!(
+            colours("box.ts", ts, &["class", "Box", "number", "3", "open", "this", "show", "\"x\""]),
+            [
+                Some(Keyword),
+                Some(Type),
+                Some(Keyword),
+                Some(Number),
+                Some(Method),
+                Some(Keyword),
+                Some(Method),
+                Some(String)
+            ],
+            "TypeScript is not coloured as JavaScript with its types"
+        );
+        let tsx = "const a = <Card title=\"t\" />;\n";
+        assert_eq!(colours("a.tsx", tsx, &["const", "title"]), [Some(Keyword), Some(AttributeName)]);
+        assert_eq!(colours("a.js", tsx, &["const", "title"]), [Some(Keyword), Some(AttributeName)]);
+        let html = "<!DOCTYPE html>\n<div class=\"x\">hi</div>\n";
+        assert_eq!(
+            colours("index.html", html, &["div", "class", "x\"", "hi"]),
+            [Some(Tag), Some(AttributeName), Some(AttributeValue), None],
+            "HTML's tags and attributes are not Rider's, or its text is coloured"
+        );
+        let md = "# Title\n\n- item [a](http://x)\n\n```\ncode\n```\n";
+        assert_eq!(
+            colours("README.md", md, &["# ", "Title", "- ", "code"]),
+            [Some(Keyword), Some(Heading), Some(Keyword), Some(Code)],
+            "Markdown's headings, markers and code are not Rider's"
+        );
+        let yaml = "name: build\n\"on\": [push]\nsteps: 3\n";
+        assert_eq!(
+            colours("ci.yml", yaml, &["name", "build", "\"on\"", "3"]),
+            [Some(YamlKey), None, Some(YamlKey), None],
+            "YAML's keys are not told apart, or a plain scalar is coloured"
+        );
+        assert_eq!(Grammar::for_path(std::path::Path::new("notes.txt")), None, "plain text took a grammar");
+    }
+
+    #[test]
+    fn markup_and_data_fold_by_their_elements_and_objects() {
+        let fold = |name: &str, source: &str| {
+            let grammar = Grammar::for_path(std::path::Path::new(name)).unwrap();
+            let text = Rope::from_str(source);
+            folds(grammar, &parse(grammar, &text, None), &text).into_iter().map(|f| f.range).collect::<Vec<_>>()
+        };
+        let xml = "<Project>\n  <PropertyGroup>\n    <A>1</A>\n  </PropertyGroup>\n</Project>\n";
+        assert_eq!(fold("a.props", xml).len(), 2, "an XML file's elements over several lines did not fold");
+        let json = "{\n  \"a\": [\n    1\n  ]\n}\n";
+        assert_eq!(fold("a.json", json).len(), 2, "a JSON object and array over several lines did not fold");
     }
 
     #[test]
     fn bodies_usings_comments_and_regions_fold() {
         let source = "using A;\nusing B;\n\n/// <summary>\n/// Doc\n/// </summary>\nclass C\n{\n    #region Fields\n    int x;\n    #endregion\n    void M()\n    {\n    }\n}\n";
         let text = Rope::from_str(source);
-        let found: Vec<(FoldKind, &str)> =
-            folds(&parse(&text, None), &text).iter().map(|f| (f.kind, &source[f.range.clone()])).collect();
+        let found: Vec<(FoldKind, &str)> = folds(Grammar::CSharp, &parse(Grammar::CSharp, &text, None), &text)
+            .iter()
+            .map(|f| (f.kind, &source[f.range.clone()]))
+            .collect();
         let kinds: Vec<FoldKind> = found.iter().map(|f| f.0).collect();
         assert_eq!(
             kinds,
@@ -449,7 +706,7 @@ mod tests {
     #[test]
     fn a_bracket_finds_its_pair_from_either_side() {
         let source = "class C { void M(int a) { var x = new[] { 1 }; } }";
-        let tree = parse(&Rope::from_str(source), None);
+        let tree = parse(Grammar::CSharp, &Rope::from_str(source), None);
         let open = source.find("(int").unwrap();
         let close = source.find(") {").unwrap();
         assert_eq!(matching_bracket(&tree, open), Some((open..open + 1, close..close + 1)));

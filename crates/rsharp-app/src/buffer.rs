@@ -7,7 +7,7 @@ use futures::StreamExt;
 use gpui::{App, AppContext, Context, Entity, EntityId, EventEmitter, Global, Task, WeakEntity};
 use rsharp_core::editorconfig::EditorConfig;
 use rsharp_core::encodings::{Charset, decode, encode};
-use rsharp_languages::{edit as edit_tree, parse};
+use rsharp_languages::{Grammar, edit as edit_tree, parse};
 use rsharp_lsp::LanguageServer;
 use rsharp_text::{Change, Document, Edit, EditPlan, Indent, LineEnding, Rope, Selection, detect_indent, line_end};
 use serde_json::{Value, json};
@@ -76,7 +76,8 @@ pub struct Buffer {
     /// The exception a stop is on, named at the line that threw it.
     pub exception: Option<(usize, String)>,
     git_comparing: Option<Task<()>>,
-    is_csharp: bool,
+    /// What the file is parsed and coloured by; a file of no grammar here is plain text.
+    pub grammar: Option<Grammar>,
     parsing: Option<Task<()>>,
     server: Option<(Arc<LanguageServer>, String)>,
     checking: Option<Task<()>>,
@@ -221,7 +222,7 @@ impl Buffer {
         let document = Document::new(&text);
         let (indent, indent_source) = choose_indent(&config, document.text());
         let read_only = std::fs::metadata(&path).is_ok_and(|m| m.permissions().readonly());
-        let is_csharp = path.extension().is_some_and(|e| e == "cs" || e == "csx");
+        let grammar = Grammar::for_path(&path);
         let mut buffer = Self {
             path,
             document,
@@ -243,7 +244,7 @@ impl Buffer {
             inline_values: None,
             exception: None,
             git_comparing: None,
-            is_csharp,
+            grammar,
             parsing: None,
             server: None,
             checking: None,
@@ -474,9 +475,7 @@ impl Buffer {
     }
 
     fn reparse(&mut self, cx: &mut Context<Self>) {
-        if !self.is_csharp {
-            return;
-        }
+        let Some(grammar) = self.grammar else { return };
         let text = self.document.text().clone();
         let old = self.tree.clone();
         let version = self.document.version();
@@ -487,7 +486,7 @@ impl Buffer {
             if pause > Duration::ZERO {
                 cx.background_executor().timer(pause).await;
             }
-            let tree = cx.background_executor().spawn(async move { parse(&text, old.as_ref()) }).await;
+            let tree = cx.background_executor().spawn(async move { parse(grammar, &text, old.as_ref()) }).await;
             let _ = this.update(cx, |buffer, cx| {
                 if buffer.document.version() == version {
                     buffer.tree = Some(tree);

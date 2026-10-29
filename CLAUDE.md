@@ -113,6 +113,10 @@ terminal and takes focus for a moment.
   through a tree cursor: a node's own sibling steps find its parent from the root) and the bracket pairs come from
   the same tree. tree-sitter's incremental parse grows with the members of one class, so a file over 4 MB is parsed
   once typing pauses; `tests/budget.rs` holds the UI thread's work per key flat on a file ten times larger.
+  Every other file with a grammar here (`Grammar::for_path`, Passenger's `Language.ForPath`: XML for XAML and MSBuild,
+  JSON, CSS, JavaScript, TypeScript and TSX, HTML, Markdown, YAML) is parsed and coloured the same way, by its grammar's
+  own query, its captures mapped to Rider's markup and data kinds, and folds by its `bodies`; another file is plain
+  text. A new grammar is its crate, its arm in each of `Grammar`'s matches and in `kind_of`, and its notice.
   `testing` reads test declarations, traits and caret context from that same tree, without visiting method bodies.
 - Unit tests: `rsharp-core::testing` owns test identities, MSBuild's actual target paths, and native Rust socket
   clients for Microsoft.Testing.Platform and VSTest. `rsharp-app::test_finder` caches closed files by stamp and

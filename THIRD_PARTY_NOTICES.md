@@ -28,6 +28,14 @@ change that brings it in.
 | `trash` | MIT | Artur Kovacs and contributors |
 | `tree-sitter` | MIT | Max Brunsfeld |
 | `tree-sitter-c-sharp` | MIT | Max Brunsfeld, Damien Guard and contributors |
+| `tree-sitter-css` | MIT | Max Brunsfeld, Amaan Qureshi |
+| `tree-sitter-html` | MIT | Max Brunsfeld, Amaan Qureshi |
+| `tree-sitter-javascript` | MIT | Max Brunsfeld, Amaan Qureshi |
+| `tree-sitter-json` | MIT | Max Brunsfeld, Amaan Qureshi |
+| `tree-sitter-md` | MIT | Matthias Deiml |
+| `tree-sitter-typescript` | MIT | Max Brunsfeld, Amaan Qureshi |
+| `tree-sitter-xml` | MIT | ObserverOfTime, Amaan Qureshi |
+| `tree-sitter-yaml` | MIT | Ika, Amaan Qureshi (tree-sitter-grammars contributors) |
 | `ureq` | MIT OR Apache-2.0 | Martin Algesten and contributors |
 
 `symbolic-ppdb` reads the sources the debugger's decompiled PDBs embed: it brings symbolic-common (MIT) and watto

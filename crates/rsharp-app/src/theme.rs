@@ -210,7 +210,9 @@ pub mod editor {
     }
 }
 
-/// Rider Dark's colour for a kind of C#.
+/// Rider Dark's colour for a kind of code: ReSharper's for C#, Rider's own attributes for markup and data (XML_TAG,
+/// XML_ATTRIBUTE_NAME and _VALUE, XML_ENTITY_REFERENCE, JSON.PROPERTY_KEY, YAML_SCALAR_KEY, MARKDOWN_HEADER_LEVEL_1,
+/// MARKDOWN_CODE_SPAN, MARKDOWN_LINK_DESTINATION), as Passenger's RiderScheme.axaml carries them.
 pub fn syntax(kind: Kind) -> Hsla {
     rgb(match kind {
         Kind::Keyword => 0x6C95EB,
@@ -221,6 +223,12 @@ pub fn syntax(kind: Kind) -> Hsla {
         Kind::Type | Kind::Namespace => 0xC191FF,
         Kind::Method => 0x39CC9B,
         Kind::Property => 0x66C3CC,
+        Kind::Tag | Kind::YamlKey => 0xC191FF,
+        Kind::AttributeName | Kind::Code => 0x85C46C,
+        Kind::AttributeValue => 0xC9A26D,
+        Kind::Entity => 0xFFD49E,
+        Kind::JsonKey | Kind::Heading => 0x66C3CC,
+        Kind::LinkDestination => 0x39CC9B,
     })
     .into()
 }

@@ -2,7 +2,7 @@ mod support;
 
 use rsharp_app::test_finder::{TestFinder, holds_tests};
 use rsharp_core::project::{EvaluatedItem, EvaluatedProject, FrameworkDependencies, PackageDependency};
-use rsharp_languages::{parse, testing};
+use rsharp_languages::{Grammar, parse, testing};
 use rsharp_text::Rope;
 use std::collections::HashMap;
 use std::path::Path;
@@ -14,7 +14,7 @@ fn project(path: &Path, tests: bool) -> EvaluatedProject {
 
 fn source(code: &str) -> testing::FileTests {
     let text = Rope::from_str(code);
-    testing::read(&parse(&text, None), &text)
+    testing::read(&parse(Grammar::CSharp, &text, None), &text)
 }
 
 #[test]

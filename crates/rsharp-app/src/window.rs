@@ -1609,8 +1609,13 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) -> Entity<CodeEditor> {
         let editor = cx.new(|cx| CodeEditor::new(buffer.clone(), cx));
-        cx.subscribe(&buffer, |w, _, event: &crate::buffer::BufferEvent, cx| match event {
-            crate::buffer::BufferEvent::Parsed => w.refresh_open_tests(cx),
+        cx.subscribe(&buffer, |w, buffer, event: &crate::buffer::BufferEvent, cx| match event {
+            // Tests are read from C# alone; another file's parse leaves them as they were.
+            crate::buffer::BufferEvent::Parsed
+                if buffer.read(cx).grammar == Some(rsharp_languages::Grammar::CSharp) =>
+            {
+                w.refresh_open_tests(cx)
+            }
             crate::buffer::BufferEvent::Moved(_) => w.refresh_tests(cx),
             _ => {}
         })
