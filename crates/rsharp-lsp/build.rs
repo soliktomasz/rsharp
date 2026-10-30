@@ -4,6 +4,7 @@
 //! (RSHARP_SIDECARS, RSHARP_ROSLYN_SERVER). A machine without dotnet or the submodule's checkout builds without them, said
 //! as a warning, and runs the person's own `roslyn-language-server` tool instead. RSharp's own XAML host (`xaml-host/`,
 //! Passenger.Xaml behind JSON lines) is published beside them into `sidecars/xaml`, its previewer's entry into `sidecars/xaml/preview`.
+//! The web language servers Passenger pins go to `sidecars/web` (RSHARP_WEB), whatever became of the rest.
 
 use std::path::{Path, PathBuf};
 
@@ -31,6 +32,10 @@ fn main() {
     for input in ["Directory.Packages.props", "Directory.Build.props", "Directory.Build.targets", "global.json"] {
         println!("cargo:rerun-if-changed={}", passenger.join("..").join(input).display());
     }
+    // target/<profile>/sidecars, beside the executables, whichever crate's build asked.
+    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let sidecars = out.ancestors().nth(3).expect("OUT_DIR is target/<profile>/build/<crate>/out").join("sidecars");
+    web_servers(&passenger.join("Passenger.Lsp/WebServers"), &sidecars.join("web"));
     let without = |why: &str| {
         println!(
             "cargo:warning=Passenger's sidecars were not built ({why}); RSharp runs the installed roslyn-language-server tool"
@@ -44,9 +49,6 @@ fn main() {
         return without("vendor/passenger is not checked out: git submodule update --init");
     }
     let Some(dotnet) = rsharp_core::programs::dotnet() else { return without("dotnet was not found") };
-    // target/<profile>/sidecars, beside the executables, whichever crate's build asked.
-    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    let sidecars = out.ancestors().nth(3).expect("OUT_DIR is target/<profile>/build/<crate>/out").join("sidecars");
     // What the command printed, its warnings and errors included, told apart from its answer below: MSBuild says
     // "MSBuild server unavailable ... Falling back to an in-process build" on stderr where a server cannot start, and
     // that line must not be read as the property asked for.
@@ -83,4 +85,58 @@ fn main() {
     );
     println!("cargo:rustc-env=RSHARP_SIDECARS={}", sidecars.display());
     println!("cargo:rustc-env=RSHARP_ROSLYN_SERVER={server}");
+}
+
+/// The language servers for TypeScript and JavaScript, HTML, CSS and JSON, as Passenger's WebServers.targets carries
+/// them: its package-lock.json put in place by npm, each package checked against the sha512 it pins, the HTML server's
+/// own TypeScript lib files moved to where it reads them (`../../node_modules/typescript/lib` from its folder). Done again
+/// only when the lock file changes. Without the submodule or npm, web files keep their colours only, said as a warning.
+// shortcut: the HTML server's own TypeScript keeps its tsserver and translations (Passenger leaves out a third of the
+// size); leave them out when the packages ship.
+fn web_servers(pins: &Path, out: &Path) {
+    let lock_file = pins.join("package-lock.json");
+    println!("cargo:rerun-if-changed={}", lock_file.display());
+    let stamp = out.join("rsharp.stamp");
+    let none = |why: &str| {
+        println!(
+            "cargo:warning=The web language servers were not put in place ({why}); web files keep their colours only"
+        );
+        println!("cargo:rustc-env=RSHARP_WEB=");
+    };
+    let Ok(lock) = std::fs::read(&lock_file) else { return none("vendor/passenger is not checked out") };
+    if std::fs::read(&stamp).is_ok_and(|done| done == lock) {
+        println!("cargo:rustc-env=RSHARP_WEB={}", out.display());
+        return;
+    }
+    let mut also = vec![PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/usr/local/bin")];
+    if cfg!(windows) {
+        also.push(r"C:\Program Files\nodejs".into());
+    }
+    let Some(npm) = rsharp_core::programs::find(if cfg!(windows) { "npm.cmd" } else { "npm" }, &also) else {
+        return none("npm was not found");
+    };
+    let _ = std::fs::remove_dir_all(out);
+    std::fs::create_dir_all(out).unwrap();
+    for file in ["package.json", "package-lock.json"] {
+        std::fs::copy(pins.join(file), out.join(file)).unwrap();
+    }
+    let status = std::process::Command::new(&npm)
+        .args(["ci", "--ignore-scripts", "--no-audit", "--no-fund", "--loglevel=error"])
+        .current_dir(out)
+        .status()
+        .unwrap_or_else(|e| panic!("npm could not run: {e}"));
+    assert!(status.success(), "npm ci in {} failed", out.display());
+    let modules = out.join("node_modules");
+    let from = modules.join("vscode-langservers-extracted/node_modules/typescript/lib");
+    let to = modules.join("node_modules/typescript/lib");
+    std::fs::create_dir_all(&to).unwrap();
+    for entry in std::fs::read_dir(&from).unwrap_or_else(|e| panic!("{} is not there: {e}", from.display())) {
+        let name = entry.unwrap().file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("lib") && name.ends_with(".d.ts") {
+            std::fs::copy(from.join(&*name), to.join(&*name)).unwrap();
+        }
+    }
+    std::fs::write(&stamp, lock).unwrap();
+    println!("cargo:rustc-env=RSHARP_WEB={}", out.display());
 }

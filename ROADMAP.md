@@ -501,9 +501,14 @@ Done when: AvaloniaGallery and WpfGallery pass Passenger's XAML editing tests in
 Begun: colours for other files. XML (XAML and MSBuild among it), JSON, CSS, JavaScript, TypeScript and TSX, HTML,
 Markdown and YAML are tree-sitter's grammars, parsed incrementally as C# is and coloured by each grammar's own
 highlights query in Rider's colours (a tag, an attribute's name and value, an entity, a JSON or YAML key, a heading,
-code, a link), and their elements, objects, blocks and sections fold. Not yet: a language inside another (HTML's
-script and style, a Markdown fence, Markdown's inline emphasis and links), Razor's colours, a Markdown heading drawn
-bold, and the language servers below.
+code, a link), and their elements, objects, blocks and sections fold. The web language servers Passenger pins
+(typescript-language-server over TypeScript, VS Code's HTML, CSS and JSON servers) are put in place by the build
+through npm and run on Node.js, one per kind for the folder, started with the first file of its kind: a file's
+problems are marked as its server pushes them, completion opens at a word, a dot or the server's own triggers (HTML's
+`<`, CSS's `:`), and hover, Go to Declaration and Reformat Code answer as C#'s do; without Node.js the status bar says
+the file has its colours only. Not yet: a language inside another (HTML's script and style, a Markdown fence,
+Markdown's inline emphasis and links), Razor, a Markdown heading drawn bold, JSON schemas (package.json's and
+appsettings.json's keys), ESLint, Prettier, a server that ends started again, and the Settings' Node.js page.
 - The web language servers bundle (TypeScript, HTML, CSS, JSON, ESLint), driven by the `rsharp-lsp` client on
   Node.js, plus Prettier.
 - Colours for other files: tree-sitter grammars (XML, JSON, CSS, JS/TS, HTML, Markdown, YAML) in place of

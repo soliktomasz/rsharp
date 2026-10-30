@@ -80,6 +80,8 @@ pub struct Buffer {
     pub grammar: Option<Grammar>,
     parsing: Option<Task<()>>,
     server: Option<(Arc<LanguageServer>, String)>,
+    /// The language the file is open as in its server: Roslyn's `csharp`, or a web server's.
+    server_language: &'static str,
     checking: Option<Task<()>>,
     /// The projects Roslyn compiles the file in (a target framework of a multi-targeted project each), and the one its
     /// requests are about, as the editor's target framework switcher chose it.
@@ -247,6 +249,7 @@ impl Buffer {
             grammar,
             parsing: None,
             server: None,
+            server_language: "csharp",
             checking: None,
             contexts: Vec::new(),
             context: 0,
@@ -498,18 +501,26 @@ impl Buffer {
         }));
     }
 
-    /// Opens the file in the server and keeps it there, edit by edit.
+    /// Opens the file in Roslyn and keeps it there, edit by edit.
     pub fn attach_server(&mut self, server: Arc<LanguageServer>, cx: &mut Context<Self>) {
+        self.attach_server_as(server, "csharp", cx);
+    }
+
+    /// Opens the file in a server as `language` and keeps it there, edit by edit.
+    pub fn attach_server_as(&mut self, server: Arc<LanguageServer>, language: &'static str, cx: &mut Context<Self>) {
         if self.server.is_some() {
             return;
         }
         let uri = rsharp_core::paths::to_uri(&self.path);
         server.notify("textDocument/didOpen", json!({ "textDocument": {
-            "uri": uri, "languageId": "csharp", "version": self.document.version(), "text": self.document.text().to_string(),
+            "uri": uri, "languageId": language, "version": self.document.version(), "text": self.document.text().to_string(),
         }}));
         self.server = Some((server, uri));
+        self.server_language = language;
         self.check(Duration::ZERO, cx);
-        self.ask_contexts(cx);
+        if language == "csharp" {
+            self.ask_contexts(cx);
+        }
     }
 
     /// The file renamed on disk to `to`: known by its new path from now, the server told it is the new file, and every
@@ -531,7 +542,7 @@ impl Buffer {
         self.path = to.clone();
         self.on_disk = stamp(&self.path);
         if let Some(server) = server {
-            self.attach_server(server, cx);
+            self.attach_server_as(server, self.server_language, cx);
         }
         cx.emit(BufferEvent::Moved(to));
         cx.notify();
@@ -592,9 +603,13 @@ impl Buffer {
         }
     }
 
-    /// Asks the server for the file's problems once typing has paused.
+    /// Asks the server for the file's problems once typing has paused; a server that pushes them (the web servers)
+    /// is not asked.
     pub fn check(&mut self, after: Duration, cx: &mut Context<Self>) {
         let Some((server, uri)) = self.server.clone() else { return };
+        if self.server_language != "csharp" && server.capabilities["diagnosticProvider"].is_null() {
+            return;
+        }
         let version = self.document.version();
         self.checking = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(after).await;
@@ -604,26 +619,32 @@ impl Buffer {
                 if buffer.document.version() != version {
                     return;
                 }
-                let at = |p: &serde_json::Value| {
-                    buffer.document.offset_of_utf16(
-                        p["line"].as_u64().unwrap_or(0) as usize,
-                        p["character"].as_u64().unwrap_or(0) as usize,
-                    )
-                };
-                buffer.diagnostics = report["items"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter(|d| d["severity"].as_u64().is_some_and(|s| s <= 2))
-                    .map(|d| Diagnostic {
-                        range: at(&d["range"]["start"])..at(&d["range"]["end"]),
-                        error: d["severity"] == 1,
-                        message: d["message"].as_str().unwrap_or_default().to_string(),
-                    })
-                    .collect();
-                cx.notify();
+                buffer.show_problems(&report["items"], cx);
             });
         }));
+    }
+
+    /// The server's diagnostics for the file, as LSP gives them: its errors and warnings marked.
+    pub fn show_problems(&mut self, items: &serde_json::Value, cx: &mut Context<Self>) {
+        let at = |p: &serde_json::Value| {
+            self.document.offset_of_utf16(
+                p["line"].as_u64().unwrap_or(0) as usize,
+                p["character"].as_u64().unwrap_or(0) as usize,
+            )
+        };
+        self.diagnostics = items
+            .as_array()
+            .into_iter()
+            .flatten()
+            // A pushed diagnostic may leave its severity out, which the protocol leaves to the client: an error.
+            .filter(|d| d["severity"].as_u64().is_none_or(|s| s <= 2))
+            .map(|d| Diagnostic {
+                range: at(&d["range"]["start"])..at(&d["range"]["end"]),
+                error: d["severity"].as_u64().is_none_or(|s| s == 1),
+                message: d["message"].as_str().unwrap_or_default().to_string(),
+            })
+            .collect();
+        cx.notify();
     }
 
     /// An MSBuild file's code help: evaluated through `project` in the folder's Host, now and once typing pauses.

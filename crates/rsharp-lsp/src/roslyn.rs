@@ -255,7 +255,7 @@ pub fn start_roslyn(
 
 /// What RSharp tells Roslyn it can do, as Passenger tells it: completion and code actions with resolve, rename,
 /// semantic tokens over ranges, inlay hints, and UTF-16 positions, which are what the editor's columns already are.
-fn client_capabilities() -> Value {
+pub(crate) fn client_capabilities() -> Value {
     json!({
         "general": { "positionEncodings": ["utf-16"] },
         "window": { "workDoneProgress": true },

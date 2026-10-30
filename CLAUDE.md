@@ -142,6 +142,10 @@ terminal and takes focus for a moment.
   `hold` keeps generating design-time builds away from an explicit build until it ends), a
   build's problem passed on as the project's error. Without dotnet or the submodule at build time it warns and runs
   the person's `roslyn-language-server` tool, which opens the solution (`solution/open`) or finds the projects.
+  `web` is the web language servers, Passenger's pins (its `WebServers/package-lock.json`) put in `sidecars/web` by the
+  same build.rs through `npm ci` (RSHARP_WEB; without npm they are left out, said as a warning), each started on Node.js
+  (`programs::node`) by `start_web`: typescript-language-server for TypeScript and JavaScript, VS Code's HTML, CSS and
+  JSON servers, which push their problems (the client capabilities leave pulled diagnostics out for them).
 - `crates/rsharp-lsp/xaml-host`: RSharp's own C#, the one sidecar not Passenger's: Passenger.Xaml (from the submodule)
   behind JSON lines in Passenger.Host's shape, published by `rsharp-lsp`'s build.rs into `sidecars/xaml` with
   Passenger's build props imported (its output under `target/xaml-host`). `rsharp_lsp::xaml` is its client, over the
@@ -247,7 +251,12 @@ terminal and takes focus for a moment.
   a field, an `Opt` on a page, and what follows it). `nuget_view.rs` is Rider's NuGet window (Packages, Sources
   and Log tabs; the search field takes the keys when it opens; a vulnerable installed version marked, Update offering
   its fix), its projects fed by `window/nuget.rs` after each evaluation; a change saves open copies first, keeps the
-  old bytes in Local History and tells the window what it wrote. `editor_msbuild.rs` is an MSBuild file's completion, hover
+  old bytes in Local History and tells the window what it wrote. `window/web.rs` gives each web file its server (one
+  per kind for the folder, started with the first file of its kind, its task kept apart from its state so it listens
+  on), opened under its language id (`Buffer::attach_server_as`), its pushed problems marked through
+  `Buffer::show_problems`; without Node.js the status bar says the file has its colours only. Completion, hover,
+  Go to Declaration and Reformat Code go through the buffer's server as C#'s do; a web server's own trigger characters
+  open completion, and C#'s live templates stay C#'s. `editor_msbuild.rs` is an MSBuild file's completion, hover
   card and Go to Declaration, its buffer given the Host by `window/msbuild.rs` and inspected once typing pauses, the
   evaluation's errors its problems. `nuget_view/sources.rs` is the Sources tab: the
   files in effect and the chosen one's feeds, added, edited (a masked password field), enabled and deleted in place. `solution_view.rs` is the Solution view's tree for a folder with a solution (only open nodes walked, each kept
@@ -320,6 +329,10 @@ Tests say what a person would see or get, and their failure message names the co
 editing session (`rsharp-text/tests/editing_session.rs`) checks 40,000 keys, undo and redo against a plain
 string: keep it passing rather than narrowing it. The Roslyn test runs the real server on a fresh project and
 skips, saying why, when the tool is not installed.
+
+Web tests run the real servers on Node.js and skip, saying why, without it or without the servers:
+`crates/rsharp-lsp/tests/web.rs` each server through the client (problems pushed, completion, formatting) and
+`crates/rsharp-app/tests/web.rs` a TypeScript file through the window.
 
 Debug tests use real dotnet programs: `crates/rsharp-dap/tests/passenger.rs` translates Passenger's own debugger
 tests against the same `tests/Debuggees` — `PauseTests`' three first, with `LoopingConsoleApp`: a pause stops its loop

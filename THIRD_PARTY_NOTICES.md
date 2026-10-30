@@ -89,6 +89,33 @@ unchanged, and carries them with Microsoft.CodeAnalysis.CSharp (MIT, .NET Founda
 and Avalonia.Remote.Protocol (MIT, AvaloniaUI OÜ), which the XAML Preview speaks to the project's own Avalonia
 previewer.
 
+### Inside `sidecars/web/`
+
+The language servers of JavaScript, TypeScript, HTML, CSS and JSON files, npm packages of plain JavaScript run on the
+machine's Node.js. `crates/rsharp-lsp/build.rs` puts in place the ones Passenger's
+`src/Passenger.Lsp/WebServers/package-lock.json` pins, through `npm ci`, which checks each tarball against the sha512 it
+pins; nothing is downloaded as the app runs. They are carried as their tarballs hold them. Each package is named by its
+npm name, with the licence its package.json states and the copyright line its licence file carries (else its author),
+as Passenger's notices list them.
+
+| Package | In RSharp | Licence | Copyright |
+|---|---|---|---|
+| `typescript-language-server` | the TypeScript and JavaScript language server, over TypeScript's own tsserver (a project's own `node_modules/typescript` when it has one) | Apache-2.0 | Copyright (c) 2015 - present Microsoft Corporation |
+| `typescript` (6.0.3, and 4.9.5 under vscode-langservers-extracted) | TypeScript's compiler and tsserver for a project without its own; the HTML server's for a page's scripts | Apache-2.0 | no copyright line; its author: Microsoft Corp. |
+| `vscode-langservers-extracted` | VS Code's HTML, CSS and JSON language servers, as extracted from VS Code (its ESLint and Markdown servers, carried with them, are not run yet) | MIT | Copyright (c) 2020 hrsh7th |
+| `vscode-css-languageservice`, `vscode-html-languageservice`, `vscode-json-languageservice`, `jsonc-parser`, `request-light`, `vscode-uri` | the servers' language services | MIT | Copyright (c) Microsoft |
+| `vscode-languageserver`, `vscode-languageserver-protocol`, `vscode-languageserver-types`, `vscode-languageserver-textdocument`, `vscode-jsonrpc`, `vscode-nls`, `vscode-markdown-languageservice` | the servers' side of the Language Server Protocol | MIT | Copyright (c) Microsoft Corporation |
+| `@vscode/l10n` | the servers' messages | MIT | no copyright line; its author: Microsoft Corporation |
+| `core-js` | the extracted servers' JavaScript library | MIT | Copyright (c) 2013–2025 Denis Pushkarev (zloirock.ru) |
+| `regenerator-runtime` | the extracted servers' generators | MIT | Copyright (c) 2014-present, Facebook, Inc. |
+| `semver` | version ranges | ISC | Copyright (c) Isaac Z. Schlueter and Contributors |
+| `node-html-parser` | the Markdown service's HTML | MIT | Copyright 2019 Tao Qiufeng |
+| `css-select`, `css-what`, `domelementtype`, `domhandler`, `domutils`, `entities`, `nth-check` | node-html-parser's | BSD-2-Clause | Copyright (c) Felix Böhm |
+| `boolbase` | css-select's | ISC | no copyright line; its author: Felix Boehm |
+| `dom-serializer` | domutils' | MIT | Copyright (c) 2014 The cheeriojs contributors |
+| `he` | node-html-parser's | MIT | Copyright Mathias Bynens |
+| `picomatch` | the Markdown service's globs | MIT | Copyright (c) 2017-present, Jon Schlinkert. |
+
 ## Ported from Passenger
 
 The project-template family rules, pack metadata and template-creation behavior in

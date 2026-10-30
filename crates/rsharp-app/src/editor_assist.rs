@@ -198,6 +198,10 @@ impl CodeEditor {
         self.buffer.read(cx).server()
     }
 
+    pub(super) fn is_csharp(&self, cx: &App) -> bool {
+        self.buffer.read(cx).grammar == Some(rsharp_languages::Grammar::CSharp)
+    }
+
     pub fn close_popup(&mut self, cx: &mut Context<Self>) {
         if self.assist.popup.take().is_some() {
             self.assist.popup_task = None;
@@ -253,6 +257,10 @@ impl CodeEditor {
                 }
             }
             '.' => self.request_completion(Some('.'), false, cx),
+            // A web server's own triggers: HTML's `<`, CSS's `:`, JSON's quote.
+            c if !self.is_csharp(cx) && self.server(cx).is_some_and(|(s, _)| is_trigger(&s, c)) => {
+                self.request_completion(Some(c), false, cx)
+            }
             '(' | ',' => self.request_signature(true, cx),
             ')' if matches!(self.assist.popup, Some(Popup::Signature(_))) => self.close_popup(cx),
             _ if completing => self.close_popup(cx),
@@ -290,7 +298,9 @@ impl CodeEditor {
         let answer = ask(&server, "textDocument/completion", params, cx);
         // Where a statement or a member begins, the live templates are listed too, as Rider lists them.
         let line_start = self.text.line_to_byte(self.text.byte_to_line(start));
-        let templates = self.text.byte_slice(line_start..start).to_string().trim().is_empty() && trigger.is_none();
+        let templates = self.text.byte_slice(line_start..start).to_string().trim().is_empty()
+            && trigger.is_none()
+            && self.is_csharp(cx);
         let list = cx.background_executor().spawn(async move {
             let mut list = answer.await.map(|a| lsp::completion(&a))?;
             if templates {
@@ -921,9 +931,16 @@ impl CodeEditor {
             self.assist.token_task = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(pause).await;
                 let params = json!({ "textDocument": lsp::document(&uri), "range": range.to_json() });
+                // A server that has neither (VS Code's HTML, CSS and JSON) is not asked.
+                let has = |name: &str| !server.capabilities[name].is_null();
+                let (hints, colours) = (has("inlayHintProvider"), has("semanticTokensProvider"));
                 let Ok((answer, hinted)) = this.update(cx, |_, cx| {
-                    let hinted = ask(&server, "textDocument/inlayHint", params.clone(), cx);
-                    (ask(&server, "textDocument/semanticTokens/range", params, cx), hinted)
+                    let none = || Task::ready(None);
+                    let hinted =
+                        if hints { ask(&server, "textDocument/inlayHint", params.clone(), cx) } else { none() };
+                    let tokens =
+                        if colours { ask(&server, "textDocument/semanticTokens/range", params, cx) } else { none() };
+                    (tokens, hinted)
                 }) else {
                     return;
                 };
@@ -1179,4 +1196,10 @@ impl CodeEditor {
         };
         Some(element)
     }
+}
+
+/// Whether the server opens completion on `c` (its `triggerCharacters`).
+fn is_trigger(server: &rsharp_lsp::LanguageServer, c: char) -> bool {
+    let triggers = &server.capabilities["completionProvider"]["triggerCharacters"];
+    triggers.as_array().is_some_and(|t| t.iter().any(|t| t.as_str() == Some(c.encode_utf8(&mut [0; 4]))))
 }

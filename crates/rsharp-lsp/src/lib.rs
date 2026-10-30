@@ -6,6 +6,7 @@ pub mod extension;
 mod host;
 mod protocol;
 mod roslyn;
+pub mod web;
 pub mod xaml;
 
 pub use host::{BuildHold, SharedHost};
