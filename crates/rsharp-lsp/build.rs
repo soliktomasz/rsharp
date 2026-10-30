@@ -36,6 +36,13 @@ fn main() {
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let sidecars = out.ancestors().nth(3).expect("OUT_DIR is target/<profile>/build/<crate>/out").join("sidecars");
     web_servers(&passenger.join("Passenger.Lsp/WebServers"), &sidecars.join("web"));
+    // Passenger's Prettier runner, which needs no package of its own: the project's prettier formats.
+    let prettier = passenger.join("Passenger.App/Web/prettier.cjs");
+    println!("cargo:rerun-if-changed={}", prettier.display());
+    if prettier.is_file() {
+        std::fs::create_dir_all(sidecars.join("web")).unwrap();
+        std::fs::copy(&prettier, sidecars.join("web/prettier.cjs")).unwrap();
+    }
     let without = |why: &str| {
         println!(
             "cargo:warning=Passenger's sidecars were not built ({why}); RSharp runs the installed roslyn-language-server tool"

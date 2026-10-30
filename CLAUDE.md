@@ -145,7 +145,11 @@ terminal and takes focus for a moment.
   `web` is the web language servers, Passenger's pins (its `WebServers/package-lock.json`) put in `sidecars/web` by the
   same build.rs through `npm ci` (RSHARP_WEB; without npm they are left out, said as a warning), each started on Node.js
   (`programs::node`) by `start_web`: typescript-language-server for TypeScript and JavaScript, VS Code's HTML, CSS and
-  JSON servers, which push their problems (the client capabilities leave pulled diagnostics out for them).
+  JSON servers, which push their problems (the client capabilities leave pulled diagnostics out for them), and
+  VS Code's ESLint server (`WebServer::Eslint`), which answers pulls only and gets VS Code's extension's settings whole.
+  `prettify` is Prettier: Passenger's `prettier.cjs` (copied to `sidecars/web`) on one warm Node.js for the process,
+  JSON lines in turn, the project's own prettier (`installed`, found from the file up as Node.js finds it) doing the
+  work; `eslint_covers`/`prettier_covers` are Rider's default "Run for files".
 - `crates/rsharp-lsp/xaml-host`: RSharp's own C#, the one sidecar not Passenger's: Passenger.Xaml (from the submodule)
   behind JSON lines in Passenger.Host's shape, published by `rsharp-lsp`'s build.rs into `sidecars/xaml` with
   Passenger's build props imported (its output under `target/xaml-host`). `rsharp_lsp::xaml` is its client, over the
@@ -254,7 +258,11 @@ terminal and takes focus for a moment.
   old bytes in Local History and tells the window what it wrote. `window/web.rs` gives each web file its server (one
   per kind for the folder, started with the first file of its kind, its task kept apart from its state so it listens
   on), opened under its language id (`Buffer::attach_server_as`), its pushed problems marked through
-  `Buffer::show_problems`; without Node.js the status bar says the file has its colours only. Completion, hover,
+  `Buffer::show_problems`; where the project has eslint, ESLint's server opens the file too (`Buffer::attach_lint`, kept
+  in step beside the file's own server) and is asked for its problems as typing pauses, shown as Rider shows them
+  (`ESLint: message (rule)`); without Node.js the status bar says the file has its colours only. Reformat Code lays a
+  file Prettier covers out with the project's prettier when it has one (`editor_assist`'s `prettify`: one edit of what
+  differs, the caret where Prettier puts it), else with its server. Completion, hover,
   Go to Declaration and Reformat Code go through the buffer's server as C#'s do; a web server's own trigger characters
   open completion, and C#'s live templates stay C#'s. `editor_msbuild.rs` is an MSBuild file's completion, hover
   card and Go to Declaration, its buffer given the Host by `window/msbuild.rs` and inspected once typing pauses, the
@@ -325,6 +333,9 @@ tags with `debug_selector` (`debug_bounds`). `run_until_parked` is the quiet wai
 background task deterministically. A test that reads a window's view does it through the handle, not inside an
 update of that window, which gpui has leased out then.
 
+**The whole suite runs once, at the end of a phase**, not after each slice of it: a slice runs the tests of what it
+touched (its crates' and the window tests of the areas it changed), and the phase's last change runs `just test`.
+
 Tests say what a person would see or get, and their failure message names the consequence. The long random
 editing session (`rsharp-text/tests/editing_session.rs`) checks 40,000 keys, undo and redo against a plain
 string: keep it passing rather than narrowing it. The Roslyn test runs the real server on a fresh project and
@@ -332,7 +343,9 @@ skips, saying why, when the tool is not installed.
 
 Web tests run the real servers on Node.js and skip, saying why, without it or without the servers:
 `crates/rsharp-lsp/tests/web.rs` each server through the client (problems pushed, completion, formatting) and
-`crates/rsharp-app/tests/web.rs` a TypeScript file through the window.
+`crates/rsharp-app/tests/web.rs` a TypeScript file through the window, and `crates/rsharp-app/tests/lint.rs` ESLint and
+Prettier from a project's own packages (Passenger's tests' pins, put once by npm under the temp folder's
+`rsharp-test-node-packages`, the projects inside it so Node.js finds them), one test at a time.
 
 Debug tests use real dotnet programs: `crates/rsharp-dap/tests/passenger.rs` translates Passenger's own debugger
 tests against the same `tests/Debuggees` — `PauseTests`' three first, with `LoopingConsoleApp`: a pause stops its loop

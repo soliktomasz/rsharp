@@ -130,3 +130,9 @@ https://github.com/Zaneris/passenger).
 Roslyn's language server (`roslyn-language-server`, MIT, .NET Foundation): the version Passenger pins, which the
 extension's build downloads into the NuGet cache and RSharp runs from there; without the submodule or dotnet at build
 time, the person's own install of the dotnet tool.
+
+A project's own `eslint` (MIT, OpenJS Foundation and other contributors) and `prettier` (MIT, James Long and
+contributors), run from its node_modules for ESLint's problems and Reformat Code, as Rider runs them; RSharp carries
+neither. Prettier runs through Passenger's runner, `src/Passenger.App/Web/prettier.cjs` (MIT, Copyright (c) 2026 Ted L),
+which `crates/rsharp-lsp/build.rs` copies unchanged to `sidecars/web/prettier.cjs`. The tests put the versions Passenger's
+tests pin (`tests/Passenger.Tests/NodePackages`) in a folder of their own with npm, and carry nothing.

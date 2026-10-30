@@ -82,7 +82,12 @@ pub struct Buffer {
     server: Option<(Arc<LanguageServer>, String)>,
     /// The language the file is open as in its server: Roslyn's `csharp`, or a web server's.
     server_language: &'static str,
+    /// ESLint's server, which checks the file beside its own, and the problems each last gave.
+    lint: Option<(Arc<LanguageServer>, String)>,
+    server_problems: Vec<Diagnostic>,
+    lint_problems: Vec<Diagnostic>,
     checking: Option<Task<()>>,
+    linting: Option<Task<()>>,
     /// The projects Roslyn compiles the file in (a target framework of a multi-targeted project each), and the one its
     /// requests are about, as the editor's target framework switcher chose it.
     pub contexts: Vec<Value>,
@@ -250,7 +255,11 @@ impl Buffer {
             parsing: None,
             server: None,
             server_language: "csharp",
+            lint: None,
+            server_problems: Vec::new(),
+            lint_problems: Vec::new(),
             checking: None,
+            linting: None,
             contexts: Vec::new(),
             context: 0,
             asking_contexts: None,
@@ -367,7 +376,7 @@ impl Buffer {
         self.execution_line = self.execution_line.map(follow);
         self.inline_values = self.inline_values.take().map(|(line, text)| (follow(line), text));
         self.exception = self.exception.take().map(|(line, text)| (follow(line), text));
-        if let Some((server, uri)) = &self.server {
+        for (server, uri) in self.server.iter().chain(&self.lint) {
             let content: Vec<_> = changes
                 .iter()
                 .map(|c| {
@@ -390,6 +399,7 @@ impl Buffer {
         self.compare_git(cx);
         self.reparse(cx);
         self.check(Duration::from_millis(400), cx);
+        self.check_lint(Duration::from_millis(400), cx);
         self.inspect(Duration::from_millis(500), cx);
         self.check_xaml(Duration::from_millis(300), cx);
         if self.xaml.is_none() {
@@ -598,9 +608,48 @@ impl Buffer {
     }
 
     pub fn detach_server(&mut self) {
-        if let Some((server, uri)) = self.server.take() {
+        for (server, uri) in self.server.take().into_iter().chain(self.lint.take()) {
             server.notify("textDocument/didClose", json!({ "textDocument": { "uri": uri } }));
         }
+    }
+
+    /// Opens the file in ESLint's server as `language`, which checks it as typed beside its own server.
+    pub fn attach_lint(&mut self, server: Arc<LanguageServer>, language: &'static str, cx: &mut Context<Self>) {
+        if self.lint.is_some() {
+            return;
+        }
+        let uri = rsharp_core::paths::to_uri(&self.path);
+        server.notify("textDocument/didOpen", json!({ "textDocument": {
+            "uri": uri, "languageId": language, "version": self.document.version(), "text": self.document.text().to_string(),
+        }}));
+        self.lint = Some((server, uri));
+        self.check_lint(Duration::ZERO, cx);
+    }
+
+    /// Asks ESLint for the file's problems once typing has paused: its server answers pulls only.
+    fn check_lint(&mut self, after: Duration, cx: &mut Context<Self>) {
+        let Some((server, uri)) = self.lint.clone() else { return };
+        let version = self.document.version();
+        self.linting = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(after).await;
+            let answer = server.ask("textDocument/diagnostic", json!({ "textDocument": { "uri": uri } }));
+            let Ok(report) = answer.await else { return };
+            let _ = this.update(cx, |buffer, cx| {
+                if buffer.document.version() == version {
+                    buffer.show_lint(&report["items"], cx);
+                }
+            });
+        }));
+    }
+
+    /// ESLint's problems for the file, as Rider shows them: `ESLint: message (rule)`, beside the server's.
+    fn show_lint(&mut self, items: &serde_json::Value, cx: &mut Context<Self>) {
+        self.lint_problems = self.problems_of(items, |d| {
+            let rule = d["code"].as_str().map(|r| format!(" ({r})")).unwrap_or_default();
+            format!("ESLint: {}{rule}", d["message"].as_str().unwrap_or_default())
+        });
+        self.diagnostics = [self.server_problems.clone(), self.lint_problems.clone()].concat();
+        cx.notify();
     }
 
     /// Asks the server for the file's problems once typing has paused; a server that pushes them (the web servers)
@@ -626,13 +675,24 @@ impl Buffer {
 
     /// The server's diagnostics for the file, as LSP gives them: its errors and warnings marked.
     pub fn show_problems(&mut self, items: &serde_json::Value, cx: &mut Context<Self>) {
+        self.server_problems = self.problems_of(items, |d| d["message"].as_str().unwrap_or_default().to_string());
+        self.diagnostics = [self.server_problems.clone(), self.lint_problems.clone()].concat();
+        cx.notify();
+    }
+
+    /// LSP's diagnostics as the editor marks them, errors and warnings only, each said as `message` says it.
+    fn problems_of(
+        &self,
+        items: &serde_json::Value,
+        message: impl Fn(&serde_json::Value) -> String,
+    ) -> Vec<Diagnostic> {
         let at = |p: &serde_json::Value| {
             self.document.offset_of_utf16(
                 p["line"].as_u64().unwrap_or(0) as usize,
                 p["character"].as_u64().unwrap_or(0) as usize,
             )
         };
-        self.diagnostics = items
+        items
             .as_array()
             .into_iter()
             .flatten()
@@ -641,10 +701,9 @@ impl Buffer {
             .map(|d| Diagnostic {
                 range: at(&d["range"]["start"])..at(&d["range"]["end"]),
                 error: d["severity"].as_u64().is_none_or(|s| s == 1),
-                message: d["message"].as_str().unwrap_or_default().to_string(),
+                message: message(d),
             })
-            .collect();
-        cx.notify();
+            .collect()
     }
 
     /// An MSBuild file's code help: evaluated through `project` in the folder's Host, now and once typing pauses.

@@ -700,10 +700,66 @@ impl CodeEditor {
         }));
     }
 
+    /// The whole file laid out by the project's own Prettier, as one undo step that changes only what differs, the caret
+    /// where Prettier puts it.
+    fn prettify(&mut self, node: std::path::PathBuf, package: std::path::PathBuf, cx: &mut Context<Self>) {
+        let text = self.text.to_string();
+        let cursor = text[..self.primary().head].encode_utf16().count();
+        let path = self.path.clone();
+        let version = self.version;
+        let formatted = cx
+            .background_executor()
+            .spawn(async move { rsharp_lsp::web::prettify(&node, &package, &path, &text, cursor).map(|p| (text, p)) });
+        self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
+            let answer = formatted.await;
+            let _ = this.update(cx, |e, cx| match answer {
+                _ if e.version != version => {}
+                Ok((old, Some(pretty))) => {
+                    // The caret's place in Prettier's text, counted as JavaScript counts, before its breaks are held.
+                    let mut units = 0;
+                    let at = pretty.text.find(|c: char| {
+                        units += c.len_utf16();
+                        units > pretty.cursor
+                    });
+                    let caret = at.unwrap_or(pretty.text.len());
+                    let caret = caret - pretty.text[..caret].matches('\r').count();
+                    let new = rsharp_text::hold_newlines(pretty.text);
+                    let mut start = old.bytes().zip(new.bytes()).take_while(|(a, b)| a == b).count();
+                    while !old.is_char_boundary(start) || !new.is_char_boundary(start) {
+                        start -= 1;
+                    }
+                    let mut end =
+                        old[start..].bytes().rev().zip(new[start..].bytes().rev()).take_while(|(a, b)| a == b).count();
+                    while !old.is_char_boundary(old.len() - end) || !new.is_char_boundary(new.len() - end) {
+                        end -= 1;
+                    }
+                    if start == old.len() - end && start == new.len() - end {
+                        return;
+                    }
+                    let edit = Edit { range: start..old.len() - end, text: new[start..new.len() - end].to_string() };
+                    e.apply_server_edits(vec![edit], cx);
+                    e.set_carets(vec![Selection::caret(caret.min(e.text.len_bytes()))], cx);
+                }
+                Ok((_, None)) => cx.emit(Said(
+                    "Prettier does not format this file (.prettierignore names it, or it has no parser for it)".into(),
+                )),
+                Err(why) => cx.emit(Said(format!("Prettier could not format the file: {why}"))),
+            });
+        }));
+    }
+
     /// Reformat Code: the selection's lines, or the whole file, as the server lays them out with the file's indent.
     pub(super) fn reformat(&mut self, cx: &mut Context<Self>) {
         if self.is_xaml() {
             self.xaml_reformat(cx);
+            return;
+        }
+        // Rider's Prettier "Run on 'Reformat Code' action": the files it covers, where the project has prettier.
+        if rsharp_lsp::web::prettier_covers(&self.path)
+            && let Some(package) = rsharp_lsp::web::installed(&self.path, "prettier")
+            && let Some(node) = rsharp_core::programs::node()
+        {
+            self.prettify(node, package, cx);
             return;
         }
         let Some((server, uri)) = self.server(cx) else { return };

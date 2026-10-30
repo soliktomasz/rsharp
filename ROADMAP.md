@@ -506,9 +506,14 @@ code, a link), and their elements, objects, blocks and sections fold. The web la
 through npm and run on Node.js, one per kind for the folder, started with the first file of its kind: a file's
 problems are marked as its server pushes them, completion opens at a word, a dot or the server's own triggers (HTML's
 `<`, CSS's `:`), and hover, Go to Declaration and Reformat Code answer as C#'s do; without Node.js the status bar says
-the file has its colours only. Not yet: a language inside another (HTML's script and style, a Markdown fence,
-Markdown's inline emphasis and links), Razor, a Markdown heading drawn bold, JSON schemas (package.json's and
-appsettings.json's keys), ESLint, Prettier, a server that ends started again, and the Settings' Node.js page.
+the file has its colours only. A project's own eslint checks the files Rider's ESLint covers, through VS Code's ESLint
+server, its problems beside the file's own; Reformat Code lays a file out with the project's own prettier (its
+.prettierrc, .editorconfig and .prettierignore), as one undo step. Not yet: a language inside another (HTML's script and
+style, a Markdown fence, Markdown's inline emphasis and links), Razor, a Markdown heading drawn bold, JSON schemas
+(package.json's and appsettings.json's keys), ESLint's fixes and Fix ESLint Problems, Prettier and ESLint --fix on save,
+Settings' ESLint, Prettier and Node.js pages (Rider's Automatic configuration is the one in force), a server that ends
+started again, and the window tests of ESLint and Prettier run in parallel (one test process's ending window broke
+another's ESLint lookup, not yet explained).
 - The web language servers bundle (TypeScript, HTML, CSS, JSON, ESLint), driven by the `rsharp-lsp` client on
   Node.js, plus Prettier.
 - Colours for other files: tree-sitter grammars (XML, JSON, CSS, JS/TS, HTML, Markdown, YAML) in place of

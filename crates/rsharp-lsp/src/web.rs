@@ -19,6 +19,8 @@ pub enum WebServer {
     Html,
     Css,
     Json,
+    /// VS Code's ESLint server, which runs the project's own eslint over the files it covers, beside their own server.
+    Eslint,
 }
 
 impl WebServer {
@@ -29,6 +31,7 @@ impl WebServer {
             WebServer::Html => "HTML",
             WebServer::Css => "CSS",
             WebServer::Json => "JSON",
+            WebServer::Eslint => "ESLint",
         }
     }
 
@@ -39,6 +42,7 @@ impl WebServer {
             WebServer::Html => extracted.join("html-language-server/node/htmlServerMain.js"),
             WebServer::Css => extracted.join("css-language-server/node/cssServerMain.js"),
             WebServer::Json => extracted.join("json-language-server/node/jsonServerMain.js"),
+            WebServer::Eslint => extracted.join("eslint-language-server/eslintServer.js"),
         }
     }
 }
@@ -95,20 +99,21 @@ pub fn start_web(
     let modules = web_servers().map_err(ServerFailed)?;
     let mut command = Command::new(node);
     command.arg(kind.script(&modules)).arg("--stdio").current_dir(folder);
+    let root = paths::to_uri(folder);
+    let workspace = json!({ "name": folder.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(), "uri": root });
     let answers: Answers = Arc::new(move |method: &str, params: &Value| {
         (method == "workspace/configuration").then(|| {
             let items: Vec<Value> = params["items"]
                 .as_array()
                 .into_iter()
                 .flatten()
-                .map(|i| section(kind, i["section"].as_str()))
+                .map(|i| section(kind, i["section"].as_str(), &workspace))
                 .collect();
             Box::new(move || Value::Array(items)) as Box<dyn FnOnce() -> Value + Send>
         })
     });
     let mut server = LanguageServer::start_answering(command, events, answers)
         .map_err(|e| ServerFailed(format!("the {} language server did not start: {e}", kind.name())))?;
-    let root = paths::to_uri(folder);
     let options = match kind {
         // Never installs type packages from npm behind the person's back (automatic type acquisition).
         WebServer::TypeScript => json!({
@@ -122,6 +127,7 @@ pub fn start_web(
         }
         WebServer::Css => json!({ "provideFormatter": true }),
         WebServer::Json => json!({ "provideFormatter": true, "handledSchemaProtocols": ["file"] }),
+        WebServer::Eslint => Value::Null,
     };
     let answer = server
         .request("initialize", json!({
@@ -147,7 +153,7 @@ pub fn start_web(
         WebServer::Css => {
             json!({ "css": { "validate": true }, "scss": { "validate": true }, "less": { "validate": true } })
         }
-        WebServer::TypeScript => json!({}),
+        WebServer::TypeScript | WebServer::Eslint => json!({}),
     };
     server.notify("workspace/didChangeConfiguration", json!({ "settings": settings }));
     Ok(server)
@@ -163,13 +169,144 @@ fn capabilities() -> Value {
 }
 
 /// What a server's `workspace/configuration` is answered: validation on for CSS's languages and the HTML server's
-/// styles and scripts, the rest left to its defaults.
-fn section(kind: WebServer, section: Option<&str>) -> Value {
+/// styles and scripts; ESLint's whole settings, as VS Code's extension gives them (lint as typed, the project's eslint
+/// found from the file up, its own flat or eslintrc configuration as its eslint decides); the rest left to defaults.
+fn section(kind: WebServer, section: Option<&str>, workspace: &Value) -> Value {
     match (kind, section) {
+        (WebServer::Eslint, None | Some("")) => json!({
+            "validate": "on",
+            "packageManager": "npm",
+            "useESLintClass": false,
+            "experimental": {},
+            "codeAction": {
+                "disableRuleComment": { "enable": true, "location": "separateLine", "commentStyle": "line" },
+                "showDocumentation": { "enable": true },
+            },
+            "codeActionOnSave": { "mode": "all" },
+            "format": false,
+            "quiet": false,
+            "onIgnoredFiles": "off",
+            "options": {},
+            "rulesCustomizations": [],
+            "run": "onType",
+            "problems": { "shortenToSingleLine": false },
+            "nodePath": null,
+            "workspaceFolder": workspace,
+        }),
         (WebServer::Css, Some("css" | "scss" | "less")) | (WebServer::Html, Some("css")) => json!({ "validate": true }),
         (WebServer::Html, Some("html")) => {
             json!({ "validate": { "scripts": true, "styles": true }, "format": { "enable": true } })
         }
         _ => Value::Null,
     }
+}
+
+/// The package's folder as Node.js finds it from the file (the nearest node_modules above it that has it), as Rider's
+/// Automatic ESLint and Prettier configuration finds the project's own.
+pub fn installed(file: &Path, name: &str) -> Option<PathBuf> {
+    file.ancestors().skip(1).map(|f| f.join("node_modules").join(name)).find(|p| p.join("package.json").is_file())
+}
+
+/// Whether ESLint checks the file, by Rider's default "Run for files"; a package's own file never.
+pub fn eslint_covers(file: &Path) -> bool {
+    covers(file, &["js", "ts", "jsx", "tsx", "cjs", "cts", "mjs", "mts", "html", "vue"])
+}
+
+/// Whether Prettier formats the file, by Rider's default "Run for files"; a package's own file never.
+pub fn prettier_covers(file: &Path) -> bool {
+    covers(file, &["js", "ts", "jsx", "tsx", "cjs", "cts", "mjs", "mts", "json", "vue", "astro"])
+}
+
+fn covers(file: &Path, extensions: &[&str]) -> bool {
+    !file.components().any(|c| c.as_os_str() == "node_modules")
+        && file
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| extensions.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+/// What Prettier made of a file: its text and where the caret goes in it; none for a file its .prettierignore names
+/// or it has no parser for.
+pub struct Prettified {
+    pub text: String,
+    pub cursor: usize,
+}
+
+/// The one Prettier runner (Passenger's `prettier.cjs`, carried as `sidecars/web/prettier.cjs`), kept warm for the
+/// process: it loads each project's package once and changes to its folder for each request.
+static PRETTIER: std::sync::Mutex<Option<Runner>> = std::sync::Mutex::new(None);
+
+struct Runner {
+    input: std::process::ChildStdin,
+    lines: std::sync::mpsc::Receiver<String>,
+    next: u64,
+    _child: rsharp_core::process::Child,
+}
+
+/// The file's text formatted by the project's own prettier (`package`), with its .prettierrc, .editorconfig and
+/// nearest .prettierignore; `cursor` is a UTF-16 offset in `text`, as JavaScript counts, and so is the answer's.
+/// Blocks until Prettier answers: call it off the UI thread.
+pub fn prettify(
+    node: &Path,
+    package: &Path,
+    file: &Path,
+    text: &str,
+    cursor: usize,
+) -> Result<Option<Prettified>, String> {
+    use std::io::{BufRead, Write};
+    let mut runner = PRETTIER.lock().unwrap_or_else(|p| p.into_inner());
+    if runner.is_none() {
+        let script = PathBuf::from(env!("RSHARP_WEB")).join("prettier.cjs");
+        if env!("RSHARP_WEB").is_empty() || !script.is_file() {
+            return Err("this build carries no Prettier runner".into());
+        }
+        let mut command = Command::new(node);
+        command.arg(&script).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped());
+        let mut child = rsharp_core::process::spawn(command).map_err(|e| format!("Prettier did not start: {e}"))?;
+        let input = child.process.stdin.take().expect("stdin was piped");
+        let output = child.process.stdout.take().expect("stdout was piped");
+        let (sender, lines) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("prettier".into())
+            .spawn(move || {
+                for line in std::io::BufReader::new(output).lines().map_while(Result::ok) {
+                    if sender.send(line).is_err() {
+                        break;
+                    }
+                }
+            })
+            .map_err(|e| e.to_string())?;
+        *runner = Some(Runner { input, lines, next: 0, _child: child });
+    }
+    let ignore = file.ancestors().skip(1).map(|f| f.join(".prettierignore")).find(|p| p.is_file());
+    let answer = (|| -> Result<Value, String> {
+        let running = runner.as_mut().expect("started above");
+        running.next += 1;
+        let request = json!({
+            "id": running.next, "prettier": package, "file": file, "text": text, "cursor": cursor, "ignorePath": ignore,
+        });
+        writeln!(running.input, "{request}").map_err(|e| format!("Prettier stopped: {e}"))?;
+        loop {
+            let line = running
+                .lines
+                .recv_timeout(Duration::from_secs(30))
+                .map_err(|_| "Prettier did not answer within 30 seconds".to_string())?;
+            let answer: Value = serde_json::from_str(&line).map_err(|e| format!("Prettier said {line:?}: {e}"))?;
+            if answer["id"] == running.next {
+                return Ok(answer);
+            }
+        }
+    })();
+    // A runner that stopped or hung is started again for the next format.
+    let answer = answer.inspect_err(|_| *runner = None)?;
+    if let Some(error) = answer["error"].as_str() {
+        return Err(error.to_string());
+    }
+    if answer["ignored"] == true || answer["unsupported"] == true {
+        return Ok(None);
+    }
+    Ok(Some(Prettified {
+        text: answer["formatted"].as_str().unwrap_or_default().to_string(),
+        cursor: answer["cursor"].as_u64().unwrap_or(0) as usize,
+    }))
 }

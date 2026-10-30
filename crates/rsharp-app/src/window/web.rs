@@ -1,10 +1,10 @@
 //! The window's side of the web languages: one server per kind (TypeScript and JavaScript, HTML, CSS, JSON) for the
 //! folder, started on Node.js with the first file of its kind, every open file of its languages kept in step with it,
-//! and its pushed problems marked in the file they name. Without Node.js or the servers a file keeps its colours, and
-//! the status bar says why.
+//! and its pushed problems marked in the file they name; ESLint's server beside them for a file the project's own
+//! eslint checks. Without Node.js or the servers a file keeps its colours, and the status bar says why.
 
 use super::*;
-use rsharp_lsp::web::{WebServer, start_web, web_language};
+use rsharp_lsp::web::{WebServer, eslint_covers, installed, start_web, web_language};
 use std::collections::HashMap;
 
 /// A web server of the folder: being started, running, or unable to run.
@@ -22,19 +22,27 @@ pub(super) struct WebServers {
 }
 
 impl MainWindow {
-    /// Gives a web file's buffer its server, which starts with the first file of its kind.
+    /// Gives a web file's buffer its server, and ESLint's where the project's eslint checks it; each starts with the
+    /// first file that wants it.
     pub(super) fn attach_web(&mut self, buffer: &Entity<Buffer>, cx: &mut Context<Self>) {
-        let Some((kind, language)) = web_language(&buffer.read(cx).path) else { return };
+        let path = buffer.read(cx).path.clone();
+        let Some((kind, language)) = web_language(&path) else { return };
         if !cx.global::<crate::state::Ide>().servers {
             return;
         }
-        match self.web.slots.get(&kind) {
-            Some(WebSlot::Running(server)) => {
-                let server = server.clone();
-                buffer.update(cx, |b, cx| b.attach_server_as(server, language, cx));
+        let lint = eslint_covers(&path) && installed(&path, "eslint").is_some();
+        for wanted in [kind].into_iter().chain(lint.then_some(WebServer::Eslint)) {
+            match self.web.slots.get(&wanted) {
+                Some(WebSlot::Running(server)) => {
+                    let server = server.clone();
+                    buffer.update(cx, |b, cx| match wanted {
+                        WebServer::Eslint => b.attach_lint(server, language, cx),
+                        _ => b.attach_server_as(server, language, cx),
+                    });
+                }
+                Some(_) => {}
+                None => self.start_web(wanted, cx),
             }
-            Some(_) => {}
-            None => self.start_web(kind, cx),
         }
     }
 
@@ -59,10 +67,9 @@ impl MainWindow {
             let alive = this.update(cx, |w, cx| {
                 log::info!(target: "web", "the {} language server started", kind.name());
                 w.web.slots.insert(kind, WebSlot::Running(server.clone()));
+                // Attaching is once per server, so every web file can be given whatever it wants now running.
                 for buffer in w.workspace_buffers(cx) {
-                    if web_language(&buffer.read(cx).path).is_some_and(|(k, _)| k == kind) {
-                        w.attach_web(&buffer, cx);
-                    }
+                    w.attach_web(&buffer, cx);
                 }
             });
             if alive.is_err() {
@@ -82,7 +89,10 @@ impl MainWindow {
     fn web_unavailable(&mut self, kind: WebServer, why: String, cx: &mut Context<Self>) {
         log::warn!(target: "web", "the {} language server cannot run: {why}", kind.name());
         self.web.slots.insert(kind, WebSlot::Unavailable);
-        self.said = Some(format!("{} has its colours only: {why}", kind.name()).into());
+        self.said = Some(match kind {
+            WebServer::Eslint => format!("ESLint cannot run: {why}").into(),
+            _ => format!("{} has its colours only: {why}", kind.name()).into(),
+        });
         cx.notify();
     }
 
