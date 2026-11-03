@@ -2322,6 +2322,10 @@ impl Render for MainWindow {
                             editor::ask_clear_read_only(editor, editor::AfterClearing::Save, window, cx);
                             return;
                         }
+                        // ESLint's fixes and Prettier's layout first, as Settings ask; the editor saves after them.
+                        if editor.update(cx, |e, cx| e.save_tidied(cx)) {
+                            return;
+                        }
                         w.said =
                             editor.update(cx, |e, cx| e.save(cx)).err().map(|e| format!("Could not save: {e}").into());
                         let saved = editor.read(cx).path.extension().and_then(|e| e.to_str()).map(str::to_lowercase);

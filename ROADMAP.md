@@ -509,13 +509,13 @@ problems are marked as its server pushes them, completion opens at a word, a dot
 the file has its colours only. A project's own eslint checks the files Rider's ESLint covers, through VS Code's ESLint
 server, its problems beside the file's own; Reformat Code lays a file out with the project's own prettier (its
 .prettierrc, .editorconfig and .prettierignore), as one undo step; Alt+Enter lists ESLint's fixes first and Fix ESLint
-Problems fixes the whole file, as the project's eslint --fix would. A Razor file (.razor, .cshtml) is Roslyn's, Razor
+Problems fixes the whole file, as the project's eslint --fix would; Settings' ESLint "Run eslint --fix on save" and
+Prettier "Run on save" make a save fix and lay the file out first. A Razor file (.razor, .cshtml) is Roslyn's, Razor
 cohosted in it as Passenger runs it: its markup coloured by HTML's grammar until Razor's own colours layer over them,
 its problems marked (the C# in it among them), completion at a word, `<` and `@`, Reformat Code, and what Razor asks
 of a file's HTML answered by the HTML server. Not yet: HTML's elements in a Razor file without Node.js, a language inside another (HTML's script and
 style, a Markdown fence, Markdown's inline emphasis and links), a Markdown heading drawn bold, a JSON file's own
-`$schema` downloaded (SchemaStore's for package.json, tsconfig.json, appsettings.json and the rest are carried), Prettier and ESLint --fix
-on save,
+`$schema` downloaded (SchemaStore's for package.json, tsconfig.json, appsettings.json and the rest are carried),
 Settings' ESLint, Prettier and Node.js pages (Rider's Automatic configuration is the one in force), a server that ends
 started again, and the window tests of ESLint and Prettier run in parallel (one test process's ending window broke
 another's ESLint lookup, not yet explained).

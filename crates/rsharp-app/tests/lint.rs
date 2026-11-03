@@ -193,3 +193,33 @@ fn reformat_code_lays_a_file_out_by_the_projects_prettier_as_one_undo(cx: &mut T
     assert_eq!(text(&main, cx), LEGACY, "a file .prettierignore names was formatted");
     let _ = std::fs::remove_dir_all(&run.folder);
 }
+
+#[gpui::test]
+fn a_save_fixes_and_lays_out_the_file_first_when_settings_ask(cx: &mut TestAppContext) {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(packages) = packages() else { return };
+    let run = project("onsave", &packages);
+    let (main, cx) = open(&run, "src/app.js", (0, 0), cx);
+    cx.update(|_, cx| {
+        let mut on = rsharp_app::settings::settings(cx).clone();
+        (on.eslint_fix_on_save, on.prettier_on_save) = (true, true);
+        rsharp_app::settings::apply(on, cx);
+    });
+    let editor = main.read_with(cx, |m, _| m.editor().unwrap());
+    let marked = |cx: &mut VisualTestContext| {
+        editor
+            .read_with(cx, |e, cx| e.buffer.read(cx).diagnostics.iter().any(|d| d.message.ends_with("(prefer-const)")))
+    };
+    assert!(wait_for(cx, marked), "the project's prefer-const was never marked");
+    cx.simulate_keystrokes("secondary-s");
+    let saved = "const total = 1\nconsole.log(total)\n";
+    let on_disk =
+        |_: &mut VisualTestContext| std::fs::read_to_string(run.folder.join("src/app.js")).unwrap_or_default();
+    assert!(
+        wait_for(cx, |cx| on_disk(cx) == saved),
+        "the save did not write ESLint's fix laid out by Prettier first:\n{}\nthe status bar says {:?}",
+        on_disk(cx),
+        main.read_with(cx, |m, _| m.said().map(str::to_string))
+    );
+    let _ = std::fs::remove_dir_all(&run.folder);
+}

@@ -272,7 +272,10 @@ terminal and takes focus for a moment.
   (`eslint.applyAllFixes`) are the server's commands, whose edits come back as its `workspace/applyEdit`, which the
   client answers as applied and the window makes; without Node.js the status bar says the file has its colours only. Reformat Code lays a
   file Prettier covers out with the project's prettier when it has one (`editor_assist`'s `prettify`: one edit of what
-  differs, the caret where Prettier puts it), else with its server. A Razor file (.razor, .cshtml) is Roslyn's, opened as
+  differs, the caret where Prettier puts it), else with its server. An explicit save (`editor::Save`) asks the editor's
+  `save_tidied` first: with Settings' ESLint "Run eslint --fix on save" and Prettier "Run on save" (both off, as
+  Rider's are), ESLint's `source.fixAll.eslint` action (which carries its edit) and then Prettier are made before the
+  editor saves. A Razor file (.razor, .cshtml) is Roslyn's, opened as
   `aspnetcorerazor` (`window.rs`' `roslyn_language`), coloured by HTML's grammar until Razor's own colours (its legend,
   mapped in `theme::semantic`) layer over them, its problems pulled as C#'s; it starts the HTML server, which
   `connect_razor_html` gives Razor once both run; `<` and `@` open its completion, and no parameter hint shows on a

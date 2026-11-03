@@ -190,6 +190,24 @@ static PAGES: &[Page] = &[
         ],
     },
     Page {
+        group: "Languages & Frameworks",
+        name: "ESLint",
+        options: &[Opt::Check {
+            label: "Run eslint --fix on save",
+            get: |s| s.eslint_fix_on_save,
+            set: |s, value| s.eslint_fix_on_save = value,
+        }],
+    },
+    Page {
+        group: "Languages & Frameworks",
+        name: "Prettier",
+        options: &[Opt::Check {
+            label: "Run on save",
+            get: |s| s.prettier_on_save,
+            set: |s, value| s.prettier_on_save = value,
+        }],
+    },
+    Page {
         group: "Editor",
         name: "Code Style: XAML",
         options: &[

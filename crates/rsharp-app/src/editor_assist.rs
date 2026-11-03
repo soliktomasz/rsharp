@@ -708,7 +708,13 @@ impl CodeEditor {
 
     /// The whole file laid out by the project's own Prettier, as one undo step that changes only what differs, the caret
     /// where Prettier puts it.
-    fn prettify(&mut self, node: std::path::PathBuf, package: std::path::PathBuf, cx: &mut Context<Self>) {
+    fn prettify(
+        &mut self,
+        node: std::path::PathBuf,
+        package: std::path::PathBuf,
+        then_save: bool,
+        cx: &mut Context<Self>,
+    ) {
         let text = self.text.to_string();
         let cursor = text[..self.primary().head].encode_utf16().count();
         let path = self.path.clone();
@@ -716,9 +722,12 @@ impl CodeEditor {
         let formatted = cx
             .background_executor()
             .spawn(async move { rsharp_lsp::web::prettify(&node, &package, &path, &text, cursor).map(|p| (text, p)) });
-        self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
-            let answer = formatted.await;
-            let _ = this.update(cx, |e, cx| match answer {
+        self.assist.popup_task =
+            Some(cx.spawn(async move |this, cx| {
+                let answer = formatted.await;
+                let _ =
+                    this.update(cx, |e, cx| {
+                        match answer {
                 _ if e.version != version => {}
                 Ok((old, Some(pretty))) => {
                     // The caret's place in Prettier's text, counted as JavaScript counts, before its breaks are held.
@@ -739,19 +748,80 @@ impl CodeEditor {
                     while !old.is_char_boundary(old.len() - end) || !new.is_char_boundary(new.len() - end) {
                         end -= 1;
                     }
-                    if start == old.len() - end && start == new.len() - end {
-                        return;
+                    if start != old.len() - end || start != new.len() - end {
+                        let edit =
+                            Edit { range: start..old.len() - end, text: new[start..new.len() - end].to_string() };
+                        e.apply_server_edits(vec![edit], cx);
+                        e.set_carets(vec![Selection::caret(caret.min(e.text.len_bytes()))], cx);
                     }
-                    let edit = Edit { range: start..old.len() - end, text: new[start..new.len() - end].to_string() };
-                    e.apply_server_edits(vec![edit], cx);
-                    e.set_carets(vec![Selection::caret(caret.min(e.text.len_bytes()))], cx);
                 }
+                // A save Prettier would leave alone says nothing: Reformat Code says why it did.
+                Ok((_, None)) if then_save => {}
                 Ok((_, None)) => cx.emit(Said(
                     "Prettier does not format this file (.prettierignore names it, or it has no parser for it)".into(),
                 )),
                 Err(why) => cx.emit(Said(format!("Prettier could not format the file: {why}"))),
+                }
+                        if then_save {
+                            e.save_now(cx);
+                        }
+                    });
+            }));
+    }
+
+    /// The project's own prettier and the Node.js to run it on, for a file Prettier covers; none for the rest.
+    fn prettier_for(&self) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+        if !rsharp_lsp::web::prettier_covers(&self.path) {
+            return None;
+        }
+        Some((rsharp_core::programs::node()?, rsharp_lsp::web::installed(&self.path, "prettier")?))
+    }
+
+    /// A save as Settings ask it be made: what the project's ESLint can fix fixed, then the file laid out by its
+    /// Prettier, each where it is on and the project has it, and then the save. False when there is nothing to do first,
+    /// for the caller to save at once.
+    pub fn save_tidied(&mut self, cx: &mut Context<Self>) -> bool {
+        let settings = crate::settings::settings(cx);
+        let prettier = settings.prettier_on_save.then(|| self.prettier_for()).flatten();
+        let lint = settings.eslint_fix_on_save.then(|| self.buffer.read(cx).lint_at(0..=u64::MAX)).flatten();
+        let Some((server, uri, _, problems)) = lint else {
+            let Some((node, package)) = prettier else { return false };
+            self.prettify(node, package, true, cx);
+            return true;
+        };
+        // ESLint's fix-all action carries its edit, so the save waits for it alone, never for a command's echo.
+        let end = language::point(&self.text, self.text.len_bytes());
+        let range = lsp::Span { start: lsp::Point::new(0, 0), end };
+        let context = json!({ "diagnostics": problems, "only": ["source.fixAll.eslint"] });
+        let params = json!({ "textDocument": { "uri": uri }, "range": range.to_json(), "context": context });
+        let answer = ask(&server, "textDocument/codeAction", params, cx);
+        let version = self.version;
+        self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
+            let actions = answer.await.unwrap_or_default();
+            let fixed = this.update(cx, |e, cx| {
+                let edit = &actions[0]["edit"];
+                if e.version == version && edit.is_object() {
+                    let made = language::apply_workspace_edit(&lsp::workspace_edit(edit), None, cx);
+                    if let Err(why) = made {
+                        cx.emit(Said(format!("ESLint's fixes could not be made: {why}")));
+                    }
+                }
             });
+            // Prettier reads the text the fixes left, once the editor has it.
+            if fixed.is_ok() {
+                let _ = this.update(cx, |e, cx| match prettier {
+                    Some((node, package)) => e.prettify(node, package, true, cx),
+                    None => e.save_now(cx),
+                });
+            }
         }));
+        true
+    }
+
+    fn save_now(&mut self, cx: &mut Context<Self>) {
+        if let Err(error) = self.save(cx) {
+            cx.emit(Said(format!("Could not save: {error}")));
+        }
     }
 
     /// Reformat Code: the selection's lines, or the whole file, as the server lays them out with the file's indent.
@@ -765,7 +835,7 @@ impl CodeEditor {
             && let Some(package) = rsharp_lsp::web::installed(&self.path, "prettier")
             && let Some(node) = rsharp_core::programs::node()
         {
-            self.prettify(node, package, cx);
+            self.prettify(node, package, false, cx);
             return;
         }
         let Some((server, uri)) = self.server(cx) else { return };

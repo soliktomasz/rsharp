@@ -32,6 +32,12 @@ pub struct AppSettings {
     pub hot_reload_restart_on_rude_edit: bool,
     /// Editor | Code Style | XAML: how Reformat Code lays out XAML, under each file's .editorconfig.
     pub xaml_format: XamlFormat,
+    /// Languages & Frameworks | JavaScript | Code Quality Tools | ESLint | Run eslint --fix on save: a save first fixes
+    /// what the project's ESLint can fix in a file it checks.
+    pub eslint_fix_on_save: bool,
+    /// Languages & Frameworks | JavaScript | Prettier | Run on save: a save first lays a file Prettier covers out with
+    /// the project's prettier.
+    pub prettier_on_save: bool,
 }
 
 /// Rider's XAML code style (Passenger's XamlFormatSettings, by its names, which the XAML host reads): its XML formatter's
@@ -152,6 +158,8 @@ impl Default for AppSettings {
             hot_reload: false,
             hot_reload_restart_on_rude_edit: true,
             xaml_format: XamlFormat::default(),
+            eslint_fix_on_save: false,
+            prettier_on_save: false,
         }
     }
 }
