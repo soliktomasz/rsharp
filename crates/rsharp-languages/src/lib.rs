@@ -77,7 +77,8 @@ impl Grammar {
             "js" | "mjs" | "cjs" | "jsx" => Grammar::JavaScript,
             "ts" | "mts" | "cts" => Grammar::TypeScript,
             "tsx" => Grammar::Tsx,
-            "html" | "htm" => Grammar::Html,
+            // A Razor file's markup takes HTML's colours until Razor's own, through Roslyn, layer over them.
+            "html" | "htm" | "razor" | "cshtml" => Grammar::Html,
             "md" | "markdown" => Grammar::Markdown,
             "yml" | "yaml" => Grammar::Yaml,
             _ => return None,

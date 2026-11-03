@@ -149,7 +149,12 @@ terminal and takes focus for a moment.
   VS Code's ESLint server (`WebServer::Eslint`), which answers pulls only and gets VS Code's extension's settings whole.
   `prettify` is Prettier: Passenger's `prettier.cjs` (copied to `sidecars/web`) on one warm Node.js for the process,
   JSON lines in turn, the project's own prettier (`installed`, found from the file up as Node.js finds it) doing the
-  work; `eslint_covers`/`prettier_covers` are Rider's default "Run for files".
+  work; `eslint_covers`/`prettier_covers` are Rider's default "Run for files". `razor` is Razor, cohosted in Roslyn's
+  server, as Passenger's client answers it (`LanguageServer.cs`, `RazorHtml.cs`): every `LanguageServer` has one
+  (`razor`, empty but for Roslyn's), Roslyn's start answers Razor's requests to the client through it first — the legend
+  Razor registers for its colours (why Roslyn's client capabilities take dynamic registration, which the web servers'
+  leave out), `razor/updateHtml` (a file's HTML, its C# blanked), and HTML's part of a request forwarded wrapped with the
+  file, asked of the HTML server as `<uri>__virtual.html` once the window `set_html`s it, else answered empty.
 - `crates/rsharp-lsp/xaml-host`: RSharp's own C#, the one sidecar not Passenger's: Passenger.Xaml (from the submodule)
   behind JSON lines in Passenger.Host's shape, published by `rsharp-lsp`'s build.rs into `sidecars/xaml` with
   Passenger's build props imported (its output under `target/xaml-host`). `rsharp_lsp::xaml` is its client, over the
@@ -262,7 +267,11 @@ terminal and takes focus for a moment.
   in step beside the file's own server) and is asked for its problems as typing pauses, shown as Rider shows them
   (`ESLint: message (rule)`); without Node.js the status bar says the file has its colours only. Reformat Code lays a
   file Prettier covers out with the project's prettier when it has one (`editor_assist`'s `prettify`: one edit of what
-  differs, the caret where Prettier puts it), else with its server. Completion, hover,
+  differs, the caret where Prettier puts it), else with its server. A Razor file (.razor, .cshtml) is Roslyn's, opened as
+  `aspnetcorerazor` (`window.rs`' `roslyn_language`), coloured by HTML's grammar until Razor's own colours (its legend,
+  mapped in `theme::semantic`) layer over them, its problems pulled as C#'s; it starts the HTML server, which
+  `connect_razor_html` gives Razor once both run; `<` and `@` open its completion, and no parameter hint shows on a
+  directive's line. Completion, hover,
   Go to Declaration and Reformat Code go through the buffer's server as C#'s do; a web server's own trigger characters
   open completion, and C#'s live templates stay C#'s. `editor_msbuild.rs` is an MSBuild file's completion, hover
   card and Go to Declaration, its buffer given the Host by `window/msbuild.rs` and inspected once typing pauses, the
@@ -345,7 +354,9 @@ Web tests run the real servers on Node.js and skip, saying why, without it or wi
 `crates/rsharp-lsp/tests/web.rs` each server through the client (problems pushed, completion, formatting) and
 `crates/rsharp-app/tests/web.rs` a TypeScript file through the window, and `crates/rsharp-app/tests/lint.rs` ESLint and
 Prettier from a project's own packages (Passenger's tests' pins, put once by npm under the temp folder's
-`rsharp-test-node-packages`, the projects inside it so Node.js finds them), one test at a time.
+`rsharp-test-node-packages`, the projects inside it so Node.js finds them), one test at a time. `tests/razor.rs` runs
+a Razor class library through the real Roslyn: a component's C# problem, `<`'s HTML elements through the HTML server,
+and Reformat Code.
 
 Debug tests use real dotnet programs: `crates/rsharp-dap/tests/passenger.rs` translates Passenger's own debugger
 tests against the same `tests/Debuggees` — `PauseTests`' three first, with `LoopingConsoleApp`: a pause stops its loop

@@ -769,11 +769,16 @@ impl MainWindow {
                     }
                 }
                 w.server = Some(server.clone());
+                w.connect_razor_html();
                 w.server_state = ServerState::Loading("Loading solution".into());
                 let editors: Vec<_> = w.area.editors().cloned().collect();
                 for editor in editors {
-                    if is_csharp(&editor.read(cx).path) {
-                        editor.read(cx).buffer.clone().update(cx, |b, cx| b.attach_server(server.clone(), cx));
+                    if let Some(language) = roslyn_language(&editor.read(cx).path) {
+                        editor
+                            .read(cx)
+                            .buffer
+                            .clone()
+                            .update(cx, |b, cx| b.attach_server_as(server.clone(), language, cx));
                     }
                 }
                 cx.notify();
@@ -896,9 +901,9 @@ impl MainWindow {
         let editors: Vec<_> = self.area.editors().cloned().collect();
         for editor in editors {
             editor.read(cx).buffer.clone().update(cx, |b, cx| {
-                if let Some(server) = server.clone().filter(|_| is_csharp(&b.path)) {
+                if let (Some(server), Some(language)) = (server.clone(), roslyn_language(&b.path)) {
                     b.detach_server();
-                    b.attach_server(server, cx);
+                    b.attach_server_as(server, language, cx);
                 }
                 b.check(std::time::Duration::ZERO, cx)
             });
@@ -1509,8 +1514,8 @@ impl MainWindow {
                         }
                     },
                 };
-                if let Some(server) = self.server.clone().filter(|_| is_csharp(&path)) {
-                    buffer.update(cx, |b, cx| b.attach_server(server, cx));
+                if let (Some(server), Some(language)) = (self.server.clone(), roslyn_language(&path)) {
+                    buffer.update(cx, |b, cx| b.attach_server_as(server, language, cx));
                 }
                 self.attach_msbuild(&buffer, cx);
                 self.attach_xaml(&buffer, cx);
@@ -2121,6 +2126,11 @@ impl MainWindow {
     pub fn current_group(&self) -> usize {
         self.area.current
     }
+}
+
+/// The language a file is opened as in Roslyn's server: C#, or Razor, cohosted in it; none for the rest.
+fn roslyn_language(path: &Path) -> Option<&'static str> {
+    if is_csharp(path) { Some("csharp") } else { rsharp_lsp::razor::is_razor(path).then_some("aspnetcorerazor") }
 }
 
 fn is_csharp(path: &Path) -> bool {

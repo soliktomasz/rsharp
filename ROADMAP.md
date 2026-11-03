@@ -497,7 +497,7 @@ as Passenger's editor pairs them, the inspector and the MCP `app_*` tools.
 Passenger: `Passenger.Xaml`, `Xaml/`, `LiveTree/`, the Inspectors; issues #186, #187, #191–#202.
 Done when: AvaloniaGallery and WpfGallery pass Passenger's XAML editing tests in RSharp.
 
-### Phase 10: Web languages and other files (M) — begun
+### Phase 10: Web languages and other files (M) — built
 Begun: colours for other files. XML (XAML and MSBuild among it), JSON, CSS, JavaScript, TypeScript and TSX, HTML,
 Markdown and YAML are tree-sitter's grammars, parsed incrementally as C# is and coloured by each grammar's own
 highlights query in Rider's colours (a tag, an attribute's name and value, an entity, a JSON or YAML key, a heading,
@@ -508,7 +508,10 @@ problems are marked as its server pushes them, completion opens at a word, a dot
 `<`, CSS's `:`), and hover, Go to Declaration and Reformat Code answer as C#'s do; without Node.js the status bar says
 the file has its colours only. A project's own eslint checks the files Rider's ESLint covers, through VS Code's ESLint
 server, its problems beside the file's own; Reformat Code lays a file out with the project's own prettier (its
-.prettierrc, .editorconfig and .prettierignore), as one undo step. Not yet: a language inside another (HTML's script and
+.prettierrc, .editorconfig and .prettierignore), as one undo step. A Razor file (.razor, .cshtml) is Roslyn's, Razor
+cohosted in it as Passenger runs it: its markup coloured by HTML's grammar until Razor's own colours layer over them,
+its problems marked (the C# in it among them), completion at a word, `<` and `@`, Reformat Code, and what Razor asks
+of a file's HTML answered by the HTML server. Not yet: HTML's elements in a Razor file without Node.js, a language inside another (HTML's script and
 style, a Markdown fence, Markdown's inline emphasis and links), Razor, a Markdown heading drawn bold, JSON schemas
 (package.json's and appsettings.json's keys), ESLint's fixes and Fix ESLint Problems, Prettier and ESLint --fix on save,
 Settings' ESLint, Prettier and Node.js pages (Rider's Automatic configuration is the one in force), a server that ends

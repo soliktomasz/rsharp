@@ -159,12 +159,16 @@ pub fn start_web(
     Ok(server)
 }
 
-/// The client's abilities as Roslyn is told them, less pulled diagnostics: VS Code's servers then push theirs, as
-/// typescript-language-server always does.
+/// The client's abilities as Roslyn is told them, less pulled diagnostics (VS Code's servers then push theirs, as
+/// typescript-language-server always does) and dynamic registration, which Razor's alone needs: a web server's
+/// features stay its static capabilities, whose completion triggers the editor reads.
 fn capabilities() -> Value {
     let mut capabilities = client_capabilities();
     capabilities["textDocument"].as_object_mut().map(|t| t.remove("diagnostic"));
     capabilities["workspace"].as_object_mut().map(|w| w.remove("diagnostics"));
+    for feature in capabilities["textDocument"].as_object_mut().into_iter().flat_map(|t| t.values_mut()) {
+        feature.as_object_mut().map(|f| f.remove("dynamicRegistration"));
+    }
     capabilities
 }
 

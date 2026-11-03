@@ -198,6 +198,10 @@ impl CodeEditor {
         self.buffer.read(cx).server()
     }
 
+    pub(super) fn is_razor(&self, cx: &App) -> bool {
+        self.buffer.read(cx).server_language() == "aspnetcorerazor"
+    }
+
     pub(super) fn is_csharp(&self, cx: &App) -> bool {
         self.buffer.read(cx).grammar == Some(rsharp_languages::Grammar::CSharp)
     }
@@ -257,6 +261,8 @@ impl CodeEditor {
                 }
             }
             '.' => self.request_completion(Some('.'), false, cx),
+            // In a Razor file, as in Rider, a tag's `<` lists the elements and components, `@` the directives and C#.
+            '<' | '@' if self.is_razor(cx) => self.request_completion(Some(c), false, cx),
             // A web server's own triggers: HTML's `<`, CSS's `:`, JSON's quote.
             c if !self.is_csharp(cx) && self.server(cx).is_some_and(|(s, _)| is_trigger(&s, c)) => {
                 self.request_completion(Some(c), false, cx)
@@ -1001,6 +1007,8 @@ impl CodeEditor {
                     return;
                 };
                 let hint_text = text.clone();
+                // A Razor file's colours are in the legend Razor registered as it started.
+                let razor = this.update(cx, |e, cx| e.is_razor(cx)).unwrap_or(false);
                 let hints = cx
                     .background_executor()
                     .spawn(async move {
@@ -1016,12 +1024,18 @@ impl CodeEditor {
                                 );
                                 (offset(&hint_text, h.at), label)
                             })
+                            // A Razor directive's value (`@page "/counter"`) is the generated C#'s argument, which
+                            // Rider names no parameter for.
+                            .filter(|(at, _)| {
+                                let line = hint_text.line(hint_text.byte_to_line(*at)).to_string();
+                                !(razor && line.trim_start().starts_with('@'))
+                            })
                             .collect();
                         hints.sort_by_key(|(at, _)| *at);
                         Some(hints)
                     })
                     .await;
-                let legend = rsharp_lsp::token_legend(&server);
+                let legend = if razor { server.razor.legend() } else { rsharp_lsp::token_legend(&server) };
                 let tokens = cx
                     .background_executor()
                     .spawn(async move {

@@ -245,6 +245,23 @@ pub fn semantic(kind: &str) -> Option<Hsla> {
         "event" => 0xED94C0,
         "parameter" | "variable" | "label" | "namespace" => 0xBCBEC4,
         "excludedCode" => 0x6F737A,
+        // Razor's own, for a Razor file's markup: a component as a type and its parameters as properties, as Rider has
+        // them, HTML's as the HTML grammar colours it, Razor's directives and transitions as keywords (Passenger's map).
+        "razorTransition" | "razorDirective" | "razorDirectiveColon" | "razorDirectiveAttribute" => {
+            return Some(syntax(Kind::Keyword));
+        }
+        "razorComponentElement" | "razorTagHelperElement" => 0xC191FF,
+        "razorComponentAttribute" | "razorTagHelperAttribute" => 0x66C3CC,
+        "razorComment"
+        | "razorCommentStar"
+        | "razorCommentTransition"
+        | "markupComment"
+        | "markupCommentPunctuation" => {
+            return Some(syntax(Kind::Comment));
+        }
+        "markupElement" | "markupTagDelimiter" | "markupOperator" => return Some(syntax(Kind::Tag)),
+        "markupAttribute" => return Some(syntax(Kind::AttributeName)),
+        "markupAttributeValue" | "markupAttributeQuote" => return Some(syntax(Kind::AttributeValue)),
         _ => return None,
     };
     Some(rgb(colour).into())

@@ -26,6 +26,13 @@ impl MainWindow {
     /// first file that wants it.
     pub(super) fn attach_web(&mut self, buffer: &Entity<Buffer>, cx: &mut Context<Self>) {
         let path = buffer.read(cx).path.clone();
+        // A Razor file is Roslyn's, but its HTML is the HTML server's, which Razor asks through the client.
+        if rsharp_lsp::razor::is_razor(&path) && cx.global::<crate::state::Ide>().servers {
+            if !self.web.slots.contains_key(&WebServer::Html) {
+                self.start_web(WebServer::Html, cx);
+            }
+            return;
+        }
         let Some((kind, language)) = web_language(&path) else { return };
         if !cx.global::<crate::state::Ide>().servers {
             return;
@@ -67,6 +74,7 @@ impl MainWindow {
             let alive = this.update(cx, |w, cx| {
                 log::info!(target: "web", "the {} language server started", kind.name());
                 w.web.slots.insert(kind, WebSlot::Running(server.clone()));
+                w.connect_razor_html();
                 // Attaching is once per server, so every web file can be given whatever it wants now running.
                 for buffer in w.workspace_buffers(cx) {
                     w.attach_web(&buffer, cx);
@@ -83,6 +91,13 @@ impl MainWindow {
         });
         self.web.slots.insert(kind, WebSlot::Starting);
         self.web.listening.insert(kind, task);
+    }
+
+    /// Razor's questions about its files' HTML go to the folder's HTML server, once both it and Roslyn run.
+    pub(super) fn connect_razor_html(&self) {
+        if let (Some(roslyn), Some(WebSlot::Running(html))) = (&self.server, self.web.slots.get(&WebServer::Html)) {
+            roslyn.razor.set_html(Some(html.clone()));
+        }
     }
 
     /// A server that cannot run: its files keep their colours, and the status bar says why.

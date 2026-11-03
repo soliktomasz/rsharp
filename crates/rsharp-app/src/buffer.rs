@@ -608,9 +608,18 @@ impl Buffer {
     }
 
     pub fn detach_server(&mut self) {
+        let razor = self.server_language == "aspnetcorerazor";
         for (server, uri) in self.server.take().into_iter().chain(self.lint.take()) {
             server.notify("textDocument/didClose", json!({ "textDocument": { "uri": uri } }));
+            if razor {
+                server.razor.closed(&server, &uri);
+            }
         }
+    }
+
+    /// The language the file is open as in its server: `csharp`, Razor's `aspnetcorerazor`, or a web server's.
+    pub fn server_language(&self) -> &'static str {
+        self.server_language
     }
 
     /// Opens the file in ESLint's server as `language`, which checks it as typed beside its own server.
@@ -656,7 +665,8 @@ impl Buffer {
     /// is not asked.
     pub fn check(&mut self, after: Duration, cx: &mut Context<Self>) {
         let Some((server, uri)) = self.server.clone() else { return };
-        if self.server_language != "csharp" && server.capabilities["diagnosticProvider"].is_null() {
+        let roslyn = matches!(self.server_language, "csharp" | "aspnetcorerazor");
+        if !roslyn && server.capabilities["diagnosticProvider"].is_null() {
             return;
         }
         let version = self.document.version();

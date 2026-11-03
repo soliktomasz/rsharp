@@ -214,8 +214,17 @@ pub fn start_roslyn(
     if let Some(dotnet) = dotnet.as_ref().and_then(|d| d.parent().map(Path::to_path_buf)) {
         command.env("DOTNET_ROOT", dotnet);
     }
+    // Razor's requests to the client (its legend, its files' HTML) answered first, the rest as above.
+    let razor = std::sync::Arc::new(crate::razor::Razor::default());
+    let answers: crate::Answers = {
+        let razor = razor.clone();
+        std::sync::Arc::new(move |method: &str, params: &Value| {
+            razor.answer(method, params).or_else(|| answers(method, params))
+        })
+    };
     let mut server = LanguageServer::start_answering(command, events, answers)
         .map_err(|e| ServerFailed(format!("Roslyn did not start: {e}")))?;
+    server.razor = razor;
 
     let root = paths::to_uri(folder);
     let answer = server
@@ -255,6 +264,8 @@ pub fn start_roslyn(
 
 /// What RSharp tells Roslyn it can do, as Passenger tells it: completion and code actions with resolve, rename,
 /// semantic tokens over ranges, inlay hints, and UTF-16 positions, which are what the editor's columns already are.
+/// Dynamic registration is taken for what Razor registers for .razor and .cshtml files as it starts (its colours'
+/// legend among them); Roslyn's own C# ones are its static capabilities either way.
 pub(crate) fn client_capabilities() -> Value {
     json!({
         "general": { "positionEncodings": ["utf-16"] },
@@ -271,7 +282,7 @@ pub(crate) fn client_capabilities() -> Value {
         },
         "textDocument": {
             "synchronization": { "didSave": true },
-            "completion": {
+            "completion": { "dynamicRegistration": true,
                 "completionItem": {
                     "snippetSupport": false,
                     "documentationFormat": ["markdown", "plaintext"],
@@ -281,8 +292,8 @@ pub(crate) fn client_capabilities() -> Value {
                 "completionList": { "itemDefaults": ["commitCharacters", "editRange", "data"] },
                 "contextSupport": true,
             },
-            "hover": { "contentFormat": ["markdown", "plaintext"] },
-            "signatureHelp": {
+            "hover": { "dynamicRegistration": true, "contentFormat": ["markdown", "plaintext"] },
+            "signatureHelp": { "dynamicRegistration": true,
                 "signatureInformation": {
                     "documentationFormat": ["markdown", "plaintext"],
                     "parameterInformation": { "labelOffsetSupport": true },
@@ -290,14 +301,14 @@ pub(crate) fn client_capabilities() -> Value {
                 },
                 "contextSupport": true,
             },
-            "definition": { "linkSupport": true },
+            "definition": { "dynamicRegistration": true, "linkSupport": true },
             "typeDefinition": { "linkSupport": true },
-            "implementation": { "linkSupport": true },
-            "references": {},
-            "typeHierarchy": {},
-            "documentHighlight": {},
-            "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
-            "codeAction": {
+            "implementation": { "dynamicRegistration": true, "linkSupport": true },
+            "references": { "dynamicRegistration": true,},
+            "typeHierarchy": { "dynamicRegistration": true,},
+            "documentHighlight": { "dynamicRegistration": true,},
+            "documentSymbol": { "dynamicRegistration": true, "hierarchicalDocumentSymbolSupport": true },
+            "codeAction": { "dynamicRegistration": true,
                 "codeActionLiteralSupport": { "codeActionKind": { "valueSet": [
                     "", "quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.rewrite", "source",
                     "source.organizeImports",
@@ -306,10 +317,11 @@ pub(crate) fn client_capabilities() -> Value {
                 "dataSupport": true,
                 "resolveSupport": { "properties": ["edit"] },
             },
-            "formatting": {},
-            "rangeFormatting": {},
-            "rename": { "prepareSupport": true },
+            "formatting": { "dynamicRegistration": true,},
+            "rangeFormatting": { "dynamicRegistration": true,},
+            "rename": { "dynamicRegistration": true, "prepareSupport": true },
             "semanticTokens": {
+                "dynamicRegistration": true,
                 "requests": { "range": true, "full": { "delta": false } },
                 "tokenTypes": [],
                 "tokenModifiers": [],
