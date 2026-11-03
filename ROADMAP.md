@@ -497,7 +497,9 @@ as Passenger's editor pairs them, the inspector and the MCP `app_*` tools.
 Passenger: `Passenger.Xaml`, `Xaml/`, `LiveTree/`, the Inspectors; issues #186, #187, #191–#202.
 Done when: AvaloniaGallery and WpfGallery pass Passenger's XAML editing tests in RSharp.
 
-### Phase 10: Web languages and other files (M) — built
+### Phase 10: Web languages and other files (M) — done
+The phase's whole-suite run (782 passed) failed only Phase 4's parity test, whose recorded Shop.sln has Visual Studio
+16's header where SDK 10.0.100's `dotnet new sln` writes 17's: Phase 4's to settle, not this phase's.
 Begun: colours for other files. XML (XAML and MSBuild among it), JSON, CSS, JavaScript, TypeScript and TSX, HTML,
 Markdown and YAML are tree-sitter's grammars, parsed incrementally as C# is and coloured by each grammar's own
 highlights query in Rider's colours (a tag, an attribute's name and value, an entity, a JSON or YAML key, a heading,
