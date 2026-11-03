@@ -15,8 +15,8 @@ use crate::editor::{
     ResetFontSize, ToggleFold, ToggleSoftWrap, ToggleWhitespace,
 };
 use crate::editor::{
-    Complete, FindUsages, GoToDeclaration, GoToImplementation, GoToTypeDeclaration, ParameterInfo, QuickDocumentation,
-    Reformat, Rename, ShowContextActions,
+    Complete, FindUsages, FixEslintProblems, GoToDeclaration, GoToImplementation, GoToTypeDeclaration, ParameterInfo,
+    QuickDocumentation, Reformat, Rename, ShowContextActions,
 };
 use crate::editor::{
     CompleteStatement, EncapsulateField, ExtractMethod, Inline, IntroduceField, IntroduceParameter, IntroduceVariable,
@@ -180,6 +180,7 @@ pub static ALL: &[IdeAction] = &[
     ide!("Quick Documentation", "View", ["hover", "documentation", "quick info"], QuickDocumentation),
     ide!("Show Context Actions", "Code", ["quick fix", "intentions", "alt enter", "code actions"], ShowContextActions),
     ide!("Reformat Code", "Code", ["format", "format document", "reformat"], Reformat),
+    ide!("Fix ESLint Problems", "Code", ["eslint", "lint", "eslint fix"], FixEslintProblems),
     ide!("Rename…", "Refactor", ["rename symbol", "refactor"], Rename),
     ide!("Safe Delete…", "Refactor", ["delete symbol", "remove unused"], SafeDelete),
     ide!("Change Signature…", "Refactor", ["change parameters", "reorder parameters"], ChangeSignature),

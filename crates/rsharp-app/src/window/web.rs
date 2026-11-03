@@ -127,6 +127,13 @@ impl MainWindow {
                     buffer.update(cx, |b, cx| b.show_problems(&params["diagnostics"], cx));
                 }
             }
+            ServerEvent::Notification { method, params } if method == "workspace/applyEdit" => {
+                let edit = rsharp_lsp::workspace_edit(&params["edit"]);
+                if let Err(why) = crate::language::apply_workspace_edit(&edit, None, cx) {
+                    self.said = Some(format!("{}'s edit could not be made: {why}", kind.name()).into());
+                    cx.notify();
+                }
+            }
             ServerEvent::Notification { method, params } if method == "window/logMessage" => {
                 if params["type"].as_u64().is_some_and(|t| t <= 2) {
                     log::warn!(target: "web", "{}: {}", kind.name(), params["message"].as_str().unwrap_or_default());

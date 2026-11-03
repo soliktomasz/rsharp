@@ -123,6 +123,8 @@ pub struct CodeAction {
     /// Fixes a problem, as Rider marks a quick fix apart from a context action.
     pub quick_fix: bool,
     pub raw: Value,
+    /// ESLint's, made by its server rather than the file's own.
+    pub lint: bool,
 }
 
 /// A type in a type hierarchy: its name, where it is declared (the whole and its name), and the item as the server
@@ -516,6 +518,7 @@ pub fn code_actions(answer: &Value) -> Vec<CodeAction> {
                 title: a["title"].as_str()?.to_string(),
                 quick_fix: a["kind"].as_str().is_some_and(|k| k.starts_with("quickfix")),
                 raw: a.clone(),
+                lint: false,
             })
         })
         .collect()

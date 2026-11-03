@@ -86,6 +86,8 @@ pub struct Buffer {
     lint: Option<(Arc<LanguageServer>, String)>,
     server_problems: Vec<Diagnostic>,
     lint_problems: Vec<Diagnostic>,
+    /// ESLint's problems as its server gave them, which its fixes are asked by.
+    lint_items: serde_json::Value,
     checking: Option<Task<()>>,
     linting: Option<Task<()>>,
     /// The projects Roslyn compiles the file in (a target framework of a multi-targeted project each), and the one its
@@ -258,6 +260,7 @@ impl Buffer {
             lint: None,
             server_problems: Vec::new(),
             lint_problems: Vec::new(),
+            lint_items: serde_json::Value::Null,
             checking: None,
             linting: None,
             contexts: Vec::new(),
@@ -658,7 +661,23 @@ impl Buffer {
             format!("ESLint: {}{rule}", d["message"].as_str().unwrap_or_default())
         });
         self.diagnostics = [self.server_problems.clone(), self.lint_problems.clone()].concat();
+        self.lint_items = items.clone();
         cx.notify();
+    }
+
+    /// ESLint's server, the file's URI and version there, and its problems on `lines` as its server gave them: what
+    /// its fixes are asked by. None while the file is not open in it.
+    pub fn lint_at(
+        &self,
+        lines: std::ops::RangeInclusive<u64>,
+    ) -> Option<(Arc<LanguageServer>, String, u64, Vec<serde_json::Value>)> {
+        let (server, uri) = self.lint.clone()?;
+        let on = |d: &&serde_json::Value| {
+            let (start, end) = (d["range"]["start"]["line"].as_u64(), d["range"]["end"]["line"].as_u64());
+            start.zip(end).is_some_and(|(s, e)| s <= *lines.end() && *lines.start() <= e)
+        };
+        let problems = self.lint_items.as_array().into_iter().flatten().filter(on).cloned().collect();
+        Some((server, uri, self.document.version(), problems))
     }
 
     /// Asks the server for the file's problems once typing has paused; a server that pushes them (the web servers)

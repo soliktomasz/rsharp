@@ -101,7 +101,15 @@ pub fn start_web(
     command.arg(kind.script(&modules)).arg("--stdio").current_dir(folder);
     let root = paths::to_uri(folder);
     let workspace = json!({ "name": folder.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(), "uri": root });
+    let events = Arc::new(events);
+    let told = events.clone();
     let answers: Answers = Arc::new(move |method: &str, params: &Value| {
+        // A command's edits (ESLint's fixes) come back as the server's request: the window makes them, told as a
+        // notification would tell it, and the server hears they were made.
+        if method == "workspace/applyEdit" {
+            told(ServerEvent::Notification { method: method.to_string(), params: params.clone() });
+            return Some(Box::new(|| json!({ "applied": true })));
+        }
         if method == "vscode/content" {
             // Its one parameter, the schema's URI, may come alone or as the protocol's positional parameters.
             let uri = params.as_str().or(params[0].as_str()).unwrap_or_default().to_string();
@@ -117,7 +125,7 @@ pub fn start_web(
             Box::new(move || Value::Array(items)) as Box<dyn FnOnce() -> Value + Send>
         })
     });
-    let mut server = LanguageServer::start_answering(command, events, answers)
+    let mut server = LanguageServer::start_answering(command, move |e| events(e), answers)
         .map_err(|e| ServerFailed(format!("the {} language server did not start: {e}", kind.name())))?;
     let options = match kind {
         // Never installs type packages from npm behind the person's back (automatic type acquisition).

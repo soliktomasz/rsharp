@@ -812,9 +812,26 @@ impl CodeEditor {
         let params =
             json!({ "textDocument": lsp::document(&uri), "range": span.to_json(), "context": { "diagnostics": [] } });
         let answer = ask(&server, "textDocument/codeAction", params, cx);
+        // ESLint's fixes of the problems on the selection's lines, which its server finds by the problems it is given.
+        let lines = span.start.line as u64..=span.end.line as u64;
+        let lint = self.buffer.read(cx).lint_at(lines).filter(|(.., problems)| !problems.is_empty()).map(
+            |(lint, uri, _, problems)| {
+                let context = json!({ "diagnostics": problems });
+                let params = json!({ "textDocument": { "uri": uri }, "range": span.to_json(), "context": context });
+                ask(&lint, "textDocument/codeAction", params, cx)
+            },
+        );
         let head = selection.head;
         self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
-            let mut actions = answer.await.map(|a| lsp::code_actions(&a)).unwrap_or_default();
+            let mut actions = match lint {
+                Some(lint) => lint.await.map(|a| lsp::code_actions(&a)).unwrap_or_default(),
+                None => Vec::new(),
+            };
+            for action in &mut actions {
+                action.lint = true;
+                action.title = format!("ESLint: {}", action.title);
+            }
+            actions.extend(answer.await.map(|a| lsp::code_actions(&a)).unwrap_or_default());
             // Quick fixes first, as Rider lists them above the context actions.
             actions.sort_by_key(|a| !a.quick_fix);
             let _ = this.update(cx, |e, cx| {
@@ -835,6 +852,15 @@ impl CodeEditor {
 
     /// A code action resolved and made; one that holds others (Roslyn's nested actions) lists them instead.
     pub(super) fn run_action(&mut self, action: CodeAction, cx: &mut Context<Self>) {
+        // ESLint's fix is its command, whose edit comes back as the server's workspace/applyEdit, which the window makes.
+        if action.lint && action.raw["command"].is_object() {
+            if let Some((lint, ..)) = self.buffer.read(cx).lint_at(0..=0) {
+                let command = &action.raw["command"];
+                let params = json!({ "command": command["command"], "arguments": command["arguments"] });
+                ask(&lint, "workspace/executeCommand", params, cx).detach();
+            }
+            return;
+        }
         // An action that carries its edit (a XAML fix) needs no resolving.
         if action.raw["edit"].is_object() {
             let server = self.server(cx).map(|(server, _)| server);
@@ -869,6 +895,16 @@ impl CodeEditor {
                 }
             });
         }));
+    }
+
+    /// Fix ESLint Problems: every problem ESLint can fix in the file, as `eslint --fix` fixes them.
+    pub(super) fn fix_lint_problems(&mut self, cx: &mut Context<Self>) {
+        let Some((lint, uri, version, _)) = self.buffer.read(cx).lint_at(0..=0) else {
+            cx.emit(Said("ESLint does not check this file".into()));
+            return;
+        };
+        let params = json!({ "command": "eslint.applyAllFixes", "arguments": [{ "uri": uri, "version": version }] });
+        ask(&lint, "workspace/executeCommand", params, cx).detach();
     }
 
     /// Rename: a field over the word at the caret, its name selected.

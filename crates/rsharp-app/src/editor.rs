@@ -90,6 +90,7 @@ actions!(
         ShowContextActions,
         Rename,
         Reformat,
+        FixEslintProblems,
         GoToDeclaration,
         GoToImplementation,
         GoToTypeDeclaration,
@@ -1331,6 +1332,7 @@ moves! {
     QuickDocumentation => |e, cx| { let head = e.primary().head; e.request_hover(head, false, cx) };
     ShowContextActions => |e, cx| e.request_actions(cx);
     Reformat => |e, cx| e.reformat(cx);
+    FixEslintProblems => |e, cx| e.fix_lint_problems(cx);
     GoToDeclaration => |e, cx| e.go_to("textDocument/definition", "Declaration", cx);
     GoToImplementation => |e, cx| e.go_to("textDocument/implementation", "Implementation", cx);
     GoToTypeDeclaration => |e, cx| e.go_to("textDocument/typeDefinition", "Type Declaration", cx);

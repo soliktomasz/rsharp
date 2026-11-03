@@ -122,7 +122,7 @@ fn text(main: &Entity<MainWindow>, cx: &mut VisualTestContext) -> String {
 const REFORMAT: &str = if cfg!(target_os = "macos") { "cmd-alt-l" } else { "ctrl-alt-enter" };
 
 #[gpui::test]
-fn the_projects_eslint_marks_what_its_configuration_names(cx: &mut TestAppContext) {
+fn the_projects_eslint_marks_and_fixes_what_its_configuration_names(cx: &mut TestAppContext) {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|p| p.into_inner());
     let Some(packages) = packages() else { return };
     let run = project("eslint", &packages);
@@ -139,6 +139,26 @@ fn the_projects_eslint_marks_what_its_configuration_names(cx: &mut TestAppContex
         problems(cx),
         main.read_with(cx, |m, _| m.said().map(str::to_string))
     );
+
+    // Alt+Enter lists ESLint's fix first; choosing it makes the server's edit.
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "alt-enter" } else { "ctrl-." });
+    let fix = "ESLint: Fix this prefer-const problem";
+    assert!(
+        wait_for(cx, |cx| editor
+            .read_with(cx, |e, _| e.actions_shown().is_some_and(|a| a.first().is_some_and(|f| f == fix)))),
+        "Alt+Enter did not list ESLint's fix first: {:?}",
+        editor.read_with(cx, |e, _| e.actions_shown())
+    );
+    cx.simulate_keystrokes("enter");
+    let fixed = "const total = 1;\nconsole.log(total);\n";
+    assert!(wait_for(cx, |cx| text(&main, cx) == fixed), "ESLint's fix was not made:\n{}", text(&main, cx));
+
+    // Taken back, Fix ESLint Problems fixes the whole file.
+    cx.simulate_keystrokes("secondary-z");
+    cx.run_until_parked();
+    assert_eq!(text(&main, cx), APP, "Undo did not take ESLint's fix back");
+    cx.dispatch_action(rsharp_app::editor::FixEslintProblems);
+    assert!(wait_for(cx, |cx| text(&main, cx) == fixed), "Fix ESLint Problems fixed nothing:\n{}", text(&main, cx));
     let _ = std::fs::remove_dir_all(&run.folder);
 }
 

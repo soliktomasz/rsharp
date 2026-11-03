@@ -267,7 +267,10 @@ terminal and takes focus for a moment.
   on), opened under its language id (`Buffer::attach_server_as`), its pushed problems marked through
   `Buffer::show_problems`; where the project has eslint, ESLint's server opens the file too (`Buffer::attach_lint`, kept
   in step beside the file's own server) and is asked for its problems as typing pauses, shown as Rider shows them
-  (`ESLint: message (rule)`); without Node.js the status bar says the file has its colours only. Reformat Code lays a
+  (`ESLint: message (rule)`); Alt+Enter lists ESLint's fixes of the selection's lines first (`Buffer::lint_at`, its
+  problems as the server gave them, which it finds fixes by), and they and Fix ESLint Problems
+  (`eslint.applyAllFixes`) are the server's commands, whose edits come back as its `workspace/applyEdit`, which the
+  client answers as applied and the window makes; without Node.js the status bar says the file has its colours only. Reformat Code lays a
   file Prettier covers out with the project's prettier when it has one (`editor_assist`'s `prettify`: one edit of what
   differs, the caret where Prettier puts it), else with its server. A Razor file (.razor, .cshtml) is Roslyn's, opened as
   `aspnetcorerazor` (`window.rs`' `roslyn_language`), coloured by HTML's grammar until Razor's own colours (its legend,
