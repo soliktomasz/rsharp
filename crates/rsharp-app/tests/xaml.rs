@@ -909,6 +909,17 @@ fn extract_resource_moves_a_value_into_this_files_or_the_applications_resources_
     let dialog = |cx: &mut VisualTestContext| main.read_with(cx, |m, _| m.extracting());
     let clean = |cx: &mut VisualTestContext| buffer.read_with(cx, |b, _| b.diagnostics.is_empty());
 
+    // Refactor This on the panel's margin lists XAML's refactorings there, as Passenger's does.
+    let editor = main.read_with(cx, |m, _| m.editor().unwrap());
+    wait(cx, "Refactor This's list on the panel's margin", |cx| {
+        if editor.read_with(cx, |e, _| e.actions_shown()).is_none() {
+            cx.dispatch_action(rsharp_app::editor::RefactorThis);
+        }
+        editor.read_with(cx, |e, _| e.actions_shown()).is_some()
+    });
+    assert_eq!(editor.read_with(cx, |e, _| e.actions_shown()).unwrap(), ["Extract Resource…", "Extract Style…"]);
+    cx.simulate_keystrokes("escape");
+
     // The panel's margin: the name suggested, the places the window reaches, its other use offered too.
     wait(cx, "Extract Resource's dialog", |cx| {
         if dialog(cx).is_none() {
@@ -961,6 +972,7 @@ fn extract_resource_moves_a_value_into_this_files_or_the_applications_resources_
     assert!(!text(cx).contains("PanelMargin"), "Undo did not take the extraction back:\n{}", text(cx));
 
     // A brush to the application's resources.
+    let app_before = std::fs::read_to_string(&app).unwrap();
     let with_brush = text(cx).replace("<TextBlock Name=\"Title\"", "<TextBlock Name=\"Title\" Foreground=\"#E2A33F\"");
     buffer.update(cx, |b, cx| b.replace_all(with_brush, cx));
     main.update_in(cx, |m, window_, cx| m.open_file(&window, Some((5, 45)), window_, cx));
@@ -980,7 +992,30 @@ fn extract_resource_moves_a_value_into_this_files_or_the_applications_resources_
         "the brush is not among the application's resources:\n{app_text}"
     );
     assert!(text(cx).contains("Foreground=\"{StaticResource ForegroundBrush}\""), "{}", text(cx));
+    let extracted = (text(cx), app_text);
+
+    // A change to two files is undone whole, asked first, and redone whole.
     cx.simulate_keystrokes("secondary-z");
+    cx.run_until_parked();
+    assert!(cx.has_pending_prompt(), "Undo of a change to two files did not ask whether to take both back");
+    cx.simulate_prompt_answer("Undo All");
+    cx.run_until_parked();
+    assert!(!text(cx).contains("ForegroundBrush"), "Undo All left the window's use:\n{}", text(cx));
+    assert_eq!(
+        std::fs::read_to_string(&app).unwrap(),
+        app_before,
+        "Undo All left the application's resource: {:?}",
+        said(cx)
+    );
+    cx.dispatch_action(rsharp_app::editor::Redo);
+    cx.run_until_parked();
+    assert!(cx.has_pending_prompt(), "Redo of a change to two files did not ask");
+    cx.simulate_prompt_answer("Redo All");
+    cx.run_until_parked();
+    assert_eq!((text(cx), std::fs::read_to_string(&app).unwrap()), extracted, "Redo All did not make both again");
+    cx.simulate_keystrokes("secondary-z");
+    cx.run_until_parked();
+    cx.simulate_prompt_answer("Undo All");
     cx.run_until_parked();
 
     // The button's margin and background to a style selecting a class it takes.
@@ -1745,6 +1780,7 @@ fn wpf_extract_resource_and_extract_style_make_a_keyed_resource_and_a_keyed_styl
     cx.run_until_parked();
 
     // A brush to the application's resources.
+    let app_before = std::fs::read_to_string(&app).unwrap();
     let with_brush = text(cx).replace(
         "<TextBlock Style=\"{StaticResource Heading}\"",
         "<TextBlock Style=\"{StaticResource Heading}\" Foreground=\"#E2A33F\"",
@@ -1765,8 +1801,12 @@ fn wpf_extract_resource_and_extract_style_make_a_keyed_resource_and_a_keyed_styl
         app_text.contains("            </Style>\n            <SolidColorBrush x:Key=\"ForegroundBrush\" Color=\"#E2A33F\" />\n        </ResourceDictionary>"),
         "{app_text}"
     );
+    // Two files changed, both taken back by one Undo.
     cx.simulate_keystrokes("secondary-z");
     cx.run_until_parked();
+    cx.simulate_prompt_answer("Undo All");
+    cx.run_until_parked();
+    assert_eq!(std::fs::read_to_string(&app).unwrap(), app_before, "Undo All left the application's brush");
 
     // The button's margin and background to WPF's keyed style, which it names.
     place_after(&main, &window, "<Butt", cx);

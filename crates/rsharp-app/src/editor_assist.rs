@@ -60,6 +60,8 @@ impl gpui::EventEmitter<Said> for CodeEditor {}
 #[derive(Default)]
 pub struct Assist {
     pub popup: Option<Popup>,
+    /// Rename chosen from a list, started on the next frame, where its field can be given the keys.
+    pub(super) rename_next: bool,
     /// Where the popup hangs: the word's start, or the caret.
     pub popup_at: usize,
     pub(super) popup_task: Option<Task<()>>,
@@ -867,8 +869,9 @@ impl CodeEditor {
         }));
     }
 
-    /// Alt+Enter: the context actions and quick fixes for the selection, or the caret's place.
-    pub(super) fn request_actions(&mut self, cx: &mut Context<Self>) {
+    /// Alt+Enter: the context actions and quick fixes for the selection, or the caret's place; Refactor This
+    /// (`refactor`) the server's refactorings alone, as Passenger's lists those of a `refactor` kind.
+    pub(super) fn request_actions(&mut self, refactor: bool, cx: &mut Context<Self>) {
         if self.is_xaml() {
             self.xaml_fixes(cx);
             return;
@@ -884,7 +887,7 @@ impl CodeEditor {
         let answer = ask(&server, "textDocument/codeAction", params, cx);
         // ESLint's fixes of the problems on the selection's lines, which its server finds by the problems it is given.
         let lines = span.start.line as u64..=span.end.line as u64;
-        let lint = self.buffer.read(cx).lint_at(lines).filter(|(.., problems)| !problems.is_empty()).map(
+        let lint = self.buffer.read(cx).lint_at(lines).filter(|(.., problems)| !refactor && !problems.is_empty()).map(
             |(lint, uri, _, problems)| {
                 let context = json!({ "diagnostics": problems });
                 let params = json!({ "textDocument": { "uri": uri }, "range": span.to_json(), "context": context });
@@ -902,11 +905,14 @@ impl CodeEditor {
                 action.title = format!("ESLint: {}", action.title);
             }
             actions.extend(answer.await.map(|a| lsp::code_actions(&a)).unwrap_or_default());
+            if refactor {
+                actions.retain(|a| a.raw["kind"].as_str().is_some_and(|kind| kind.starts_with("refactor")));
+            }
             // Quick fixes first, as Rider lists them above the context actions.
             actions.sort_by_key(|a| !a.quick_fix);
             let _ = this.update(cx, |e, cx| {
                 if actions.is_empty() {
-                    cx.emit(Said("No context actions here".into()));
+                    cx.emit(Said(if refactor { "No refactorings here" } else { "No context actions here" }.into()));
                 } else if e.primary().head == head {
                     e.show(Popup::Actions { actions, selected: 0 }, head, cx);
                 }
@@ -922,6 +928,19 @@ impl CodeEditor {
 
     /// A code action resolved and made; one that holds others (Roslyn's nested actions) lists them instead.
     pub(super) fn run_action(&mut self, action: CodeAction, cx: &mut Context<Self>) {
+        // A XAML refactoring of Refactor This's list runs as its own action does.
+        if let Some(chosen) = action.raw["xamlRefactoring"].as_str() {
+            match chosen {
+                "resource" => self.xaml_extract(crate::xaml_dialog::Extract::Resource, cx),
+                "style" => self.xaml_extract(crate::xaml_dialog::Extract::Style, cx),
+                _ => {
+                    // Rename's field takes the keys, which only a window can give it: the next frame starts it.
+                    self.assist.rename_next = true;
+                    cx.notify();
+                }
+            }
+            return;
+        }
         // ESLint's fix is its command, whose edit comes back as the server's workspace/applyEdit, which the window makes.
         if action.lint && action.raw["command"].is_object() {
             if let Some((lint, ..)) = self.buffer.read(cx).lint_at(0..=0) {
@@ -1024,21 +1043,18 @@ impl CodeEditor {
             let is_type = types.await.is_ok_and(|t| lsp::hierarchy_items(&t).first().is_some_and(|t| t.name == old));
             let declared: Vec<PathBuf> =
                 declared.await.map(|d| lsp::locations(&d)).unwrap_or_default().into_iter().map(|l| l.path).collect();
-            let edit = answer.await.map(|a| lsp::workspace_edit(&a)).unwrap_or_default();
+            let mut edit = answer.await.map(|a| lsp::workspace_edit(&a)).unwrap_or_default();
             let _ = this.update(cx, |_, cx| {
                 if edit.is_empty() {
                     cx.emit(Said(format!("{old} cannot be renamed")));
                     return;
                 }
-                if let Err(why) = language::apply_workspace_edit(&edit, Some(&server), cx) {
-                    cx.emit(Said(why));
-                    return;
+                // A type's files named after it are renamed with it, as Rider renames them, in the same change, which
+                // one Undo takes back.
+                if is_type {
+                    edit.moves.extend(rsharp_lsp::files_named_after(&declared, &old, &name));
                 }
-                // A type's files named after it are renamed with it, as Rider renames them.
-                // shortcut: Undo takes back the text, not the files' new names; make the two one step (Passenger's
-                // CommandHistory) with global undo.
-                let moves = if is_type { rsharp_lsp::files_named_after(&declared, &old, &name) } else { Vec::new() };
-                if let Err(why) = language::move_files(&moves, Some(&server), cx) {
+                if let Err(why) = language::apply_workspace_edit(&edit, Some(&server), cx) {
                     cx.emit(Said(why));
                 }
             });

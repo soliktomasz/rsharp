@@ -254,9 +254,50 @@ impl CodeEditor {
         }));
     }
 
+    /// Refactor This in XAML, as Passenger lists it: Rename on an element's name, then Extract Resource and Extract
+    /// Style where the host finds what they would take at the caret; each runs as its own action does.
+    pub(super) fn xaml_refactorings(&mut self, cx: &mut Context<Self>) {
+        let Some((host, project)) = self.buffer.read(cx).xaml.clone() else { return };
+        let (path, text, head) = (self.path.clone(), self.text.to_string(), self.primary().head);
+        let at = language::point(&self.text, head);
+        let found = cx.background_executor().spawn(async move {
+            let mut offered = Vec::new();
+            if let Ok(Some(symbol)) = host.symbol(&project, &path, &text, at)
+                && symbol.named.is_some()
+            {
+                offered.push(("Rename…".to_string(), "rename"));
+            }
+            for extract in [crate::xaml_dialog::Extract::Resource, crate::xaml_dialog::Extract::Style] {
+                let found = host.extract(&project, &path, &text, at, extract.kind(), serde_json::json!({}));
+                if found.is_ok_and(|f| !f["why"].is_string()) {
+                    offered.push((format!("{}…", extract.title()), extract.kind()));
+                }
+            }
+            offered
+        });
+        self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
+            let actions: Vec<rsharp_lsp::CodeAction> = found
+                .await
+                .into_iter()
+                .map(|(title, kind)| rsharp_lsp::CodeAction {
+                    title,
+                    quick_fix: false,
+                    raw: serde_json::json!({ "xamlRefactoring": kind }),
+                    lint: false,
+                })
+                .collect();
+            let _ = this.update(cx, |e, cx| {
+                if actions.is_empty() {
+                    cx.emit(Said("No refactorings here".into()));
+                } else if e.primary().head == head {
+                    e.show(Popup::Actions { actions, selected: 0 }, head, cx);
+                }
+            });
+        }));
+    }
+
     /// Extract Resource or Extract Style: what is at the caret asked of the host, then its dialog over the window, or
     /// why there is nothing to extract.
-    // shortcut: no Refactor This list (Rider's Ctrl+T) offers them; add one once a second XAML refactoring needs it.
     pub(super) fn xaml_extract(&mut self, extract: crate::xaml_dialog::Extract, cx: &mut Context<Self>) {
         if !self.is_xaml() {
             cx.emit(Said(format!("{} is for XAML files", extract.title())));

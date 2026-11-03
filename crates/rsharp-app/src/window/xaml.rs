@@ -56,8 +56,6 @@ impl MainWindow {
 
     /// Find Usages or Rename of an element's name: where its XAML names it, and where its code-behind uses the field
     /// made for it, which Roslyn's references give from a mention whose definition is that generated field.
-    // shortcut: a rename's files are each one undo step, not one command undone whole as Passenger's is; make them one
-    // with global undo, as C#'s renames need too.
     pub(super) fn code_behind(&mut self, asked: &editor::CodeBehind, window: &mut Window, cx: &mut Context<Self>) {
         let named = asked.named.clone();
         if let Some(name) = asked.rename.as_deref().filter(|n| !is_identifier(n)) {

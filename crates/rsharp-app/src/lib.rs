@@ -20,6 +20,7 @@ pub mod find_action;
 pub mod find_bar;
 pub mod fuzzy;
 pub mod git_view;
+pub mod global_undo;
 pub mod goto;
 pub mod history_window;
 pub mod keymap;

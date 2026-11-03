@@ -313,7 +313,9 @@ terminal and takes focus for a moment.
   every editor of it, and how it is stored (encoding, line separator, indent from .editorconfig, the file's own lines
   or C#'s, read-only, the .editorconfig's save-time rules; the committed text the gutter compares with, kept as one
   shared string and diffed off the UI thread once typing pauses); `editor_area.rs` the groups of tabs, split right and down, pinned tabs and the tabs closed;
-  `editor_window.rs` a tab dragged out into a window of its own; `history_window.rs` Local History's window and what
+  `editor_window.rs` a tab dragged out into a window of its own; `global_undo.rs` Rider's global undo: every change
+  `language::apply_workspace_edit` makes across files (texts, files made, moves) kept whole, and an Undo or Redo in
+  one of its files asks whether to take back all of them; `history_window.rs` Local History's window and what
   it records (a file as opened, an External change seen then, each save). Every buffer in the process is found by its file
   (`buffer::find`), so a file in two windows is one text; the last editor of a file gone, the server is told. `editor.rs` is the code editor (a gpui `Element` that shapes
   only the lines on screen; the parse runs on the background executor; Roslyn told every change and asked for

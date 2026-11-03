@@ -16,7 +16,7 @@ use crate::editor::{
 };
 use crate::editor::{
     Complete, FindUsages, FixEslintProblems, GoToDeclaration, GoToImplementation, GoToTypeDeclaration, ParameterInfo,
-    QuickDocumentation, Reformat, Rename, ShowContextActions,
+    QuickDocumentation, RefactorThis, Reformat, Rename, ShowContextActions,
 };
 use crate::editor::{
     CompleteStatement, EncapsulateField, ExtractMethod, Inline, IntroduceField, IntroduceParameter, IntroduceVariable,
@@ -188,6 +188,7 @@ pub static ALL: &[IdeAction] = &[
     ide!("Move…", "Refactor", ["move type", "move to file", "move to namespace"], MoveType),
     ide!("Pull Members Up…", "Refactor", ["move to base class"], PullMembersUp),
     ide!("Push Members Down…", "Refactor", ["move to derived classes"], PushMembersDown),
+    ide!("Refactor This…", "Refactor", ["refactorings", "refactor menu"], RefactorThis),
     ide!("Extract Resource…", "Refactor", ["xaml resource", "static resource"], ExtractResource),
     ide!("Extract Style…", "Refactor", ["xaml style", "setters"], ExtractStyle),
     ide!("Introduce Variable…", "Refactor", ["extract variable", "introduce local"], IntroduceVariable),
