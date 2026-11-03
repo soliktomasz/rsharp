@@ -19,7 +19,8 @@ impl MainWindow {
             return;
         }
         if self.xaml.is_none() {
-            self.xaml = rsharp_lsp::xaml::XamlHost::carried();
+            self.xaml = rsharp_lsp::xaml::XamlHost::carried()
+                .map(|h| h.keeping_library_files(store(cx).root().join("MetadataAsSource")));
             // The C# files open already get their colours from it too.
             for open in self.workspace_buffers(cx) {
                 if open.read(cx).path.extension().is_some_and(|e| e == "cs") {
@@ -122,7 +123,8 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         if self.xaml.is_none() && cx.global::<crate::state::Ide>().servers {
-            self.xaml = rsharp_lsp::xaml::XamlHost::carried();
+            self.xaml = rsharp_lsp::xaml::XamlHost::carried()
+                .map(|h| h.keeping_library_files(store(cx).root().join("MetadataAsSource")));
         }
         let Some(host) = self.xaml.clone() else { return };
         let project = self.msbuild_project(from);

@@ -11,8 +11,12 @@
   <ItemGroup>
     <!-- The previewer's own entry, a project of its own (build.rs publishes it into preview/). -->
     <Compile Remove="preview/**" />
+    <!-- What RSharp and WPF's previewer say to each other, compiled into both, as Passenger's app compiles it. -->
+    <Compile Include="../../../vendor/passenger/src/Passenger.WpfPreview/Protocol.cs" Link="WpfPreviewProtocol.cs" />
     <ProjectReference Include="../../../vendor/passenger/src/Passenger.Xaml/Passenger.Xaml.csproj" />
     <!-- Avalonia's previewer protocol (MIT), which the preview speaks to the project's Avalonia.Designer.HostApp. -->
     <PackageReference Include="Avalonia.Remote.Protocol" />
+    <!-- ILSpy's decompiler (MIT), for Go to Declaration into a library's type, as Passenger's LibrarySources has it. -->
+    <PackageReference Include="ICSharpCode.Decompiler" />
   </ItemGroup>
 </Project>

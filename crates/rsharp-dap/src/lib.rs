@@ -3,6 +3,7 @@
 //! for off the UI thread.
 
 mod connection;
+pub mod inspector;
 pub mod protocol;
 
 use connection::{Connection, Incoming};

@@ -65,6 +65,10 @@ pub(super) struct DebugState {
     data_bound: Vec<(bool, Option<String>)>,
     /// Console input reaches the adapter in the order it was entered.
     input_task: Option<Task<()>>,
+    /// The Live Visual Tree's Break When Value Changes, for the session: each breakpoint's number and what it watches.
+    property_breaks: Vec<(i64, String)>,
+    /// XAML Binding Errors: the app stops where a binding fails, as Passenger's "Any binding error" does.
+    binding_errors: bool,
     _task: Option<Task<()>>,
 }
 
@@ -217,6 +221,8 @@ impl DebugState {
             data_breakpoints: Vec::new(),
             data_bound: Vec::new(),
             input_task: None,
+            property_breaks: Vec::new(),
+            binding_errors: false,
             _task: None,
         }
     }
@@ -692,11 +698,14 @@ impl MainWindow {
             }
             _ => plan.arguments.clone(),
         };
+        // An Avalonia app gets Passenger's inspector, for the Live Visual Tree and its failed bindings.
+        let mut environment = plan.environment.clone();
+        environment.extend(self.inspect(&plan, cx));
         let launch = rsharp_dap::Launch {
             program,
             arguments,
             working_directory: plan.working_directory.clone(),
-            environment: plan.environment.clone(),
+            environment,
             stop_at_entry: false,
             hot_reload: true,
             just_my_code: true,
@@ -773,9 +782,11 @@ impl MainWindow {
             .collect()
     }
 
-    /// The folder's function breakpoints as a session is told of them: only the named ones that are on.
+    /// The folder's function breakpoints as a session is told of them: only the named ones that are on; then the
+    /// inspector's, where a watched property's change and a failed binding call (Passenger's DebugSession).
     fn session_function_breakpoints(&self) -> Vec<rsharp_dap::FunctionBreakpoint> {
-        self.debug
+        let mut functions: Vec<rsharp_dap::FunctionBreakpoint> = self
+            .debug
             .breakpoints
             .enabled_functions()
             .into_iter()
@@ -785,7 +796,53 @@ impl MainWindow {
                 hit_condition: filled(&breakpoint.hit_count),
                 log_message: filled(&breakpoint.log_message),
             })
-            .collect()
+            .collect();
+        functions.extend(self.debug.property_breaks.iter().map(|(id, _)| rsharp_dap::FunctionBreakpoint {
+            name: "Passenger.Inspector.Breaks.Changed".into(),
+            condition: Some(format!("breakpoint == {id}")),
+            hit_condition: None,
+            log_message: None,
+        }));
+        if self.debug.binding_errors {
+            functions.push(rsharp_dap::FunctionBreakpoint {
+                name: "Passenger.Inspector.Breaks.BindingFailed".into(),
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+            });
+        }
+        functions
+    }
+
+    /// Break When Value Changes on, or off for one already watched: its number, for the inspector's watch, and whether
+    /// it is now on; the session told at once.
+    pub(super) fn toggle_property_break(&mut self, watched: String, cx: &mut Context<Self>) -> (i64, bool) {
+        let on = match self.debug.property_breaks.iter().position(|(_, w)| *w == watched) {
+            Some(at) => {
+                let (id, _) = self.debug.property_breaks.remove(at);
+                self.push_function_breakpoints(cx);
+                return (id, false);
+            }
+            None => self.debug.property_breaks.iter().map(|(id, _)| id + 1).max().unwrap_or(1),
+        };
+        self.debug.property_breaks.push((on, watched));
+        self.push_function_breakpoints(cx);
+        (on, true)
+    }
+
+    pub(super) fn is_property_break(&self, watched: &str) -> bool {
+        self.debug.property_breaks.iter().any(|(_, w)| w == watched)
+    }
+
+    /// XAML Binding Errors on or off, the session told at once.
+    pub(super) fn toggle_binding_errors(&mut self, cx: &mut Context<Self>) {
+        self.debug.binding_errors = !self.debug.binding_errors;
+        self.push_function_breakpoints(cx);
+        cx.notify();
+    }
+
+    pub(super) fn breaks_on_binding_errors(&self) -> bool {
+        self.debug.binding_errors
     }
 
     /// Sends the function breakpoints to the session that runs, as the dialog's changes ask.
@@ -1870,6 +1927,7 @@ impl MainWindow {
         self.debug.starting = None;
         self.debug.attached = None;
         self.debug.data_breakpoints.clear();
+        self.debug.property_breaks.clear();
         self.debug.data_bound.clear();
         self.debug.phase = Phase::Idle;
         self.debug.frames.clear();
@@ -1913,6 +1971,7 @@ impl MainWindow {
         self.debug.phase = Phase::Idle;
         self.debug.attached = None;
         self.debug.data_breakpoints.clear();
+        self.debug.property_breaks.clear();
         self.debug.data_bound.clear();
         self.debug.frames.clear();
         self.debug.thread = None;
@@ -1961,14 +2020,26 @@ impl MainWindow {
         self.debug.recent_attached = store(cx).read_for::<rsharp_core::debug::DebugSessions>(folder).recent_attached;
     }
 
-    /// F9 at the caret: a breakpoint set there, or the one there cleared.
+    /// F9 at the caret: a breakpoint set there, or the one there cleared. On a XAML attribute it is that attribute's
+    /// breakpoint, sent with its name's column, which stops where the app sets it (Passenger's XamlBreakpoints).
     pub(super) fn toggle_breakpoint(&mut self, cx: &mut Context<Self>) {
         let Some(editor) = self.active_editor() else { return };
-        let (path, line) = {
+        let (path, line, attribute) = {
             let editor = editor.read(cx);
-            (editor.path.clone(), editor.caret().line)
+            let caret = editor.caret();
+            let text = editor.text();
+            let line_text = text.line(caret.line.min(text.len_lines().saturating_sub(1))).to_string();
+            let attribute =
+                rsharp_lsp::xaml::is_xaml(&editor.path).then(|| attribute_at(&line_text, caret.column)).flatten();
+            (editor.path.clone(), caret.line, attribute)
         };
+        let fresh = !self.debug.breakpoints.has(&path, line);
         self.toggle_breakpoint_at(&path, line, cx);
+        if fresh && let Some(column) = attribute {
+            self.debug.breakpoints.edit(&path, line, |breakpoint| breakpoint.column = Some(column));
+            self.save_breakpoints(cx);
+            self.push_breakpoints(path, cx);
+        }
     }
 
     /// Sets or clears a breakpoint on a line, and tells a running session at once, as Rider does.
@@ -3151,5 +3222,53 @@ fn first_problems(problems: &[String]) -> String {
         [one] => format!(": {one}"),
         [one, two] => format!(": {one}; {two}"),
         _ => format!(": {}; {}; and {} more", problems[0], problems[1], problems.len() - 2),
+    }
+}
+
+/// The column (in characters, from 0) of the name of the XAML attribute a caret's column is on, its value included; none
+/// off an attribute.
+fn attribute_at(line: &str, caret: usize) -> Option<usize> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut at = 0;
+    while at < chars.len() {
+        // A name, then `=`, then a quoted value: the attribute spans from the name to the closing quote.
+        if chars[at].is_alphabetic() && (at == 0 || chars[at - 1].is_whitespace()) {
+            let start = at;
+            while at < chars.len() && (chars[at].is_alphanumeric() || matches!(chars[at], ':' | '.' | '_' | '-')) {
+                at += 1;
+            }
+            let mut after = at;
+            while after < chars.len() && chars[after] == ' ' {
+                after += 1;
+            }
+            if chars.get(after) == Some(&'=') {
+                after += 1;
+                while after < chars.len() && chars[after] == ' ' {
+                    after += 1;
+                }
+                if let Some(&quote) = chars.get(after).filter(|c| matches!(c, '"' | '\'')) {
+                    let end =
+                        chars[after + 1..].iter().position(|c| *c == quote).map_or(chars.len(), |p| after + 2 + p);
+                    if (start..end).contains(&caret) {
+                        return Some(start);
+                    }
+                    at = end;
+                    continue;
+                }
+            }
+        }
+        at += 1;
+    }
+    None
+}
+
+#[cfg(test)]
+mod attribute_tests {
+    #[test]
+    fn f9_on_a_xaml_attribute_takes_its_names_column() {
+        let line = "    <Button Content=\"Pay\" Background=\"{Binding Brush}\" />";
+        assert_eq!(super::attribute_at(line, line.find("Brush").unwrap()), Some(line.find("Background").unwrap()));
+        assert_eq!(super::attribute_at(line, line.find("Content").unwrap() + 2), Some(line.find("Content").unwrap()));
+        assert_eq!(super::attribute_at(line, line.find("Button").unwrap()), None, "the element's name is no attribute");
     }
 }

@@ -54,6 +54,7 @@ actions!(
         ToggleCommit,
         ToggleGit,
         XamlPreview,
+        LiveVisualTree,
         GitRefresh,
         GitPush,
         GitUpdate,
@@ -137,6 +138,7 @@ mod debug;
 mod file_moves;
 mod file_ops;
 mod git;
+mod live_tree;
 mod msbuild;
 mod new_project;
 mod nuget;
@@ -231,6 +233,7 @@ pub struct MainWindow {
     opened_as: Option<PathBuf>,
     explorer_focus: FocusHandle,
     preview_focus: FocusHandle,
+    live_focus: FocusHandle,
     problems_focus: FocusHandle,
     find_focus: FocusHandle,
     /// The Find window's list: what was looked for, and each place found with its line's text.
@@ -291,6 +294,8 @@ pub struct MainWindow {
     web: web::WebServers,
     /// The XAML file Avalonia's previewer draws, while the XAML Preview is open.
     preview: Option<xaml_preview::Preview>,
+    /// The debugged Avalonia app's inspector, for the Live Visual Tree.
+    live: Option<live_tree::Live>,
     /// A round of evaluations is running; `evaluate_again` asks for one more after it.
     evaluating: bool,
     evaluate_again: bool,
@@ -543,6 +548,7 @@ impl MainWindow {
             opened_as: None,
             explorer_focus: cx.focus_handle(),
             preview_focus: cx.focus_handle(),
+            live_focus: cx.focus_handle(),
             problems_focus: cx.focus_handle(),
             find_focus: cx.focus_handle(),
             found: None,
@@ -578,6 +584,7 @@ impl MainWindow {
             xaml: None,
             web: Default::default(),
             preview: None,
+            live: None,
             evaluating: false,
             evaluate_again: false,
             _evaluate_task: None,
@@ -2192,6 +2199,12 @@ impl Render for MainWindow {
             .on_action(cx.listener(|w, _: &ToggleCommit, window, cx| w.toggle_tool(Tool::Commit, window, cx)))
             .on_action(cx.listener(|w, _: &ToggleGit, window, cx| w.toggle_tool(Tool::Git, window, cx)))
             .on_action(cx.listener(|w, _: &XamlPreview, window, cx| w.open_preview(window, cx)))
+            .on_action(cx.listener(|w, _: &LiveVisualTree, window, cx| {
+                if !w.dock.is_open(Tool::LiveTree) {
+                    w.toggle_tool(Tool::LiveTree, window, cx);
+                }
+                w.refresh_live_tree(cx);
+            }))
             .on_action(cx.listener(|w, _: &GitRefresh, _, cx| w.refresh_git(cx)))
             .when(self.git_status().is_some() && !self.git_busy(), |d| {
                 d.on_action(
@@ -2712,6 +2725,7 @@ impl MainWindow {
             Tool::Commit => self.git.commit.clone().into_any_element(),
             Tool::Git => self.git.log.clone().into_any_element(),
             Tool::XamlPreview => self.preview_content(cx).into_any_element(),
+            Tool::LiveTree => self.live_tree_content(cx).into_any_element(),
             Tool::Terminal => {
                 self.ensure_terminal(cx);
                 self.terminal.clone().into_any_element()
@@ -2733,6 +2747,7 @@ impl MainWindow {
             Tool::Debug => Some(self.debug_view.read(cx).status().to_string()),
             Tool::UnitTests => None,
             Tool::XamlPreview => self.preview_subtitle(),
+            Tool::LiveTree => None,
             Tool::Terminal | Tool::Commit | Tool::Git => None,
         }
     }
@@ -2836,6 +2851,7 @@ impl MainWindow {
             Tool::Commit => self.git.commit.focus_handle(cx),
             Tool::Git => self.git.log.focus_handle(cx),
             Tool::XamlPreview => self.preview_focus.clone(),
+            Tool::LiveTree => self.live_focus.clone(),
         }
     }
 

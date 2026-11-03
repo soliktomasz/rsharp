@@ -3,6 +3,8 @@
 //! does: its problems, its symbols, an outline, usages, a rename across files, and an edit checked as it lands. No UI.
 //! A place is a file with a line and column (from 1, as a person counts them), or a symbol's name.
 
+mod app;
+
 use rsharp_core::encodings::{Charset, decode, encode};
 use rsharp_core::paths;
 use rsharp_lsp::{self as lsp, LanguageServer, Point, ServerEvent, WorkspaceEdit};
@@ -33,6 +35,8 @@ struct Session {
     /// The files opened in Roslyn, with the version and the text it was last told.
     open: HashMap<PathBuf, (i64, String)>,
     solution_wide: bool,
+    /// The Avalonia app app_run started, which the app tools drive.
+    app: Option<app::App>,
 }
 
 /// Serves MCP on `input` and `output` until the input ends, Roslyn started on `folder` meanwhile.
@@ -60,15 +64,23 @@ pub fn serve(folder: &Path, input: impl BufRead, mut output: impl Write) -> io::
                 "instructions": INSTRUCTIONS,
             })),
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({ "tools": tools() })),
+            "tools/list" => {
+                let mut all = tools().as_array().cloned().unwrap_or_default();
+                all.extend(app::tools());
+                Ok(json!({ "tools": all }))
+            }
             "tools/call" => {
                 let params = &message["params"];
                 let name = params["name"].as_str().unwrap_or_default();
-                let result = session.call(name, &params["arguments"]);
-                Ok(json!({
-                    "content": [{ "type": "text", "text": result.as_ref().unwrap_or_else(|e| e) }],
-                    "isError": result.is_err(),
-                }))
+                let result = if name.starts_with("app_") {
+                    session.call_app(name, &params["arguments"])
+                } else {
+                    session.call(name, &params["arguments"]).map(|t| json!([{ "type": "text", "text": t }]))
+                };
+                Ok(match result {
+                    Ok(content) => json!({ "content": content, "isError": false }),
+                    Err(why) => json!({ "content": [{ "type": "text", "text": why }], "isError": true }),
+                })
             }
             method => Err(json!({ "code": -32601, "message": format!("no method {method}") })),
         };
@@ -89,7 +101,8 @@ fn write(output: &mut impl Write, message: &Value) -> io::Result<()> {
 const INSTRUCTIONS: &str = "RSharp's view of this folder's C#, from the Roslyn language server: use `diagnostics` to \
 see what does not compile, `find_symbol` and `outline` to find your way, `usages` before changing a symbol, `rename` \
 to rename one across every file (a type's file renamed with it), and `edit` to change a file and see its problems at \
-once. Lines and columns count from 1.";
+once. Lines and columns count from 1. An Avalonia app is driven with `app_run`, then `app_tree`, `app_details`, \
+`app_capture` and `app_input` by the ids `app_tree` gives, and `app_stop`.";
 
 /// Each tool: its name, what it does, and its arguments' schema.
 fn tools() -> Value {
@@ -170,7 +183,7 @@ impl Session {
                 None
             }
         };
-        Self { folder, solution, server, load, open: HashMap::new(), solution_wide: false }
+        Self { folder, solution, server, load, open: HashMap::new(), solution_wide: false, app: None }
     }
 
     /// Roslyn, once it has loaded the projects (or said it cannot), waiting at most LOAD_WAIT.
@@ -290,6 +303,53 @@ impl Session {
                     listed.join("\n")
                 ))
             }
+        }
+    }
+
+    /// The app tools: app_run starts the app, app_stop ends it, the rest ask the one running.
+    fn call_app(&mut self, tool: &str, args: &Value) -> Result<Value, String> {
+        match tool {
+            "app_run" => {
+                let project = match args["project"].as_str() {
+                    Some(project) => self.path(project)?,
+                    None => self.app_project()?,
+                };
+                self.app = None;
+                let (app, said) = app::App::run(&project)?;
+                self.app = Some(app);
+                Ok(json!([{ "type": "text", "text": said }]))
+            }
+            "app_stop" => Ok(json!([{ "type": "text", "text": match self.app.take() {
+                Some(_) => "The app was ended.",
+                None => "No app was running.",
+            } }])),
+            _ => self.app.as_mut().ok_or("No app is running: start one with app_run")?.call(tool, args),
+        }
+    }
+
+    /// The folder's project when it has one: at its top, else one folder down.
+    fn app_project(&self) -> Result<PathBuf, String> {
+        let projects = |folder: &Path| -> Vec<PathBuf> {
+            std::fs::read_dir(folder)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|e| e == "csproj"))
+                .collect()
+        };
+        let mut found = projects(&self.folder);
+        if found.is_empty() {
+            for entry in std::fs::read_dir(&self.folder).into_iter().flatten().flatten() {
+                if entry.path().is_dir() {
+                    found.extend(projects(&entry.path()));
+                }
+            }
+        }
+        match &found[..] {
+            [one] => Ok(one.clone()),
+            [] => Err("The folder has no project: name one with project".into()),
+            _ => Err(format!("The folder has {} projects: name one with project", found.len())),
         }
     }
 

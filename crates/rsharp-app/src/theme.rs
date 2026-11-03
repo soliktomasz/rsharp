@@ -135,6 +135,22 @@ pub fn warning() -> Rgba {
     rgb(0xE5A336)
 }
 
+/// The colour picker's marker ring and its shadow, light over dark so it shows on any colour. Rider's picker paints
+/// its own in code, not from its theme, so these are RSharp's.
+pub fn colour_marker() -> Rgba {
+    rgb(0xFFFFFF)
+}
+pub fn colour_marker_shadow() -> Rgba {
+    rgba(0x0000_0099)
+}
+/// The checkerboard under a clear colour, a light square and a darker one, as every picker draws transparency.
+pub fn colour_checker_light() -> Rgba {
+    rgb(0xFFFFFF)
+}
+pub fn colour_checker_dark() -> Rgba {
+    rgb(0xCCCCCC)
+}
+
 /// The editor's own colours (Islands Dark's editor scheme over Rider Dark's).
 pub mod editor {
     use super::*;

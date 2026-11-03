@@ -43,6 +43,8 @@ pub struct XamlSymbol {
     pub description: String,
     pub targets: Vec<Location>,
     pub named: Option<XamlNamed>,
+    /// What there is to say of where it leads: a theme's file from its Source Link, or why a library's is not there.
+    pub said: Option<String>,
 }
 
 /// An element's name: the name, where its file names it, and the C# files of its class, where the field Avalonia's
@@ -69,11 +71,22 @@ pub struct XamlColour {
 /// draws them.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PreviewEvent {
-    Started { session: String, arguments: Vec<String>, folder: PathBuf },
+    Started {
+        session: String,
+        arguments: Vec<String>,
+        folder: PathBuf,
+    },
     Frame(PreviewFrame),
     Error(Option<String>),
     Empty(bool),
     Elements(Vec<PreviewElement>),
+    /// What the preview is doing, or why it shows nothing (WPF's previewer's own words).
+    Status(String),
+    /// A frame as a PNG, at the DPI it was drawn at (WPF's previewer's), which the app decodes.
+    Png {
+        data: Vec<u8>,
+        dpi: f64,
+    },
 }
 
 /// An element of the previewed file as the frame draws it (Passenger's PreviewElement): its start tag and its whole
@@ -101,13 +114,28 @@ pub struct XamlHost {
     changes: Arc<Mutex<Vec<UnboundedSender<Option<PathBuf>>>>>,
     dotnet: PathBuf,
     host: PathBuf,
+    /// Where a library's decompiled types and Source Link files are kept; the host's temp folder without one.
+    library: Option<PathBuf>,
 }
 
 impl XamlHost {
     /// None without the host RSharp's build publishes, or without dotnet.
     pub fn carried() -> Option<Self> {
         let host = crate::roslyn::carried_xaml_host()?;
-        Some(Self { running: Arc::default(), changes: Arc::default(), dotnet: rsharp_core::programs::dotnet()?, host })
+        Some(Self {
+            running: Arc::default(),
+            changes: Arc::default(),
+            dotnet: rsharp_core::programs::dotnet()?,
+            host,
+            library: None,
+        })
+    }
+
+    /// Keeps a library's decompiled types and Source Link files in `folder` (the IDE's state's MetadataAsSource/), as
+    /// Passenger keeps them, rather than in a temp folder.
+    pub fn keeping_library_files(mut self, folder: PathBuf) -> Self {
+        self.library = Some(folder);
+        self
     }
 
     /// A completed project update; the file that published it need not check itself again.
@@ -136,6 +164,9 @@ impl XamlHost {
                 None => {
                     let mut command = Command::new(&self.dotnet);
                     command.arg(&self.host).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+                    if let Some(library) = &self.library {
+                        command.env("RSHARP_METADATA", library);
+                    }
                     running.insert(Connection::start(command, "the XAML host", None)?).clone()
                 }
             }
@@ -233,6 +264,7 @@ impl XamlHost {
         Ok(Some(XamlSymbol {
             span: Span::from(&found["range"]),
             description: found["description"].as_str().unwrap_or_default().to_string(),
+            said: found["said"].as_str().map(str::to_string),
             targets: targets
                 .filter_map(|t| {
                     let at = Point::from(&t["at"]);
@@ -410,6 +442,15 @@ fn preview_event(partial: &Value) -> Option<PreviewEvent> {
     }
     if let Some(error) = partial.get("error") {
         return Some(PreviewEvent::Error(error.as_str().map(str::to_string)));
+    }
+    if let Some(png) = partial.get("png") {
+        return Some(PreviewEvent::Png {
+            data: base64(png["data"].as_str()?)?,
+            dpi: png["dpi"].as_f64().unwrap_or(96.),
+        });
+    }
+    if let Some(status) = partial.get("status").and_then(Value::as_str) {
+        return Some(PreviewEvent::Status(status.to_string()));
     }
     if let Some(elements) = partial.get("elements") {
         let elements = elements.as_array()?.iter().filter_map(|e| {

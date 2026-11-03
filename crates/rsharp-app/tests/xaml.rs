@@ -1985,8 +1985,25 @@ fn colours_show_as_gutter_swatches_and_one_chosen_in_the_picker_is_written_back_
     cx.simulate_click(swatch, gpui::Modifiers::default());
     cx.run_until_parked();
     assert_eq!(editor.read_with(cx, |e, cx| e.picking_colour(cx)).as_deref(), Some("#3D7BF5"));
+    assert_eq!(
+        editor.read_with(cx, |e, _| e.picker_colour()),
+        Some([255, 0x3D, 0x7B, 0xF5]),
+        "the wheel is not on the colour"
+    );
+    // A press at the square's bottom is black, whatever the hue, written in the field.
+    let square = cx.debug_bounds("colour square").expect("the picker has no square");
+    cx.simulate_click(square.bottom_left() + gpui::point(gpui::px(2.), gpui::px(-1.)), gpui::Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(editor.read_with(cx, |e, cx| e.picking_colour(cx)).as_deref(), Some("#000000"), "the square's press");
+    // A colour typed moves the wheel to it.
     cx.simulate_input("#E2A33F");
+    cx.run_until_parked();
     assert_eq!(editor.read_with(cx, |e, cx| e.picking_colour(cx)).as_deref(), Some("#E2A33F"));
+    assert_eq!(
+        editor.read_with(cx, |e, _| e.picker_colour()),
+        Some([255, 0xE2, 0xA3, 0x3F]),
+        "the wheel did not follow the field"
+    );
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
     assert_eq!(editor.read_with(cx, |e, cx| e.picking_colour(cx)), None, "the picker stayed open");

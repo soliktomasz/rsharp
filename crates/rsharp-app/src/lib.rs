@@ -8,6 +8,7 @@ pub mod breakpoint_popup;
 pub mod breakpoints_dialog;
 pub mod buffer;
 pub mod choice_dialog;
+pub mod colour_picker;
 pub mod console;
 pub mod debug_view;
 pub mod dock;

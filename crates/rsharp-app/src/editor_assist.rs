@@ -29,7 +29,12 @@ pub enum Popup {
     /// Rename's field over the word being renamed.
     Rename { field: Entity<TextField>, word: Range<usize> },
     /// The colour picker over a swatch: its chosen use and the target's text before the picker opened.
-    Colour { field: Entity<TextField>, colour: rsharp_lsp::xaml::XamlColour, before: Rope },
+    Colour {
+        field: Entity<TextField>,
+        colour: rsharp_lsp::xaml::XamlColour,
+        before: Rope,
+        pick: crate::colour_picker::Pick,
+    },
     /// Surround With's constructs (each its name, template and the digit that chooses it), the chosen one, and the
     /// text they go around when that is not the selection's lines (a XAML element).
     Surround { items: Vec<super::refactor::Surround>, selected: usize, target: Option<Range<usize>> },
@@ -1332,15 +1337,33 @@ impl CodeEditor {
                     })
                     .into_any_element()
             }
-            Popup::Colour { field, .. } => frame()
+            Popup::Colour { field, pick, .. } => frame()
                 .key_context("RenamePopup")
                 .left(at.x - px(6.))
                 .top(at.y - px(4.))
-                .w(px(220.))
-                .p(px(6.))
+                .w(px(330.))
+                .p(px(10.))
                 .flex()
                 .flex_col()
-                .gap(px(4.))
+                .gap(px(8.))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|e, down: &gpui::MouseDownEvent, _, cx| e.drag_colour(down.position, true, cx)),
+                )
+                .on_mouse_move(cx.listener(|e, moved: &gpui::MouseMoveEvent, _, cx| {
+                    if moved.pressed_button == Some(gpui::MouseButton::Left) {
+                        e.drag_colour(moved.position, false, cx)
+                    }
+                }))
+                .on_mouse_up(
+                    gpui::MouseButton::Left,
+                    cx.listener(|e, _: &gpui::MouseUpEvent, _, _| {
+                        if let Some(Popup::Colour { pick, .. }) = &mut e.assist.popup {
+                            pick.dragging = None;
+                        }
+                    }),
+                )
+                .child(pick.areas())
                 .on_action(cx.listener(|e, _: &Choose, window, cx| e.finish_colour(window, cx)))
                 .on_action(cx.listener(|e, _: &Dismiss, window, cx| {
                     e.assist.popup = None;

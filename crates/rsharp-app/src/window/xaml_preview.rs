@@ -73,7 +73,8 @@ impl MainWindow {
     fn start_preview(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.stop_preview(cx);
         if self.xaml.is_none() && cx.global::<crate::state::Ide>().servers {
-            self.xaml = rsharp_lsp::xaml::XamlHost::carried();
+            self.xaml = rsharp_lsp::xaml::XamlHost::carried()
+                .map(|h| h.keeping_library_files(store(cx).root().join("MetadataAsSource")));
         }
         let (Some(host), Some(buffer)) = (self.xaml.clone(), crate::buffer::find(&path, cx)) else {
             self.said = Some("XAML Preview needs the XAML host, which RSharp's build makes".into());
@@ -133,6 +134,11 @@ impl MainWindow {
         match event {
             Ok(PreviewEvent::Started { session, arguments, folder }) => {
                 preview.session = Some(session);
+                // WPF's previewer is the host's to start; only Avalonia's HostApp is named here.
+                if arguments.is_empty() {
+                    cx.notify();
+                    return;
+                }
                 let Some(dotnet) = rsharp_core::programs::dotnet() else { return };
                 let mut command = rsharp_core::dotnet::command(&dotnet, &arguments, &folder);
                 command
@@ -157,6 +163,21 @@ impl MainWindow {
                     let render = gpui::RenderImage::new(vec![image::Frame::new(image)]);
                     preview.frame = Some((Arc::new(render), frame));
                     preview.status = "Live".into();
+                }
+            }
+            Ok(PreviewEvent::Status(status)) => preview.status = status,
+            Ok(PreviewEvent::Png { data, dpi }) => {
+                if let Ok(decoded) = image::load_from_memory_with_format(&data, image::ImageFormat::Png) {
+                    let rgba = decoded.to_rgba8();
+                    let (width, height) = rgba.dimensions();
+                    // gpui draws BGRA, as Avalonia's frames come.
+                    let mut bgra = rgba.into_raw();
+                    bgra.chunks_exact_mut(4).for_each(|p| p.swap(0, 2));
+                    if let Some(image) = image::RgbaImage::from_raw(width, height, bgra.clone()) {
+                        let render = gpui::RenderImage::new(vec![image::Frame::new(image)]);
+                        preview.frame = Some((Arc::new(render), PreviewFrame { width, height, bgra, dpi }));
+                        preview.status = "Live".into();
+                    }
                 }
             }
             Ok(PreviewEvent::Error(error)) => {
@@ -354,7 +375,9 @@ mod tests {
 
     #[gpui::test]
     fn edits_before_the_preview_starts_are_sent_once_its_session_arrives(cx: &mut gpui::TestAppContext) {
-        let Some(host) = rsharp_lsp::xaml::XamlHost::carried() else {
+        let Some(host) = rsharp_lsp::xaml::XamlHost::carried()
+            .map(|h| h.keeping_library_files(store(cx).root().join("MetadataAsSource")))
+        else {
             eprintln!("skipped: the XAML host was not built");
             return;
         };

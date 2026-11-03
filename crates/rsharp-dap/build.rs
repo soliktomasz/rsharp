@@ -14,6 +14,7 @@ fn main() {
         "Passenger.Debugger.Interop",
         "Passenger.Dap",
         "Passenger.Core",
+        "Passenger.Inspector",
         "Publicize.targets",
     ] {
         println!("cargo:rerun-if-changed={}", passenger.join(input).display());
@@ -26,6 +27,7 @@ fn main() {
         assert!(std::env::var("CI").as_deref() != Ok("true"), "Passenger's debug adapter is required in CI: {why}");
         println!("cargo:warning=Passenger's debug adapter was not built ({why}); RSharp cannot debug");
         println!("cargo:rustc-env=RSHARP_DEBUG_ADAPTER=");
+        println!("cargo:rustc-env=RSHARP_INSPECTOR=");
     };
     let project = passenger.join("Passenger.DebugAdapter/Passenger.DebugAdapter.csproj");
     if !project.is_file() {
@@ -57,4 +59,28 @@ fn main() {
         return without(&format!("the debug adapter is not at {}", adapter.display()));
     }
     println!("cargo:rustc-env=RSHARP_DEBUG_ADAPTER={}", adapter.display());
+    // Passenger's inspector, which a debugged Avalonia app loads as a startup hook for the Live Visual Tree; its own
+    // assembly alone, as the app's Avalonia must be the one it uses.
+    let inspector =
+        rsharp_core::dotnet::command(&dotnet, ["publish", "-c", "Release", "-o"], passenger.parent().unwrap())
+            .arg(sidecars.join("inspector"))
+            .arg(passenger.join("Passenger.Inspector/Passenger.Inspector.csproj"))
+            .args(["-nologo", "-v", "q", "-p:WarningsNotAsErrors=NU1900"])
+            .output();
+    let carried = sidecars.join("inspector").join("Passenger.Inspector.dll");
+    match inspector {
+        Ok(output) if output.status.success() && carried.is_file() => {
+            // The app brings the Avalonia the inspector uses: anything else published beside it would load instead.
+            for entry in std::fs::read_dir(sidecars.join("inspector")).into_iter().flatten().flatten() {
+                if !entry.file_name().to_string_lossy().starts_with("Passenger.Inspector.") {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+            println!("cargo:rustc-env=RSHARP_INSPECTOR={}", carried.display())
+        }
+        _ => {
+            println!("cargo:warning=Passenger's inspector was not built; the Live Visual Tree is not available");
+            println!("cargo:rustc-env=RSHARP_INSPECTOR=");
+        }
+    }
 }
