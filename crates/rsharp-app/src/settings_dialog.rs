@@ -190,6 +190,42 @@ static PAGES: &[Page] = &[
         ],
     },
     Page {
+        group: "Languages & Frameworks",
+        name: "Node.js",
+        options: &[Opt::Text {
+            label: "Node interpreter (empty for the one found)",
+            get: |s| &s.node_interpreter,
+            set: |s, path| s.node_interpreter = path,
+        }],
+    },
+    Page {
+        group: "Languages & Frameworks",
+        name: "Remote JSON Schemas",
+        options: &[Opt::Check {
+            label: "Allow downloading JSON Schemas from remote sources",
+            get: |s| s.download_json_schemas,
+            set: |s, value| s.download_json_schemas = value,
+        }],
+    },
+    Page {
+        group: "Languages & Frameworks",
+        name: "ESLint",
+        options: &[Opt::Check {
+            label: "Run eslint --fix on save",
+            get: |s| s.eslint_fix_on_save,
+            set: |s, value| s.eslint_fix_on_save = value,
+        }],
+    },
+    Page {
+        group: "Languages & Frameworks",
+        name: "Prettier",
+        options: &[Opt::Check {
+            label: "Run on save",
+            get: |s| s.prettier_on_save,
+            set: |s, value| s.prettier_on_save = value,
+        }],
+    },
+    Page {
         group: "Editor",
         name: "Code Style: XAML",
         options: &[

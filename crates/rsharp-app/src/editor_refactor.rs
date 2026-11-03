@@ -228,7 +228,7 @@ impl CodeEditor {
                 std::fs::read_to_string(path).map_err(|e| format!("{} could not be read: {e}", path.display()))?,
             ),
         };
-        let tree = rsharp_languages::parse(&text, None);
+        let tree = rsharp_languages::parse(rsharp_languages::Grammar::CSharp, &text, None);
         let removal = rsharp_languages::declaration_at(&tree, &text, language::offset(&text, declaration.span.start))
             .map_err(str::to_string)?;
         // What uses it from inside what goes with it (a recursive call, a constructor of its type) goes too.

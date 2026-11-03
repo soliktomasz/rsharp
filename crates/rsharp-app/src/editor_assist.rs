@@ -198,6 +198,14 @@ impl CodeEditor {
         self.buffer.read(cx).server()
     }
 
+    pub(super) fn is_razor(&self, cx: &App) -> bool {
+        self.buffer.read(cx).server_language() == "aspnetcorerazor"
+    }
+
+    pub(super) fn is_csharp(&self, cx: &App) -> bool {
+        self.buffer.read(cx).grammar == Some(rsharp_languages::Grammar::CSharp)
+    }
+
     pub fn close_popup(&mut self, cx: &mut Context<Self>) {
         if self.assist.popup.take().is_some() {
             self.assist.popup_task = None;
@@ -253,6 +261,12 @@ impl CodeEditor {
                 }
             }
             '.' => self.request_completion(Some('.'), false, cx),
+            // In a Razor file, as in Rider, a tag's `<` lists the elements and components, `@` the directives and C#.
+            '<' | '@' if self.is_razor(cx) => self.request_completion(Some(c), false, cx),
+            // A web server's own triggers: HTML's `<`, CSS's `:`, JSON's quote.
+            c if !self.is_csharp(cx) && self.server(cx).is_some_and(|(s, _)| is_trigger(&s, c)) => {
+                self.request_completion(Some(c), false, cx)
+            }
             '(' | ',' => self.request_signature(true, cx),
             ')' if matches!(self.assist.popup, Some(Popup::Signature(_))) => self.close_popup(cx),
             _ if completing => self.close_popup(cx),
@@ -290,7 +304,9 @@ impl CodeEditor {
         let answer = ask(&server, "textDocument/completion", params, cx);
         // Where a statement or a member begins, the live templates are listed too, as Rider lists them.
         let line_start = self.text.line_to_byte(self.text.byte_to_line(start));
-        let templates = self.text.byte_slice(line_start..start).to_string().trim().is_empty() && trigger.is_none();
+        let templates = self.text.byte_slice(line_start..start).to_string().trim().is_empty()
+            && trigger.is_none()
+            && self.is_csharp(cx);
         let list = cx.background_executor().spawn(async move {
             let mut list = answer.await.map(|a| lsp::completion(&a))?;
             if templates {
@@ -690,10 +706,136 @@ impl CodeEditor {
         }));
     }
 
+    /// The whole file laid out by the project's own Prettier, as one undo step that changes only what differs, the caret
+    /// where Prettier puts it.
+    fn prettify(
+        &mut self,
+        node: std::path::PathBuf,
+        package: std::path::PathBuf,
+        then_save: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let text = self.text.to_string();
+        let cursor = text[..self.primary().head].encode_utf16().count();
+        let path = self.path.clone();
+        let version = self.version;
+        let formatted = cx
+            .background_executor()
+            .spawn(async move { rsharp_lsp::web::prettify(&node, &package, &path, &text, cursor).map(|p| (text, p)) });
+        self.assist.popup_task =
+            Some(cx.spawn(async move |this, cx| {
+                let answer = formatted.await;
+                let _ =
+                    this.update(cx, |e, cx| {
+                        match answer {
+                _ if e.version != version => {}
+                Ok((old, Some(pretty))) => {
+                    // The caret's place in Prettier's text, counted as JavaScript counts, before its breaks are held.
+                    let mut units = 0;
+                    let at = pretty.text.find(|c: char| {
+                        units += c.len_utf16();
+                        units > pretty.cursor
+                    });
+                    let caret = at.unwrap_or(pretty.text.len());
+                    let caret = caret - pretty.text[..caret].matches('\r').count();
+                    let new = rsharp_text::hold_newlines(pretty.text);
+                    let mut start = old.bytes().zip(new.bytes()).take_while(|(a, b)| a == b).count();
+                    while !old.is_char_boundary(start) || !new.is_char_boundary(start) {
+                        start -= 1;
+                    }
+                    let mut end =
+                        old[start..].bytes().rev().zip(new[start..].bytes().rev()).take_while(|(a, b)| a == b).count();
+                    while !old.is_char_boundary(old.len() - end) || !new.is_char_boundary(new.len() - end) {
+                        end -= 1;
+                    }
+                    if start != old.len() - end || start != new.len() - end {
+                        let edit =
+                            Edit { range: start..old.len() - end, text: new[start..new.len() - end].to_string() };
+                        e.apply_server_edits(vec![edit], cx);
+                        e.set_carets(vec![Selection::caret(caret.min(e.text.len_bytes()))], cx);
+                    }
+                }
+                // A save Prettier would leave alone says nothing: Reformat Code says why it did.
+                Ok((_, None)) if then_save => {}
+                Ok((_, None)) => cx.emit(Said(
+                    "Prettier does not format this file (.prettierignore names it, or it has no parser for it)".into(),
+                )),
+                Err(why) => cx.emit(Said(format!("Prettier could not format the file: {why}"))),
+                }
+                        if then_save {
+                            e.save_now(cx);
+                        }
+                    });
+            }));
+    }
+
+    /// The project's own prettier and the Node.js to run it on, for a file Prettier covers; none for the rest.
+    fn prettier_for(&self, cx: &App) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+        if !rsharp_lsp::web::prettier_covers(&self.path) {
+            return None;
+        }
+        Some((crate::settings::node(cx).ok()?, rsharp_lsp::web::installed(&self.path, "prettier")?))
+    }
+
+    /// A save as Settings ask it be made: what the project's ESLint can fix fixed, then the file laid out by its
+    /// Prettier, each where it is on and the project has it, and then the save. False when there is nothing to do first,
+    /// for the caller to save at once.
+    pub fn save_tidied(&mut self, cx: &mut Context<Self>) -> bool {
+        let settings = crate::settings::settings(cx);
+        let prettier = settings.prettier_on_save.then(|| self.prettier_for(cx)).flatten();
+        let lint = settings.eslint_fix_on_save.then(|| self.buffer.read(cx).lint_at(0..=u64::MAX)).flatten();
+        let Some((server, uri, _, problems)) = lint else {
+            let Some((node, package)) = prettier else { return false };
+            self.prettify(node, package, true, cx);
+            return true;
+        };
+        // ESLint's fix-all action carries its edit, so the save waits for it alone, never for a command's echo.
+        let end = language::point(&self.text, self.text.len_bytes());
+        let range = lsp::Span { start: lsp::Point::new(0, 0), end };
+        let context = json!({ "diagnostics": problems, "only": ["source.fixAll.eslint"] });
+        let params = json!({ "textDocument": { "uri": uri }, "range": range.to_json(), "context": context });
+        let answer = ask(&server, "textDocument/codeAction", params, cx);
+        let version = self.version;
+        self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
+            let actions = answer.await.unwrap_or_default();
+            let fixed = this.update(cx, |e, cx| {
+                let edit = &actions[0]["edit"];
+                if e.version == version && edit.is_object() {
+                    let made = language::apply_workspace_edit(&lsp::workspace_edit(edit), None, cx);
+                    if let Err(why) = made {
+                        cx.emit(Said(format!("ESLint's fixes could not be made: {why}")));
+                    }
+                }
+            });
+            // Prettier reads the text the fixes left, once the editor has it.
+            if fixed.is_ok() {
+                let _ = this.update(cx, |e, cx| match prettier {
+                    Some((node, package)) => e.prettify(node, package, true, cx),
+                    None => e.save_now(cx),
+                });
+            }
+        }));
+        true
+    }
+
+    fn save_now(&mut self, cx: &mut Context<Self>) {
+        if let Err(error) = self.save(cx) {
+            cx.emit(Said(format!("Could not save: {error}")));
+        }
+    }
+
     /// Reformat Code: the selection's lines, or the whole file, as the server lays them out with the file's indent.
     pub(super) fn reformat(&mut self, cx: &mut Context<Self>) {
         if self.is_xaml() {
             self.xaml_reformat(cx);
+            return;
+        }
+        // Rider's Prettier "Run on 'Reformat Code' action": the files it covers, where the project has prettier.
+        if rsharp_lsp::web::prettier_covers(&self.path)
+            && let Some(package) = rsharp_lsp::web::installed(&self.path, "prettier")
+            && let Ok(node) = crate::settings::node(cx)
+        {
+            self.prettify(node, package, false, cx);
             return;
         }
         let Some((server, uri)) = self.server(cx) else { return };
@@ -740,9 +882,26 @@ impl CodeEditor {
         let params =
             json!({ "textDocument": lsp::document(&uri), "range": span.to_json(), "context": { "diagnostics": [] } });
         let answer = ask(&server, "textDocument/codeAction", params, cx);
+        // ESLint's fixes of the problems on the selection's lines, which its server finds by the problems it is given.
+        let lines = span.start.line as u64..=span.end.line as u64;
+        let lint = self.buffer.read(cx).lint_at(lines).filter(|(.., problems)| !problems.is_empty()).map(
+            |(lint, uri, _, problems)| {
+                let context = json!({ "diagnostics": problems });
+                let params = json!({ "textDocument": { "uri": uri }, "range": span.to_json(), "context": context });
+                ask(&lint, "textDocument/codeAction", params, cx)
+            },
+        );
         let head = selection.head;
         self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
-            let mut actions = answer.await.map(|a| lsp::code_actions(&a)).unwrap_or_default();
+            let mut actions = match lint {
+                Some(lint) => lint.await.map(|a| lsp::code_actions(&a)).unwrap_or_default(),
+                None => Vec::new(),
+            };
+            for action in &mut actions {
+                action.lint = true;
+                action.title = format!("ESLint: {}", action.title);
+            }
+            actions.extend(answer.await.map(|a| lsp::code_actions(&a)).unwrap_or_default());
             // Quick fixes first, as Rider lists them above the context actions.
             actions.sort_by_key(|a| !a.quick_fix);
             let _ = this.update(cx, |e, cx| {
@@ -763,6 +922,15 @@ impl CodeEditor {
 
     /// A code action resolved and made; one that holds others (Roslyn's nested actions) lists them instead.
     pub(super) fn run_action(&mut self, action: CodeAction, cx: &mut Context<Self>) {
+        // ESLint's fix is its command, whose edit comes back as the server's workspace/applyEdit, which the window makes.
+        if action.lint && action.raw["command"].is_object() {
+            if let Some((lint, ..)) = self.buffer.read(cx).lint_at(0..=0) {
+                let command = &action.raw["command"];
+                let params = json!({ "command": command["command"], "arguments": command["arguments"] });
+                ask(&lint, "workspace/executeCommand", params, cx).detach();
+            }
+            return;
+        }
         // An action that carries its edit (a XAML fix) needs no resolving.
         if action.raw["edit"].is_object() {
             let server = self.server(cx).map(|(server, _)| server);
@@ -797,6 +965,16 @@ impl CodeEditor {
                 }
             });
         }));
+    }
+
+    /// Fix ESLint Problems: every problem ESLint can fix in the file, as `eslint --fix` fixes them.
+    pub(super) fn fix_lint_problems(&mut self, cx: &mut Context<Self>) {
+        let Some((lint, uri, version, _)) = self.buffer.read(cx).lint_at(0..=0) else {
+            cx.emit(Said("ESLint does not check this file".into()));
+            return;
+        };
+        let params = json!({ "command": "eslint.applyAllFixes", "arguments": [{ "uri": uri, "version": version }] });
+        ask(&lint, "workspace/executeCommand", params, cx).detach();
     }
 
     /// Rename: a field over the word at the caret, its name selected.
@@ -921,13 +1099,22 @@ impl CodeEditor {
             self.assist.token_task = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(pause).await;
                 let params = json!({ "textDocument": lsp::document(&uri), "range": range.to_json() });
+                // A server that has neither (VS Code's HTML, CSS and JSON) is not asked.
+                let has = |name: &str| !server.capabilities[name].is_null();
+                let (hints, colours) = (has("inlayHintProvider"), has("semanticTokensProvider"));
                 let Ok((answer, hinted)) = this.update(cx, |_, cx| {
-                    let hinted = ask(&server, "textDocument/inlayHint", params.clone(), cx);
-                    (ask(&server, "textDocument/semanticTokens/range", params, cx), hinted)
+                    let none = || Task::ready(None);
+                    let hinted =
+                        if hints { ask(&server, "textDocument/inlayHint", params.clone(), cx) } else { none() };
+                    let tokens =
+                        if colours { ask(&server, "textDocument/semanticTokens/range", params, cx) } else { none() };
+                    (tokens, hinted)
                 }) else {
                     return;
                 };
                 let hint_text = text.clone();
+                // A Razor file's colours are in the legend Razor registered as it started.
+                let razor = this.update(cx, |e, cx| e.is_razor(cx)).unwrap_or(false);
                 let hints = cx
                     .background_executor()
                     .spawn(async move {
@@ -943,12 +1130,18 @@ impl CodeEditor {
                                 );
                                 (offset(&hint_text, h.at), label)
                             })
+                            // A Razor directive's value (`@page "/counter"`) is the generated C#'s argument, which
+                            // Rider names no parameter for.
+                            .filter(|(at, _)| {
+                                let line = hint_text.line(hint_text.byte_to_line(*at)).to_string();
+                                !(razor && line.trim_start().starts_with('@'))
+                            })
                             .collect();
                         hints.sort_by_key(|(at, _)| *at);
                         Some(hints)
                     })
                     .await;
-                let legend = rsharp_lsp::token_legend(&server);
+                let legend = if razor { server.razor.legend() } else { rsharp_lsp::token_legend(&server) };
                 let tokens = cx
                     .background_executor()
                     .spawn(async move {
@@ -1179,4 +1372,10 @@ impl CodeEditor {
         };
         Some(element)
     }
+}
+
+/// Whether the server opens completion on `c` (its `triggerCharacters`).
+fn is_trigger(server: &rsharp_lsp::LanguageServer, c: char) -> bool {
+    let triggers = &server.capabilities["completionProvider"]["triggerCharacters"];
+    triggers.as_array().is_some_and(|t| t.iter().any(|t| t.as_str() == Some(c.encode_utf8(&mut [0; 4]))))
 }

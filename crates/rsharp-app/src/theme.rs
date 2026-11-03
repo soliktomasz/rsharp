@@ -210,8 +210,23 @@ pub mod editor {
     }
 }
 
-/// Rider Dark's colour for a kind of C#.
+/// How a kind of code is drawn beside its colour: a Markdown heading and strong emphasis bold, emphasis italic, as
+/// Rider draws MARKDOWN_HEADER_LEVEL_1, _BOLD and _ITALIC; none for the rest, drawn as the font is.
+pub fn face(kind: Kind) -> Option<(gpui::FontWeight, gpui::FontStyle)> {
+    match kind {
+        Kind::Heading | Kind::Bold => Some((gpui::FontWeight::BOLD, gpui::FontStyle::Normal)),
+        Kind::Italic => Some((gpui::FontWeight::NORMAL, gpui::FontStyle::Italic)),
+        _ => None,
+    }
+}
+
+/// Rider Dark's colour for a kind of code: ReSharper's for C#, Rider's own attributes for markup and data (XML_TAG,
+/// XML_ATTRIBUTE_NAME and _VALUE, XML_ENTITY_REFERENCE, JSON.PROPERTY_KEY, YAML_SCALAR_KEY, MARKDOWN_HEADER_LEVEL_1,
+/// MARKDOWN_CODE_SPAN, MARKDOWN_LINK_DESTINATION), as Passenger's RiderScheme.axaml carries them.
 pub fn syntax(kind: Kind) -> Hsla {
+    if matches!(kind, Kind::Bold | Kind::Italic) {
+        return editor::text().into();
+    }
     rgb(match kind {
         Kind::Keyword => 0x6C95EB,
         Kind::String => 0xC9A26D,
@@ -221,6 +236,13 @@ pub fn syntax(kind: Kind) -> Hsla {
         Kind::Type | Kind::Namespace => 0xC191FF,
         Kind::Method => 0x39CC9B,
         Kind::Property => 0x66C3CC,
+        Kind::Tag | Kind::YamlKey => 0xC191FF,
+        Kind::AttributeName | Kind::Code => 0x85C46C,
+        Kind::AttributeValue => 0xC9A26D,
+        Kind::Entity => 0xFFD49E,
+        Kind::JsonKey | Kind::Heading => 0x66C3CC,
+        Kind::LinkDestination => 0x39CC9B,
+        Kind::Bold | Kind::Italic => unreachable!("in the text's colour, above"),
     })
     .into()
 }
@@ -237,6 +259,23 @@ pub fn semantic(kind: &str) -> Option<Hsla> {
         "event" => 0xED94C0,
         "parameter" | "variable" | "label" | "namespace" => 0xBCBEC4,
         "excludedCode" => 0x6F737A,
+        // Razor's own, for a Razor file's markup: a component as a type and its parameters as properties, as Rider has
+        // them, HTML's as the HTML grammar colours it, Razor's directives and transitions as keywords (Passenger's map).
+        "razorTransition" | "razorDirective" | "razorDirectiveColon" | "razorDirectiveAttribute" => {
+            return Some(syntax(Kind::Keyword));
+        }
+        "razorComponentElement" | "razorTagHelperElement" => 0xC191FF,
+        "razorComponentAttribute" | "razorTagHelperAttribute" => 0x66C3CC,
+        "razorComment"
+        | "razorCommentStar"
+        | "razorCommentTransition"
+        | "markupComment"
+        | "markupCommentPunctuation" => {
+            return Some(syntax(Kind::Comment));
+        }
+        "markupElement" | "markupTagDelimiter" | "markupOperator" => return Some(syntax(Kind::Tag)),
+        "markupAttribute" => return Some(syntax(Kind::AttributeName)),
+        "markupAttributeValue" | "markupAttributeQuote" => return Some(syntax(Kind::AttributeValue)),
         _ => return None,
     };
     Some(rgb(colour).into())

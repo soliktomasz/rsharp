@@ -35,6 +35,29 @@ pub fn dotnet() -> Option<PathBuf> {
     find("dotnet", &also)
 }
 
+/// The `node` Node.js's installers and Homebrew put in place, or nvm's newest.
+// shortcut: nvm's newest version rather than its `default` alias; read the alias when someone keeps an older default.
+pub fn node() -> Option<PathBuf> {
+    let mut also = Vec::new();
+    if cfg!(windows) {
+        also.push(r"C:\Program Files\nodejs".into());
+    } else {
+        also.extend(["/opt/homebrew/bin".into(), "/usr/local/bin".into()]);
+        let mut versions: Vec<PathBuf> = std::fs::read_dir(home().join(".nvm/versions/node"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path().join("bin"))
+            .collect();
+        versions.sort_by_key(|p| {
+            let name = p.parent().and_then(Path::file_name).and_then(|n| n.to_str()).unwrap_or_default().to_string();
+            name.trim_start_matches('v').split('.').map(|n| n.parse::<u32>().unwrap_or(0)).collect::<Vec<_>>()
+        });
+        also.extend(versions.into_iter().rev());
+    }
+    find("node", &also)
+}
+
 /// The person's home folder.
 pub fn home() -> PathBuf {
     std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from).unwrap_or_default()

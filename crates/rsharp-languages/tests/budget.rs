@@ -19,7 +19,7 @@ fn source(methods: usize) -> String {
 /// The median time of a key's work, in microseconds, typing in the middle of a file of `methods` lines.
 fn per_key(methods: usize) -> f64 {
     let mut document = Document::new(&source(methods));
-    let mut tree = parse(document.text(), None);
+    let mut tree = parse(Grammar::CSharp, document.text(), None);
     let caret = document.text().line_to_byte(methods / 2) + 4;
     document.set_selections(vec![Selection::caret(caret)]);
     let mut times = Vec::new();
@@ -34,8 +34,8 @@ fn per_key(methods: usize) -> f64 {
         let line = document.text().byte_to_line(at);
         let shown = document.text().line_to_byte(line.saturating_sub(30))
             ..document.text().line_to_byte((line + 30).min(document.text().len_lines() - 1));
-        std::hint::black_box(folds_in(&tree, document.text(), shown.clone()));
-        std::hint::black_box(highlights(&tree, document.text(), shown));
+        std::hint::black_box(folds_in(Grammar::CSharp, &tree, document.text(), shown.clone()));
+        std::hint::black_box(highlights(Grammar::CSharp, &tree, document.text(), shown));
         times.push(started.elapsed().as_secs_f64() * 1e6);
     }
     times.sort_by(f64::total_cmp);

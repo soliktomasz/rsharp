@@ -644,9 +644,15 @@ fn the_chosen_configuration_and_the_folders_own_are_kept_with_it() {
 }
 
 /// dotnet watch opens a socket under the temp folder, and .NET refuses a path over 104 characters: a fixture gives it a
-/// short one, as a person whose temp folder is deep must. It is made under `target/`, which no test's own state shares.
+/// short one, as a person whose temp folder is deep must. Under `/tmp` off Windows, since `target/` is as deep as the
+/// checkout (a socket's 43 characters past a 61-character `target/watch-first/` were refused); no test's own state shares it.
 fn watch_temp(name: &str) -> String {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target").join(format!("watch-{name}"));
+    let base = if cfg!(windows) {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target")
+    } else {
+        std::path::PathBuf::from("/tmp")
+    };
+    let dir = base.join(format!("rsharp-watch-{name}"));
     std::fs::create_dir_all(&dir).unwrap();
     // Resolved, since `..` counts towards the limit too.
     std::fs::canonicalize(&dir).unwrap_or(dir).to_string_lossy().into_owned()

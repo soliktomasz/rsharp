@@ -15,11 +15,21 @@ fn open<'a>(
     caret: (usize, usize),
     cx: &'a mut TestAppContext,
 ) -> (Run, &'a mut VisualTestContext) {
-    let run = Run::new(name, &[("Program.cs", text)]);
+    open_named(name, "Program.cs", text, caret, cx)
+}
+
+fn open_named<'a>(
+    name: &str,
+    file: &str,
+    text: &str,
+    caret: (usize, usize),
+    cx: &'a mut TestAppContext,
+) -> (Run, &'a mut VisualTestContext) {
+    let run = Run::new(name, &[(file, text)]);
     let (main, cx) = run.window(cx);
     main.update_in(cx, |main, window, cx| {
         main.open_workspace(&run.folder, window, cx);
-        main.open_file(&run.folder.join("Program.cs"), Some(caret), window, cx);
+        main.open_file(&run.folder.join(file), Some(caret), window, cx);
     });
     cx.run_until_parked();
     (run, cx)
@@ -27,10 +37,14 @@ fn open<'a>(
 
 /// Types at the caret and saves, and gives back the file.
 fn type_and_save(run: &Run, cx: &mut VisualTestContext, typed: &str) -> String {
+    type_and_save_in(run, "Program.cs", cx, typed)
+}
+
+fn type_and_save_in(run: &Run, file: &str, cx: &mut VisualTestContext, typed: &str) -> String {
     cx.simulate_input(typed);
     cx.simulate_keystrokes("secondary-s");
     cx.run_until_parked();
-    std::fs::read_to_string(run.folder.join("Program.cs")).unwrap()
+    std::fs::read_to_string(run.folder.join(file)).unwrap()
 }
 
 const CLASS: &str = "class C\n{\n    void M()\n    {\n        int x;\n    }\n}\n// end\n";
@@ -52,6 +66,19 @@ fn collapse_all_hides_the_bodies_and_down_steps_over_them(cx: &mut TestAppContex
         type_and_save(&run, cx, "Y"),
         "class C\n{\n    void M()\n    {\n        int x;\n Y   }\n}\nX// end\n",
         "Expand All left lines folded"
+    );
+}
+
+#[gpui::test]
+fn an_msbuild_file_folds_by_its_elements_as_its_own_grammar_reads_them(cx: &mut TestAppContext) {
+    let project = "<Project>\n  <PropertyGroup>\n    <A>1</A>\n  </PropertyGroup>\n</Project>\n";
+    let (run, cx) = open_named("fold-xml", "App.csproj", project, (0, 0), cx);
+    cx.simulate_keystrokes(if MAC { "cmd-shift--" } else { "ctrl-m ctrl-a" });
+    cx.simulate_keystrokes("down");
+    assert_eq!(
+        type_and_save_in(&run, "App.csproj", cx, "X"),
+        "<Project>\n  <PropertyGroup>\n    <A>1</A>\n  </PropertyGroup>\n</Project>\nX",
+        "Collapse All did not fold the project file's root element, so Down went into it"
     );
 }
 

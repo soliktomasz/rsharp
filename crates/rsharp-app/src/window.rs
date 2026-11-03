@@ -144,6 +144,7 @@ mod run;
 mod solution_actions;
 mod terminal;
 mod tests;
+mod web;
 mod xaml;
 mod xaml_preview;
 
@@ -286,6 +287,8 @@ pub struct MainWindow {
     host: Option<rsharp_lsp::SharedHost>,
     /// The XAML host, started as the first XAML file opens.
     xaml: Option<rsharp_lsp::xaml::XamlHost>,
+    /// The folder's web language servers, each started with the first file of its kind.
+    web: web::WebServers,
     /// The XAML file Avalonia's previewer draws, while the XAML Preview is open.
     preview: Option<xaml_preview::Preview>,
     /// A round of evaluations is running; `evaluate_again` asks for one more after it.
@@ -573,6 +576,7 @@ impl MainWindow {
             _server_task: None,
             host: None,
             xaml: None,
+            web: Default::default(),
             preview: None,
             evaluating: false,
             evaluate_again: false,
@@ -586,6 +590,7 @@ impl MainWindow {
 
     pub fn open_workspace(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
         self.xaml = None;
+        self.web = Default::default();
         self.leave_tests(cx);
         self.leave_git(cx);
         self.leave_build(cx);
@@ -764,11 +769,16 @@ impl MainWindow {
                     }
                 }
                 w.server = Some(server.clone());
+                w.connect_razor_html();
                 w.server_state = ServerState::Loading("Loading solution".into());
                 let editors: Vec<_> = w.area.editors().cloned().collect();
                 for editor in editors {
-                    if is_csharp(&editor.read(cx).path) {
-                        editor.read(cx).buffer.clone().update(cx, |b, cx| b.attach_server(server.clone(), cx));
+                    if let Some(language) = roslyn_language(&editor.read(cx).path) {
+                        editor
+                            .read(cx)
+                            .buffer
+                            .clone()
+                            .update(cx, |b, cx| b.attach_server_as(server.clone(), language, cx));
                     }
                 }
                 cx.notify();
@@ -891,9 +901,9 @@ impl MainWindow {
         let editors: Vec<_> = self.area.editors().cloned().collect();
         for editor in editors {
             editor.read(cx).buffer.clone().update(cx, |b, cx| {
-                if let Some(server) = server.clone().filter(|_| is_csharp(&b.path)) {
+                if let (Some(server), Some(language)) = (server.clone(), roslyn_language(&b.path)) {
                     b.detach_server();
-                    b.attach_server(server, cx);
+                    b.attach_server_as(server, language, cx);
                 }
                 b.check(std::time::Duration::ZERO, cx)
             });
@@ -1504,11 +1514,12 @@ impl MainWindow {
                         }
                     },
                 };
-                if let Some(server) = self.server.clone().filter(|_| is_csharp(&path)) {
-                    buffer.update(cx, |b, cx| b.attach_server(server, cx));
+                if let (Some(server), Some(language)) = (self.server.clone(), roslyn_language(&path)) {
+                    buffer.update(cx, |b, cx| b.attach_server_as(server, language, cx));
                 }
                 self.attach_msbuild(&buffer, cx);
                 self.attach_xaml(&buffer, cx);
+                self.attach_web(&buffer, cx);
                 self.attach_git_buffer(&buffer, cx);
                 self.note_hot_reload_original(&buffer, cx);
                 self.show_breakpoints(&path, cx);
@@ -1609,8 +1620,13 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) -> Entity<CodeEditor> {
         let editor = cx.new(|cx| CodeEditor::new(buffer.clone(), cx));
-        cx.subscribe(&buffer, |w, _, event: &crate::buffer::BufferEvent, cx| match event {
-            crate::buffer::BufferEvent::Parsed => w.refresh_open_tests(cx),
+        cx.subscribe(&buffer, |w, buffer, event: &crate::buffer::BufferEvent, cx| match event {
+            // Tests are read from C# alone; another file's parse leaves them as they were.
+            crate::buffer::BufferEvent::Parsed
+                if buffer.read(cx).grammar == Some(rsharp_languages::Grammar::CSharp) =>
+            {
+                w.refresh_open_tests(cx)
+            }
             crate::buffer::BufferEvent::Moved(_) => w.refresh_tests(cx),
             _ => {}
         })
@@ -1865,6 +1881,7 @@ impl MainWindow {
     /// Back to the Welcome screen, the folder's state kept, as Rider's File | Close Solution.
     pub fn close_solution(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.xaml = None;
+        self.web = Default::default();
         self.leave_tests(cx);
         self.leave_git(cx);
         self.leave_build(cx);
@@ -2111,6 +2128,11 @@ impl MainWindow {
     }
 }
 
+/// The language a file is opened as in Roslyn's server: C#, or Razor, cohosted in it; none for the rest.
+fn roslyn_language(path: &Path) -> Option<&'static str> {
+    if is_csharp(path) { Some("csharp") } else { rsharp_lsp::razor::is_razor(path).then_some("aspnetcorerazor") }
+}
+
 fn is_csharp(path: &Path) -> bool {
     path.extension().is_some_and(|e| e == "cs" || e == "csx")
 }
@@ -2298,6 +2320,10 @@ impl Render for MainWindow {
                     if let Some(editor) = w.active_editor().cloned() {
                         if editor.read(cx).buffer.read(cx).read_only {
                             editor::ask_clear_read_only(editor, editor::AfterClearing::Save, window, cx);
+                            return;
+                        }
+                        // ESLint's fixes and Prettier's layout first, as Settings ask; the editor saves after them.
+                        if editor.update(cx, |e, cx| e.save_tidied(cx)) {
                             return;
                         }
                         w.said =

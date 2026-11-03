@@ -1,9 +1,9 @@
-use rsharp_languages::{parse, testing};
+use rsharp_languages::{Grammar, parse, testing};
 use rsharp_text::{Document, Rope, Selection, insert};
 
 fn read(source: &str) -> testing::FileTests {
     let text = Rope::from_str(source);
-    testing::read(&parse(&text, None), &text)
+    testing::read(&parse(Grammar::CSharp, &text, None), &text)
 }
 
 #[test]
@@ -113,7 +113,7 @@ fn caret_context_and_incremental_edits_use_unicode_byte_positions() {
     let source =
         "namespace Próby;\nclass Żółć\n{\n    [Fact]\n    void Działa()\n    {\n        var znak = \"😀\";\n    }\n}\n";
     let mut document = Document::new(source);
-    let mut tree = parse(document.text(), None);
+    let mut tree = parse(Grammar::CSharp, document.text(), None);
     assert_eq!(testing::at(&tree, document.text(), 7), Some(("Próby.Żółć".into(), Some("Działa".into()))));
     assert_eq!(testing::at(&tree, document.text(), 3), Some(("Próby.Żółć".into(), None)));
     assert_eq!(testing::at(&tree, document.text(), 0), None);
@@ -122,17 +122,17 @@ fn caret_context_and_incremental_edits_use_unicode_byte_positions() {
     for change in document.apply(insert(document.text(), document.selections(), "    // 😀\n")) {
         rsharp_languages::edit(&mut tree, &change);
     }
-    tree = parse(document.text(), Some(&tree));
+    tree = parse(Grammar::CSharp, document.text(), Some(&tree));
     let found = testing::read(&tree, document.text());
     assert_eq!(found.tests[0].line, 6, "a Unicode edit moved the test to the wrong source line");
-    assert_eq!(found, testing::read(&parse(document.text(), None), document.text()));
+    assert_eq!(found, testing::read(&parse(Grammar::CSharp, document.text(), None), document.text()));
 }
 
 #[test]
 fn blank_caret_lines_do_not_select_the_next_lines_declaration() {
     for blank in ["\n", " \t\n", "\r\n", " \t\r\n"] {
         let text = Rope::from_str(&format!("class Cases\n{{\n{blank}[Fact] void Works() {{}}\n}}\n"));
-        let tree = parse(&text, None);
+        let tree = parse(Grammar::CSharp, &text, None);
         assert_eq!(
             testing::at(&tree, &text, 3),
             Some(("Cases".into(), None)),
@@ -141,7 +141,7 @@ fn blank_caret_lines_do_not_select_the_next_lines_declaration() {
         assert_eq!(testing::at(&tree, &text, 4), Some(("Cases".into(), Some("Works".into()))));
         let text = Rope::from_str(&format!("{blank}class Cases {{}}"));
         assert_eq!(
-            testing::at(&parse(&text, None), &text, 1),
+            testing::at(&parse(Grammar::CSharp, &text, None), &text, 1),
             None,
             "a blank line outside a type selected the following type"
         );

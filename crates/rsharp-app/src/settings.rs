@@ -32,6 +32,18 @@ pub struct AppSettings {
     pub hot_reload_restart_on_rude_edit: bool,
     /// Editor | Code Style | XAML: how Reformat Code lays out XAML, under each file's .editorconfig.
     pub xaml_format: XamlFormat,
+    /// Languages & Frameworks | JavaScript | Code Quality Tools | ESLint | Run eslint --fix on save: a save first fixes
+    /// what the project's ESLint can fix in a file it checks.
+    pub eslint_fix_on_save: bool,
+    /// Languages & Frameworks | JavaScript | Prettier | Run on save: a save first lays a file Prettier covers out with
+    /// the project's prettier.
+    pub prettier_on_save: bool,
+    /// Languages & Frameworks | Node.js | Node interpreter: the `node` the web servers, ESLint and Prettier run on;
+    /// empty for the one found as a login shell would.
+    pub node_interpreter: String,
+    /// Languages & Frameworks | Schemas and DTDs | Remote JSON Schemas: a JSON file's own `$schema` on the web is
+    /// downloaded to check and complete it; those carried never are.
+    pub download_json_schemas: bool,
 }
 
 /// Rider's XAML code style (Passenger's XamlFormatSettings, by its names, which the XAML host reads): its XML formatter's
@@ -152,6 +164,10 @@ impl Default for AppSettings {
             hot_reload: false,
             hot_reload_restart_on_rude_edit: true,
             xaml_format: XamlFormat::default(),
+            eslint_fix_on_save: false,
+            prettier_on_save: false,
+            node_interpreter: String::new(),
+            download_json_schemas: true,
         }
     }
 }
@@ -193,9 +209,25 @@ pub fn settings(cx: &gpui::App) -> &AppSettings {
     &cx.global::<Settings>().0
 }
 
+/// The Node.js the web servers, ESLint and Prettier run on: the one Settings names, else the one found; or why none.
+pub fn node(cx: &gpui::App) -> Result<std::path::PathBuf, String> {
+    let named = settings(cx).node_interpreter.trim();
+    if named.is_empty() {
+        return rsharp_core::programs::node().ok_or_else(|| "Node.js was not found".to_string());
+    }
+    let path = std::path::PathBuf::from(named);
+    if path.is_file() { Ok(path) } else { Err(format!("Settings name {named} as Node.js, which is not there")) }
+}
+
 /// Puts `new` in force and keeps it; every view observing [`Settings`] draws again.
 pub fn apply(new: AppSettings, cx: &mut gpui::App) {
     let new = new.clamped();
     store(cx).write(&new);
+    follow(&new);
     cx.set_global(Settings(new));
+}
+
+/// What the non-UI crates read of the settings, told them as they come into force.
+pub fn follow(settings: &AppSettings) {
+    rsharp_lsp::web::REMOTE_SCHEMAS.store(settings.download_json_schemas, std::sync::atomic::Ordering::Relaxed);
 }

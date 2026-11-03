@@ -28,6 +28,14 @@ change that brings it in.
 | `trash` | MIT | Artur Kovacs and contributors |
 | `tree-sitter` | MIT | Max Brunsfeld |
 | `tree-sitter-c-sharp` | MIT | Max Brunsfeld, Damien Guard and contributors |
+| `tree-sitter-css` | MIT | Max Brunsfeld, Amaan Qureshi |
+| `tree-sitter-html` | MIT | Max Brunsfeld, Amaan Qureshi |
+| `tree-sitter-javascript` | MIT | Max Brunsfeld, Amaan Qureshi |
+| `tree-sitter-json` | MIT | Max Brunsfeld, Amaan Qureshi |
+| `tree-sitter-md` | MIT | Matthias Deiml |
+| `tree-sitter-typescript` | MIT | Max Brunsfeld, Amaan Qureshi |
+| `tree-sitter-xml` | MIT | ObserverOfTime, Amaan Qureshi |
+| `tree-sitter-yaml` | MIT | Ika, Amaan Qureshi (tree-sitter-grammars contributors) |
 | `ureq` | MIT OR Apache-2.0 | Martin Algesten and contributors |
 
 `symbolic-ppdb` reads the sources the debugger's decompiled PDBs embed: it brings symbolic-common (MIT) and watto
@@ -81,6 +89,41 @@ unchanged, and carries them with Microsoft.CodeAnalysis.CSharp (MIT, .NET Founda
 and Avalonia.Remote.Protocol (MIT, AvaloniaUI OÜ), which the XAML Preview speaks to the project's own Avalonia
 previewer.
 
+### Inside `sidecars/web/`
+
+The language servers of JavaScript, TypeScript, HTML, CSS and JSON files, npm packages of plain JavaScript run on the
+machine's Node.js. `crates/rsharp-lsp/build.rs` puts in place the ones Passenger's
+`src/Passenger.Lsp/WebServers/package-lock.json` pins, through `npm ci`, which checks each tarball against the sha512 it
+pins; nothing is downloaded as the app runs. They are carried as their tarballs hold them. Each package is named by its
+npm name, with the licence its package.json states and the copyright line its licence file carries (else its author),
+as Passenger's notices list them.
+
+| Package | In RSharp | Licence | Copyright |
+|---|---|---|---|
+| `typescript-language-server` | the TypeScript and JavaScript language server, over TypeScript's own tsserver (a project's own `node_modules/typescript` when it has one) | Apache-2.0 | Copyright (c) 2015 - present Microsoft Corporation |
+| `typescript` (6.0.3, and 4.9.5 under vscode-langservers-extracted) | TypeScript's compiler and tsserver for a project without its own; the HTML server's for a page's scripts | Apache-2.0 | no copyright line; its author: Microsoft Corp. |
+| `vscode-langservers-extracted` | VS Code's HTML, CSS and JSON language servers, as extracted from VS Code (its ESLint and Markdown servers, carried with them, are not run yet) | MIT | Copyright (c) 2020 hrsh7th |
+| `vscode-css-languageservice`, `vscode-html-languageservice`, `vscode-json-languageservice`, `jsonc-parser`, `request-light`, `vscode-uri` | the servers' language services | MIT | Copyright (c) Microsoft |
+| `vscode-languageserver`, `vscode-languageserver-protocol`, `vscode-languageserver-types`, `vscode-languageserver-textdocument`, `vscode-jsonrpc`, `vscode-nls`, `vscode-markdown-languageservice` | the servers' side of the Language Server Protocol | MIT | Copyright (c) Microsoft Corporation |
+| `@vscode/l10n` | the servers' messages | MIT | no copyright line; its author: Microsoft Corporation |
+| `core-js` | the extracted servers' JavaScript library | MIT | Copyright (c) 2013–2025 Denis Pushkarev (zloirock.ru) |
+| `regenerator-runtime` | the extracted servers' generators | MIT | Copyright (c) 2014-present, Facebook, Inc. |
+| `semver` | version ranges | ISC | Copyright (c) Isaac Z. Schlueter and Contributors |
+| `node-html-parser` | the Markdown service's HTML | MIT | Copyright 2019 Tao Qiufeng |
+| `css-select`, `css-what`, `domelementtype`, `domhandler`, `domutils`, `entities`, `nth-check` | node-html-parser's | BSD-2-Clause | Copyright (c) Felix Böhm |
+| `boolbase` | css-select's | ISC | no copyright line; its author: Felix Boehm |
+| `dom-serializer` | domutils' | MIT | Copyright (c) 2014 The cheeriojs contributors |
+| `he` | node-html-parser's | MIT | Copyright Mathias Bynens |
+| `picomatch` | the Markdown service's globs | MIT | Copyright (c) 2017-present, Jon Schlinkert. |
+
+### SchemaStore's JSON schemas
+
+`crates/rsharp-lsp/build.rs` copies the JSON schemas Passenger carries in `src/Passenger.Lsp/WebServers/schemas/`
+(the JSON Schema Store's, https://github.com/SchemaStore/schemastore, unchanged) to `sidecars/web/schemas/`: those the
+JSON language server checks and completes package.json, tsconfig.json, jsconfig.json, appsettings.json,
+launchSettings.json and global.json by, and those they refer to. Apache License 2.0, with the Schema Store's NOTICE:
+"JSON Schema Store, Copyright 2015-Current Mads Kristensen and Contributors".
+
 ## Ported from Passenger
 
 The project-template family rules, pack metadata and template-creation behavior in
@@ -95,3 +138,9 @@ https://github.com/Zaneris/passenger).
 Roslyn's language server (`roslyn-language-server`, MIT, .NET Foundation): the version Passenger pins, which the
 extension's build downloads into the NuGet cache and RSharp runs from there; without the submodule or dotnet at build
 time, the person's own install of the dotnet tool.
+
+A project's own `eslint` (MIT, OpenJS Foundation and other contributors) and `prettier` (MIT, James Long and
+contributors), run from its node_modules for ESLint's problems and Reformat Code, as Rider runs them; RSharp carries
+neither. Prettier runs through Passenger's runner, `src/Passenger.App/Web/prettier.cjs` (MIT, Copyright (c) 2026 Ted L),
+which `crates/rsharp-lsp/build.rs` copies unchanged to `sidecars/web/prettier.cjs`. The tests put the versions Passenger's
+tests pin (`tests/Passenger.Tests/NodePackages`) in a folder of their own with npm, and carry nothing.

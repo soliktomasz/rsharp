@@ -497,7 +497,30 @@ as Passenger's editor pairs them, the inspector and the MCP `app_*` tools.
 Passenger: `Passenger.Xaml`, `Xaml/`, `LiveTree/`, the Inspectors; issues #186, #187, #191–#202.
 Done when: AvaloniaGallery and WpfGallery pass Passenger's XAML editing tests in RSharp.
 
-### Phase 10: Web languages and other files (M)
+### Phase 10: Web languages and other files (M) — done
+The phase's whole-suite run (782 passed) failed only Phase 4's parity test, whose recorded Shop.sln has Visual Studio
+16's header where SDK 10.0.100's `dotnet new sln` writes 17's: Phase 4's to settle, not this phase's.
+Begun: colours for other files. XML (XAML and MSBuild among it), JSON, CSS, JavaScript, TypeScript and TSX, HTML,
+Markdown and YAML are tree-sitter's grammars, parsed incrementally as C# is and coloured by each grammar's own
+highlights query in Rider's colours (a tag, an attribute's name and value, an entity, a JSON or YAML key, a heading,
+code, a link), and their elements, objects, blocks and sections fold. The web language servers Passenger pins
+(typescript-language-server over TypeScript, VS Code's HTML, CSS and JSON servers) are put in place by the build
+through npm and run on Node.js, one per kind for the folder, started with the first file of its kind: a file's
+problems are marked as its server pushes them, completion opens at a word, a dot or the server's own triggers (HTML's
+`<`, CSS's `:`), and hover, Go to Declaration and Reformat Code answer as C#'s do; without Node.js the status bar says
+the file has its colours only. A project's own eslint checks the files Rider's ESLint covers, through VS Code's ESLint
+server, its problems beside the file's own; Reformat Code lays a file out with the project's own prettier (its
+.prettierrc, .editorconfig and .prettierignore), as one undo step; Alt+Enter lists ESLint's fixes first and Fix ESLint
+Problems fixes the whole file, as the project's eslint --fix would; Settings' ESLint "Run eslint --fix on save" and
+Prettier "Run on save" make a save fix and lay the file out first. A Razor file (.razor, .cshtml) is Roslyn's, Razor
+cohosted in it as Passenger runs it: its markup coloured by HTML's grammar until Razor's own colours layer over them,
+its problems marked (the C# in it among them), completion at a word, `<` and `@`, Reformat Code, and what Razor asks
+of a file's HTML answered by the HTML server, or by HTML's own names where there is no Node.js. A language inside
+another is coloured as itself: HTML's script and style, a Markdown fence in a language with a grammar here, and
+Markdown's code spans, emphasis markers and links; a Markdown heading and strong emphasis are drawn bold, emphasis
+italic. Settings' Node.js page names the Node interpreter they all run on, and a JSON file's own `$schema` on the web
+is downloaded while Settings' Remote JSON Schemas allows it. Not yet: Settings' ESLint and Prettier package choices
+(Rider's Automatic configuration is the one in force), and a server that ends started again.
 - The web language servers bundle (TypeScript, HTML, CSS, JSON, ESLint), driven by the `rsharp-lsp` client on
   Node.js, plus Prettier.
 - Colours for other files: tree-sitter grammars (XML, JSON, CSS, JS/TS, HTML, Markdown, YAML) in place of

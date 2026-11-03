@@ -5,7 +5,9 @@
 pub mod extension;
 mod host;
 mod protocol;
+pub mod razor;
 mod roslyn;
+pub mod web;
 pub mod xaml;
 
 pub use host::{BuildHold, SharedHost};
@@ -65,6 +67,8 @@ pub struct LanguageServer {
     options: Options,
     /// What the server said it can do, answering `initialize`.
     pub capabilities: Value,
+    /// Razor's part of Roslyn's server: its colours' legend and its files' HTML; empty for any other server.
+    pub razor: Arc<razor::Razor>,
     _child: Child,
 }
 
@@ -100,7 +104,15 @@ impl LanguageServer {
         std::thread::Builder::new().name("lsp-reader".into()).spawn(move || {
             read(BufReader::new(output), &reader_input, &reader_pending, &reader_options, &answers, &*events)
         })?;
-        Ok(Self { input, pending, next_id: AtomicI64::new(1), options, capabilities: Value::Null, _child: child })
+        Ok(Self {
+            input,
+            pending,
+            next_id: AtomicI64::new(1),
+            options,
+            capabilities: Value::Null,
+            razor: Arc::default(),
+            _child: child,
+        })
     }
 
     /// Sends a request; the answer arrives on the returned channel, for a thread that may wait on it.

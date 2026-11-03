@@ -113,6 +113,16 @@ terminal and takes focus for a moment.
   through a tree cursor: a node's own sibling steps find its parent from the root) and the bracket pairs come from
   the same tree. tree-sitter's incremental parse grows with the members of one class, so a file over 4 MB is parsed
   once typing pauses; `tests/budget.rs` holds the UI thread's work per key flat on a file ten times larger.
+  Every other file with a grammar here (`Grammar::for_path`, Passenger's `Language.ForPath`: XML for XAML and MSBuild,
+  JSON, CSS, JavaScript, TypeScript and TSX, HTML, Markdown, YAML) is parsed and coloured the same way, by its grammar's
+  own query, its captures mapped to Rider's markup and data kinds, and folds by its `bodies`; another file is plain
+  text. A new grammar is its crate, its arm in each of `Grammar`'s matches and in `kind_of`, and its notice.
+  `injections` are the languages inside a file's own (HTML's `<script>` and `<style>`, a Markdown fence in a language
+  `Grammar::named` knows, Markdown's paragraphs through its inline grammar), each parsed once over all its stretches with
+  tree-sitter's included ranges, so its offsets are the file's; the buffer keeps them with its tree, and
+  `highlights_with` colours a fence's code from plain text up and lays a paragraph's colours over the file's.
+  `theme::face` draws a Markdown heading and strong emphasis bold and emphasis italic (JetBrains Mono's Bold and Italic
+  carried), the editor's `with_faces` cutting a line's runs where they begin and end.
   `testing` reads test declarations, traits and caret context from that same tree, without visiting method bodies.
 - Unit tests: `rsharp-core::testing` owns test identities, MSBuild's actual target paths, and native Rust socket
   clients for Microsoft.Testing.Platform and VSTest. `rsharp-app::test_finder` caches closed files by stamp and
@@ -138,6 +148,25 @@ terminal and takes focus for a moment.
   `hold` keeps generating design-time builds away from an explicit build until it ends), a
   build's problem passed on as the project's error. Without dotnet or the submodule at build time it warns and runs
   the person's `roslyn-language-server` tool, which opens the solution (`solution/open`) or finds the projects.
+  `web` is the web language servers, Passenger's pins (its `WebServers/package-lock.json`) put in `sidecars/web` by the
+  same build.rs through `npm ci` (RSHARP_WEB; without npm they are left out, said as a warning), each started on Node.js
+  (`settings::node`: Settings' Node interpreter, else `programs::node`) by `start_web`: typescript-language-server for TypeScript and JavaScript, VS Code's HTML, CSS and
+  JSON servers, which push their problems (the client capabilities leave pulled diagnostics out for them), and
+  VS Code's ESLint server (`WebServer::Eslint`), which answers pulls only and gets VS Code's extension's settings whole.
+  `prettify` is Prettier: Passenger's `prettier.cjs` (copied to `sidecars/web`) on one warm Node.js for the process,
+  JSON lines in turn, the project's own prettier (`installed`, found from the file up as Node.js finds it) doing the
+  work; `eslint_covers`/`prettier_covers` are Rider's default "Run for files". The JSON server is told which
+  well-known file takes which of SchemaStore's schemas (`SCHEMAS`, Passenger's associations), which the build copies to
+  `sidecars/web/schemas`, and its `vscode/content` is answered from them (`carried_schema`), else, for a file's own
+  `$schema` on the web while Settings' Remote JSON Schemas allows (`REMOTE_SCHEMAS`, which `settings::follow` keeps),
+  downloaded and kept for the process (`downloaded_schema`). `razor` is Razor, cohosted in Roslyn's
+  server, as Passenger's client answers it (`LanguageServer.cs`, `RazorHtml.cs`): every `LanguageServer` has one
+  (`razor`, empty but for Roslyn's), Roslyn's start answers Razor's requests to the client through it first — the legend
+  Razor registers for its colours (why Roslyn's client capabilities take dynamic registration, which the web servers'
+  leave out), `razor/updateHtml` (a file's HTML, its C# blanked), and HTML's part of a request forwarded wrapped with the
+  file, asked of the HTML server as `<uri>__virtual.html` once the window `set_html`s it; without it, completion
+  answers HTML's element names after a tag's `<` and its global attributes inside a start tag (`markup_names`, from the
+  HTML Razor gave), and the rest empty.
 - `crates/rsharp-lsp/xaml-host`: RSharp's own C#, the one sidecar not Passenger's: Passenger.Xaml (from the submodule)
   behind JSON lines in Passenger.Host's shape, published by `rsharp-lsp`'s build.rs into `sidecars/xaml` with
   Passenger's build props imported (its output under `target/xaml-host`). `rsharp_lsp::xaml` is its client, over the
@@ -243,7 +272,26 @@ terminal and takes focus for a moment.
   a field, an `Opt` on a page, and what follows it). `nuget_view.rs` is Rider's NuGet window (Packages, Sources
   and Log tabs; the search field takes the keys when it opens; a vulnerable installed version marked, Update offering
   its fix), its projects fed by `window/nuget.rs` after each evaluation; a change saves open copies first, keeps the
-  old bytes in Local History and tells the window what it wrote. `editor_msbuild.rs` is an MSBuild file's completion, hover
+  old bytes in Local History and tells the window what it wrote. `window/web.rs` gives each web file its server (one
+  per kind for the folder, started with the first file of its kind, its task kept apart from its state so it listens
+  on), opened under its language id (`Buffer::attach_server_as`), its pushed problems marked through
+  `Buffer::show_problems`; where the project has eslint, ESLint's server opens the file too (`Buffer::attach_lint`, kept
+  in step beside the file's own server) and is asked for its problems as typing pauses, shown as Rider shows them
+  (`ESLint: message (rule)`); Alt+Enter lists ESLint's fixes of the selection's lines first (`Buffer::lint_at`, its
+  problems as the server gave them, which it finds fixes by), and they and Fix ESLint Problems
+  (`eslint.applyAllFixes`) are the server's commands, whose edits come back as its `workspace/applyEdit`, which the
+  client answers as applied and the window makes; without Node.js the status bar says the file has its colours only. Reformat Code lays a
+  file Prettier covers out with the project's prettier when it has one (`editor_assist`'s `prettify`: one edit of what
+  differs, the caret where Prettier puts it), else with its server. An explicit save (`editor::Save`) asks the editor's
+  `save_tidied` first: with Settings' ESLint "Run eslint --fix on save" and Prettier "Run on save" (both off, as
+  Rider's are), ESLint's `source.fixAll.eslint` action (which carries its edit) and then Prettier are made before the
+  editor saves. A Razor file (.razor, .cshtml) is Roslyn's, opened as
+  `aspnetcorerazor` (`window.rs`' `roslyn_language`), coloured by HTML's grammar until Razor's own colours (its legend,
+  mapped in `theme::semantic`) layer over them, its problems pulled as C#'s; it starts the HTML server, which
+  `connect_razor_html` gives Razor once both run; `<` and `@` open its completion, and no parameter hint shows on a
+  directive's line. Completion, hover,
+  Go to Declaration and Reformat Code go through the buffer's server as C#'s do; a web server's own trigger characters
+  open completion, and C#'s live templates stay C#'s. `editor_msbuild.rs` is an MSBuild file's completion, hover
   card and Go to Declaration, its buffer given the Host by `window/msbuild.rs` and inspected once typing pauses, the
   evaluation's errors its problems. `nuget_view/sources.rs` is the Sources tab: the
   files in effect and the chosen one's feeds, added, edited (a masked password field), enabled and deleted in place. `solution_view.rs` is the Solution view's tree for a folder with a solution (only open nodes walked, each kept
@@ -312,10 +360,22 @@ tags with `debug_selector` (`debug_bounds`). `run_until_parked` is the quiet wai
 background task deterministically. A test that reads a window's view does it through the handle, not inside an
 update of that window, which gpui has leased out then.
 
+**The whole suite runs once, at the end of a phase**, not after each slice of it: a slice runs the tests of what it
+touched (its crates' and the window tests of the areas it changed), and the phase's last change runs `just test`.
+
 Tests say what a person would see or get, and their failure message names the consequence. The long random
 editing session (`rsharp-text/tests/editing_session.rs`) checks 40,000 keys, undo and redo against a plain
 string: keep it passing rather than narrowing it. The Roslyn test runs the real server on a fresh project and
 skips, saying why, when the tool is not installed.
+
+Web tests run the real servers on Node.js and skip, saying why, without it or without the servers:
+`crates/rsharp-lsp/tests/web.rs` each server through the client (problems pushed, completion, formatting) and
+`crates/rsharp-app/tests/web.rs` a TypeScript file through the window, and `crates/rsharp-app/tests/lint.rs` ESLint and
+Prettier from a project's own packages (Passenger's tests' pins, put once by npm under the temp folder's
+`rsharp-test-node-packages`, each project in a folder of its own inside it, so Node.js finds them and a run's end,
+which removes its folder's parent, takes no other's). `tests/razor.rs` runs
+a Razor class library through the real Roslyn: a component's C# problem, `<`'s HTML elements through the HTML server,
+and Reformat Code.
 
 Debug tests use real dotnet programs: `crates/rsharp-dap/tests/passenger.rs` translates Passenger's own debugger
 tests against the same `tests/Debuggees` — `PauseTests`' three first, with `LoopingConsoleApp`: a pause stops its loop
