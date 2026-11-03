@@ -366,7 +366,8 @@ Web tests run the real servers on Node.js and skip, saying why, without it or wi
 `crates/rsharp-lsp/tests/web.rs` each server through the client (problems pushed, completion, formatting) and
 `crates/rsharp-app/tests/web.rs` a TypeScript file through the window, and `crates/rsharp-app/tests/lint.rs` ESLint and
 Prettier from a project's own packages (Passenger's tests' pins, put once by npm under the temp folder's
-`rsharp-test-node-packages`, the projects inside it so Node.js finds them), one test at a time. `tests/razor.rs` runs
+`rsharp-test-node-packages`, each project in a folder of its own inside it, so Node.js finds them and a run's end,
+which removes its folder's parent, takes no other's). `tests/razor.rs` runs
 a Razor class library through the real Roslyn: a component's C# problem, `<`'s HTML elements through the HTML server,
 and Reformat Code.
 

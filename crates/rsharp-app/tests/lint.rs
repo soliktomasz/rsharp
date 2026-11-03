@@ -17,12 +17,6 @@ const APP: &str = "let total = 1;\nconsole.log(total);\n";
 const FORMAT: &str = "const  label = {name:\"tea\",price:3};\nconsole.log(label);\n";
 const LEGACY: &str = "const  kept   =   \"as written\";\nconsole.log(kept);\n";
 
-/// Held by each test for its length, so they run one at a time.
-// shortcut: in one test process, a window ending (its ESLint server with it) while another window's ESLint server
-// looked up its eslint made that lookup fail (eslint/noLibrary, a node spawn's ENOENT); not yet explained. Run them in
-// parallel again once it is, and check two real windows, one closed while the other's ESLint starts.
-static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 /// The folder whose node_modules holds the tests' eslint and prettier, put in place by npm from Passenger's test lock
 /// file once (again when the lock changes); none, saying why, where they cannot be.
 fn packages() -> Option<PathBuf> {
@@ -65,10 +59,11 @@ fn packages() -> Option<PathBuf> {
     Some(rsharp_core::paths::canonical(&folder))
 }
 
-/// A run whose folder is a JavaScript project under the packages' folder, so Node.js finds them from its files.
+/// A run whose folder is a JavaScript project under the packages' folder, so Node.js finds them from its files; in a
+/// folder of its own there, which the run removes as it ends.
 fn project(name: &str, packages: &Path) -> Run {
     let mut run = Run::new(name, &[]);
-    run.folder = packages.join("projects").join(format!("{name}-{}", std::process::id()));
+    run.folder = packages.join("projects").join(format!("{name}-{}", std::process::id())).join("folder");
     let _ = std::fs::remove_dir_all(&run.folder);
     for (file, text) in [
         ("package.json", PACKAGE),
@@ -123,7 +118,6 @@ const REFORMAT: &str = if cfg!(target_os = "macos") { "cmd-alt-l" } else { "ctrl
 
 #[gpui::test]
 fn the_projects_eslint_marks_and_fixes_what_its_configuration_names(cx: &mut TestAppContext) {
-    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|p| p.into_inner());
     let Some(packages) = packages() else { return };
     let run = project("eslint", &packages);
     let (main, cx) = open(&run, "src/app.js", (0, 0), cx);
@@ -159,12 +153,10 @@ fn the_projects_eslint_marks_and_fixes_what_its_configuration_names(cx: &mut Tes
     assert_eq!(text(&main, cx), APP, "Undo did not take ESLint's fix back");
     cx.dispatch_action(rsharp_app::editor::FixEslintProblems);
     assert!(wait_for(cx, |cx| text(&main, cx) == fixed), "Fix ESLint Problems fixed nothing:\n{}", text(&main, cx));
-    let _ = std::fs::remove_dir_all(&run.folder);
 }
 
 #[gpui::test]
 fn reformat_code_lays_a_file_out_by_the_projects_prettier_as_one_undo(cx: &mut TestAppContext) {
-    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|p| p.into_inner());
     let Some(packages) = packages() else { return };
     let run = project("prettier", &packages);
     // The caret after `pri` of `price`.
@@ -191,12 +183,10 @@ fn reformat_code_lays_a_file_out_by_the_projects_prettier_as_one_undo(cx: &mut T
         main.read_with(cx, |m, _| m.said().map(str::to_string))
     );
     assert_eq!(text(&main, cx), LEGACY, "a file .prettierignore names was formatted");
-    let _ = std::fs::remove_dir_all(&run.folder);
 }
 
 #[gpui::test]
 fn a_save_fixes_and_lays_out_the_file_first_when_settings_ask(cx: &mut TestAppContext) {
-    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|p| p.into_inner());
     let Some(packages) = packages() else { return };
     let run = project("onsave", &packages);
     let (main, cx) = open(&run, "src/app.js", (0, 0), cx);
@@ -221,5 +211,4 @@ fn a_save_fixes_and_lays_out_the_file_first_when_settings_ask(cx: &mut TestAppCo
         on_disk(cx),
         main.read_with(cx, |m, _| m.said().map(str::to_string))
     );
-    let _ = std::fs::remove_dir_all(&run.folder);
 }

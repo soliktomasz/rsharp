@@ -518,8 +518,7 @@ style, a Markdown fence in a language with a grammar here, and Markdown's code s
 yet: HTML's elements in a Razor file without Node.js, a Markdown heading or emphasis drawn bold or italic, a JSON file's own
 `$schema` downloaded (SchemaStore's for package.json, tsconfig.json, appsettings.json and the rest are carried),
 Settings' ESLint, Prettier and Node.js pages (Rider's Automatic configuration is the one in force), a server that ends
-started again, and the window tests of ESLint and Prettier run in parallel (one test process's ending window broke
-another's ESLint lookup, not yet explained).
+started again.
 - The web language servers bundle (TypeScript, HTML, CSS, JSON, ESLint), driven by the `rsharp-lsp` client on
   Node.js, plus Prettier.
 - Colours for other files: tree-sitter grammars (XML, JSON, CSS, JS/TS, HTML, Markdown, YAML) in place of
