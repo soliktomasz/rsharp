@@ -116,6 +116,14 @@ as Passenger's notices list them.
 | `he` | node-html-parser's | MIT | Copyright Mathias Bynens |
 | `picomatch` | the Markdown service's globs | MIT | Copyright (c) 2017-present, Jon Schlinkert. |
 
+### SchemaStore's JSON schemas
+
+`crates/rsharp-lsp/build.rs` copies the JSON schemas Passenger carries in `src/Passenger.Lsp/WebServers/schemas/`
+(the JSON Schema Store's, https://github.com/SchemaStore/schemastore, unchanged) to `sidecars/web/schemas/`: those the
+JSON language server checks and completes package.json, tsconfig.json, jsconfig.json, appsettings.json,
+launchSettings.json and global.json by, and those they refer to. Apache License 2.0, with the Schema Store's NOTICE:
+"JSON Schema Store, Copyright 2015-Current Mads Kristensen and Contributors".
+
 ## Ported from Passenger
 
 The project-template family rules, pack metadata and template-creation behavior in

@@ -149,7 +149,9 @@ terminal and takes focus for a moment.
   VS Code's ESLint server (`WebServer::Eslint`), which answers pulls only and gets VS Code's extension's settings whole.
   `prettify` is Prettier: Passenger's `prettier.cjs` (copied to `sidecars/web`) on one warm Node.js for the process,
   JSON lines in turn, the project's own prettier (`installed`, found from the file up as Node.js finds it) doing the
-  work; `eslint_covers`/`prettier_covers` are Rider's default "Run for files". `razor` is Razor, cohosted in Roslyn's
+  work; `eslint_covers`/`prettier_covers` are Rider's default "Run for files". The JSON server is told which
+  well-known file takes which of SchemaStore's schemas (`SCHEMAS`, Passenger's associations), which the build copies to
+  `sidecars/web/schemas`, and its `vscode/content` is answered from them (`carried_schema`). `razor` is Razor, cohosted in Roslyn's
   server, as Passenger's client answers it (`LanguageServer.cs`, `RazorHtml.cs`): every `LanguageServer` has one
   (`razor`, empty but for Roslyn's), Roslyn's start answers Razor's requests to the client through it first — the legend
   Razor registers for its colours (why Roslyn's client capabilities take dynamic registration, which the web servers'

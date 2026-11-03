@@ -1,8 +1,8 @@
 //! The web language servers, as Passenger's WebLanguages runs them: typescript-language-server over TypeScript's own
 //! tsserver for TypeScript and JavaScript, and VS Code's HTML, CSS and JSON servers (vscode-langservers-extracted), the
 //! npm packages the build put under `sidecars/web` (RSHARP_WEB), each run on the machine's Node.js.
-// shortcut: no JSON schemas (Passenger carries SchemaStore's and answers `vscode/content`), so a JSON file's syntax is
-// checked but not its keys; carry them when package.json's or appsettings.json's completion is wanted.
+// shortcut: a schema a JSON file names itself (its `$schema`) is not downloaded, only SchemaStore's carried ones are
+// read; download one as Rider's Remote JSON Schemas does when a file's own schema is wanted.
 
 use crate::roslyn::client_capabilities;
 use crate::{Answers, LanguageServer, ServerEvent, ServerFailed};
@@ -102,6 +102,11 @@ pub fn start_web(
     let root = paths::to_uri(folder);
     let workspace = json!({ "name": folder.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(), "uri": root });
     let answers: Answers = Arc::new(move |method: &str, params: &Value| {
+        if method == "vscode/content" {
+            // Its one parameter, the schema's URI, may come alone or as the protocol's positional parameters.
+            let uri = params.as_str().or(params[0].as_str()).unwrap_or_default().to_string();
+            return Some(Box::new(move || carried_schema(&uri).map(Value::String).unwrap_or(Value::Null)));
+        }
         (method == "workspace/configuration").then(|| {
             let items: Vec<Value> = params["items"]
                 .as_array()
@@ -156,7 +161,39 @@ pub fn start_web(
         WebServer::TypeScript | WebServer::Eslint => json!({}),
     };
     server.notify("workspace/didChangeConfiguration", json!({ "settings": settings }));
+    if kind == WebServer::Json {
+        // Its one parameter, the list, as the protocol's positional parameters.
+        let associations: Vec<Value> = SCHEMAS
+            .iter()
+            .map(|(files, name)| json!({ "fileMatch": files, "uri": format!("https://json.schemastore.org/{name}") }))
+            .collect();
+        server.notify("json/schemaAssociations", json!([associations]));
+    }
     Ok(server)
+}
+
+/// The well-known files of a .NET and Node.js project and the SchemaStore schema each takes, as Passenger's
+/// `JsonSchemas` associates them (a name anywhere in the folder).
+const SCHEMAS: &[(&[&str], &str)] = &[
+    (&["package.json"], "package.json"),
+    (&["tsconfig.json", "tsconfig.*.json"], "tsconfig.json"),
+    (&["jsconfig.json", "jsconfig.*.json"], "jsconfig.json"),
+    (&["appsettings.json", "appsettings.*.json"], "appsettings.json"),
+    (&["launchSettings.json"], "launchsettings.json"),
+    (&["global.json"], "global.json"),
+];
+
+/// A schema's text by its URI, when it is one of SchemaStore's that the build carries (its `$id` may leave out
+/// ".json"); none for the rest.
+fn carried_schema(uri: &str) -> Option<String> {
+    let rest = ["https://", "http://"].iter().find_map(|s| uri.strip_prefix(s))?;
+    let (host, path) = rest.split_once('/')?;
+    if !["json.schemastore.org", "www.schemastore.org", "schemastore.org"].contains(&host) {
+        return None;
+    }
+    let name = path.rsplit('/').next().filter(|n| !n.is_empty())?;
+    let file = if name.ends_with(".json") { name.to_string() } else { format!("{name}.json") };
+    std::fs::read_to_string(PathBuf::from(env!("RSHARP_WEB")).join("schemas").join(file)).ok()
 }
 
 /// The client's abilities as Roslyn is told them, less pulled diagnostics (VS Code's servers then push theirs, as

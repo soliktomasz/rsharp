@@ -512,8 +512,9 @@ server, its problems beside the file's own; Reformat Code lays a file out with t
 cohosted in it as Passenger runs it: its markup coloured by HTML's grammar until Razor's own colours layer over them,
 its problems marked (the C# in it among them), completion at a word, `<` and `@`, Reformat Code, and what Razor asks
 of a file's HTML answered by the HTML server. Not yet: HTML's elements in a Razor file without Node.js, a language inside another (HTML's script and
-style, a Markdown fence, Markdown's inline emphasis and links), Razor, a Markdown heading drawn bold, JSON schemas
-(package.json's and appsettings.json's keys), ESLint's fixes and Fix ESLint Problems, Prettier and ESLint --fix on save,
+style, a Markdown fence, Markdown's inline emphasis and links), a Markdown heading drawn bold, a JSON file's own
+`$schema` downloaded (SchemaStore's for package.json, tsconfig.json, appsettings.json and the rest are carried), ESLint's
+fixes and Fix ESLint Problems, Prettier and ESLint --fix on save,
 Settings' ESLint, Prettier and Node.js pages (Rider's Automatic configuration is the one in force), a server that ends
 started again, and the window tests of ESLint and Prettier run in parallel (one test process's ending window broke
 another's ESLint lookup, not yet explained).

@@ -43,6 +43,13 @@ fn main() {
         std::fs::create_dir_all(sidecars.join("web")).unwrap();
         std::fs::copy(&prettier, sidecars.join("web/prettier.cjs")).unwrap();
     }
+    // SchemaStore's schemas Passenger carries, which the JSON server checks and completes the well-known files by.
+    let schemas = passenger.join("Passenger.Lsp/WebServers/schemas");
+    println!("cargo:rerun-if-changed={}", schemas.display());
+    for schema in std::fs::read_dir(&schemas).into_iter().flatten().flatten() {
+        std::fs::create_dir_all(sidecars.join("web/schemas")).unwrap();
+        std::fs::copy(schema.path(), sidecars.join("web/schemas").join(schema.file_name())).unwrap();
+    }
     let without = |why: &str| {
         println!(
             "cargo:warning=Passenger's sidecars were not built ({why}); RSharp runs the installed roslyn-language-server tool"

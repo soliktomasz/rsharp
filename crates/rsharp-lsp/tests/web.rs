@@ -139,3 +139,15 @@ fn css_html_and_json_are_checked_completed_and_formatted() {
     assert!(!problems.is_empty(), "a missing comma in JSON was not marked");
     assert!(!json.formatting().is_empty(), "Reformat Code laid out nothing in one-line JSON");
 }
+
+#[test]
+fn a_package_json_is_checked_and_completed_by_its_carried_schema() {
+    let Some(json) = open("schema", "package.json", "{\n  \"version\": 3,\n  \"na\n}\n") else { return };
+    let problems = json.problems();
+    assert!(
+        problems.iter().any(|p| p.contains("Incorrect type") && p.contains("string")),
+        "package.json's number version was not marked by its schema: {problems:?}"
+    );
+    let offered = json.completion(2, 5);
+    assert!(offered.iter().any(|l| l.contains("name")), "package.json's keys were not offered: {offered:?}");
+}
