@@ -103,7 +103,6 @@ fn sdk10(env: &TemplateEnvironment) -> Option<String> {
         .find_map(|l| l.split_whitespace().next().filter(|v| v.starts_with("10.0.1")).map(String::from))
 }
 
-/// A .sln with each project's GUID named by its order, as dotnet new sln makes them random.
 /// A text file as it is compared: its BOM and line endings aside, which the system or the SDK chose.
 fn text_of(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
@@ -111,8 +110,15 @@ fn text_of(bytes: &[u8]) -> String {
     text.replace("\r\n", "\n")
 }
 
+/// A .sln with each project's GUID named by its order, as dotnet new sln makes them random, and without the Visual
+/// Studio version its header names: that is the sln template's, which differs from one SDK's to another's (16.0 in
+/// the one Passenger's files were made with, 17.0 in 10.0.100's), and neither Passenger nor RSharp writes it.
 fn without_guids(bytes: &[u8]) -> String {
-    let text = text_of(bytes);
+    let text = text_of(bytes)
+        .lines()
+        .filter(|line| !line.starts_with("# Visual Studio Version ") && !line.starts_with("VisualStudioVersion = "))
+        .collect::<Vec<_>>()
+        .join("\n");
     let mut seen: Vec<String> = Vec::new();
     regex::Regex::new(r"\{[0-9A-Fa-f-]{36}\}")
         .unwrap()
