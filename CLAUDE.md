@@ -121,6 +121,8 @@ terminal and takes focus for a moment.
   `Grammar::named` knows, Markdown's paragraphs through its inline grammar), each parsed once over all its stretches with
   tree-sitter's included ranges, so its offsets are the file's; the buffer keeps them with its tree, and
   `highlights_with` colours a fence's code from plain text up and lays a paragraph's colours over the file's.
+  `theme::face` draws a Markdown heading and strong emphasis bold and emphasis italic (JetBrains Mono's Bold and Italic
+  carried), the editor's `with_faces` cutting a line's runs where they begin and end.
   `testing` reads test declarations, traits and caret context from that same tree, without visiting method bodies.
 - Unit tests: `rsharp-core::testing` owns test identities, MSBuild's actual target paths, and native Rust socket
   clients for Microsoft.Testing.Platform and VSTest. `rsharp-app::test_finder` caches closed files by stamp and

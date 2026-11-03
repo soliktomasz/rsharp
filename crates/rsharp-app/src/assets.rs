@@ -56,6 +56,7 @@ static FONTS: &[&[u8]] = &[
     include_bytes!("../assets/fonts/Inter-SemiBold.otf"),
     include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf"),
     include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf"),
+    include_bytes!("../assets/fonts/JetBrainsMono-Italic.ttf"),
 ];
 
 pub struct Assets;

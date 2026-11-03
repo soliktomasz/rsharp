@@ -1701,6 +1701,10 @@ impl Element for EditorElement {
                 .filter(|(r, _)| r.end > byte_range.start && r.start < byte_range.end)
                 .cloned()
                 .collect();
+            let faces: Vec<(Range<usize>, gpui::FontWeight, gpui::FontStyle)> = syntax
+                .iter()
+                .filter_map(|h| theme::face(h.kind).map(|(weight, style)| (h.range.clone(), weight, style)))
+                .collect();
             let mut colours: Vec<(Range<usize>, Hsla)> = syntax
                 .into_iter()
                 .filter(|h| !tokens.iter().any(|(r, _)| r.start < h.range.end && h.range.start < r.end))
@@ -1722,7 +1726,7 @@ impl Element for EditorElement {
             let regions = parsed.map(|(g, tree)| folds_in(g, tree, text, byte_range.clone())).unwrap_or_default();
             for row in &shown {
                 let content: String = text.byte_slice(row.start..row.end).to_string();
-                let runs = runs_for(&content, row.start, &colours, &code_font);
+                let runs = with_faces(runs_for(&content, row.start, &colours, &code_font), &content, row.start, &faces);
                 // The hints on the row, a wrapped row's last place being the next row's first; the debugger's inline
                 // values are one more, at the stopped row's end.
                 let mut hints: Vec<(usize, &str)> = editor
@@ -2179,6 +2183,46 @@ impl Shaped {
 
 fn run(len: usize, color: Hsla, font: &gpui::Font) -> TextRun {
     TextRun { len, font: font.clone(), color, background_color: None, underline: None, strikethrough: None }
+}
+
+/// A line's runs cut where a bold or italic piece (a Markdown heading, emphasis) begins and ends, each piece's font
+/// drawn so; a cut that would split a character waits for the parse, as a colour's does.
+fn with_faces(
+    runs: Vec<TextRun>,
+    content: &str,
+    line_start: usize,
+    faces: &[(Range<usize>, gpui::FontWeight, gpui::FontStyle)],
+) -> Vec<TextRun> {
+    let line_end = line_start + content.len();
+    let faces: Vec<_> = faces.iter().filter(|(r, ..)| r.end > line_start && r.start < line_end).collect();
+    if faces.is_empty() {
+        return runs;
+    }
+    let mut out = Vec::with_capacity(runs.len());
+    let mut at = line_start;
+    for run in runs {
+        let end = at + run.len;
+        let mut cuts = vec![at, end];
+        for (range, ..) in &faces {
+            for cut in [range.start, range.end] {
+                if cut > at && cut < end && content.is_char_boundary(cut - line_start) {
+                    cuts.push(cut);
+                }
+            }
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        for piece in cuts.windows(2) {
+            let mut part = run.clone();
+            part.len = piece[1] - piece[0];
+            if let Some((_, weight, style)) = faces.iter().find(|(r, ..)| r.start <= piece[0] && piece[1] <= r.end) {
+                (part.font.weight, part.font.style) = (*weight, *style);
+            }
+            out.push(part);
+        }
+        at = end;
+    }
+    out
 }
 
 /// A line's text runs: its coloured pieces, plain text between them.

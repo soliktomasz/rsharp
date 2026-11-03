@@ -37,6 +37,9 @@ pub enum Kind {
     Heading,
     Code,
     LinkDestination,
+    /// Markdown's strong emphasis and emphasis, in the text's colour, drawn bold and italic.
+    Bold,
+    Italic,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -670,6 +673,8 @@ fn kind_of(grammar: Grammar, capture: &str, node: &Node, text: &Rope) -> Option<
         (Grammar::MarkdownInline, _) => match capture {
             "text.literal" => Kind::Code,
             "text.uri" => Kind::LinkDestination,
+            "text.strong" => Kind::Bold,
+            "text.emphasis" => Kind::Italic,
             "punctuation.delimiter" if node_kind == "emphasis_delimiter" => Kind::Keyword,
             "punctuation.delimiter" if node_kind == "code_span_delimiter" => Kind::Code,
             _ => return None,
@@ -856,8 +861,17 @@ mod tests {
         );
         let md = "# Title\n\nSee `code` and **bold** <https://x.org>.\n\n```cs\nclass A { }\n```\n\n```\nplain\n```\n";
         assert_eq!(
-            shown("README.md", md, &["Title", "`code", "**", "https", "class", "A {", "plain"]),
-            [Some(Heading), Some(Code), Some(Keyword), Some(LinkDestination), Some(Keyword), Some(Type), Some(Code)],
+            shown("README.md", md, &["Title", "`code", "**", "bold", "https", "class", "A {", "plain"]),
+            [
+                Some(Heading),
+                Some(Code),
+                Some(Keyword),
+                Some(Bold),
+                Some(LinkDestination),
+                Some(Keyword),
+                Some(Type),
+                Some(Code)
+            ],
             "Markdown's inline code, emphasis and links, or a fence's language, are not coloured as Rider colours them"
         );
     }

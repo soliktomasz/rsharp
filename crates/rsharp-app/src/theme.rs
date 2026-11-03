@@ -210,10 +210,23 @@ pub mod editor {
     }
 }
 
+/// How a kind of code is drawn beside its colour: a Markdown heading and strong emphasis bold, emphasis italic, as
+/// Rider draws MARKDOWN_HEADER_LEVEL_1, _BOLD and _ITALIC; none for the rest, drawn as the font is.
+pub fn face(kind: Kind) -> Option<(gpui::FontWeight, gpui::FontStyle)> {
+    match kind {
+        Kind::Heading | Kind::Bold => Some((gpui::FontWeight::BOLD, gpui::FontStyle::Normal)),
+        Kind::Italic => Some((gpui::FontWeight::NORMAL, gpui::FontStyle::Italic)),
+        _ => None,
+    }
+}
+
 /// Rider Dark's colour for a kind of code: ReSharper's for C#, Rider's own attributes for markup and data (XML_TAG,
 /// XML_ATTRIBUTE_NAME and _VALUE, XML_ENTITY_REFERENCE, JSON.PROPERTY_KEY, YAML_SCALAR_KEY, MARKDOWN_HEADER_LEVEL_1,
 /// MARKDOWN_CODE_SPAN, MARKDOWN_LINK_DESTINATION), as Passenger's RiderScheme.axaml carries them.
 pub fn syntax(kind: Kind) -> Hsla {
+    if matches!(kind, Kind::Bold | Kind::Italic) {
+        return editor::text().into();
+    }
     rgb(match kind {
         Kind::Keyword => 0x6C95EB,
         Kind::String => 0xC9A26D,
@@ -229,6 +242,7 @@ pub fn syntax(kind: Kind) -> Hsla {
         Kind::Entity => 0xFFD49E,
         Kind::JsonKey | Kind::Heading => 0x66C3CC,
         Kind::LinkDestination => 0x39CC9B,
+        Kind::Bold | Kind::Italic => unreachable!("in the text's colour, above"),
     })
     .into()
 }
