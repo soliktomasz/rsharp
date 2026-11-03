@@ -160,7 +160,9 @@ terminal and takes focus for a moment.
   (`razor`, empty but for Roslyn's), Roslyn's start answers Razor's requests to the client through it first — the legend
   Razor registers for its colours (why Roslyn's client capabilities take dynamic registration, which the web servers'
   leave out), `razor/updateHtml` (a file's HTML, its C# blanked), and HTML's part of a request forwarded wrapped with the
-  file, asked of the HTML server as `<uri>__virtual.html` once the window `set_html`s it, else answered empty.
+  file, asked of the HTML server as `<uri>__virtual.html` once the window `set_html`s it; without it, completion
+  answers HTML's element names after a tag's `<` and its global attributes inside a start tag (`markup_names`, from the
+  HTML Razor gave), and the rest empty.
 - `crates/rsharp-lsp/xaml-host`: RSharp's own C#, the one sidecar not Passenger's: Passenger.Xaml (from the submodule)
   behind JSON lines in Passenger.Host's shape, published by `rsharp-lsp`'s build.rs into `sidecars/xaml` with
   Passenger's build props imported (its output under `target/xaml-host`). `rsharp_lsp::xaml` is its client, over the

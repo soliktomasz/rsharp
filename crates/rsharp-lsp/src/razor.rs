@@ -3,10 +3,9 @@
 //! about a file's HTML. Razor gives the client each open file's HTML (`razor/updateHtml`: the file with its C# blanked
 //! out, so places are the file's own) and forwards HTML's part of a request to it, wrapped with the file. With the HTML
 //! server running, each file's HTML is a document of its own there, named as VS Code names it (`<uri>__virtual.html`),
-//! and the question goes to it; without one, a list answers empty and the rest null, so Razor's own answers (its
-//! components, directives and C#) stand on their own.
-// shortcut: no HTML element names or attributes without the HTML server (Passenger lists them itself); add them when a
-// Razor file should complete markup on a machine without Node.js.
+//! and the question goes to it; without one (no Node.js), completion answers HTML's element names after a tag's `<`
+//! and its global attributes inside a start tag, as Passenger does, a list empty and the rest null, so Razor's own
+//! answers (its components, directives and C#) stand on their own.
 
 use crate::LanguageServer;
 use serde_json::{Value, json};
@@ -101,7 +100,7 @@ impl Razor {
             match razor.forward(method, &params) {
                 Some(answer) if !list || answer.is_array() => answer,
                 _ if list => json!([]),
-                _ if method == "textDocument/completion" => json!({ "isIncomplete": false, "items": [] }),
+                _ if method == "textDocument/completion" => razor.markup_names(&params),
                 // A resolve answers the item it was given: HTML has nothing to add.
                 _ if method.ends_with("/resolve") => params["request"].clone(),
                 _ => Value::Null,
@@ -181,6 +180,206 @@ impl Razor {
             _ => Some(answer),
         }
     }
+}
+
+/// The HTML living standard's elements, less the obsolete (Passenger's list).
+const ELEMENTS: &[&str] = &[
+    "a",
+    "abbr",
+    "address",
+    "area",
+    "article",
+    "aside",
+    "audio",
+    "b",
+    "base",
+    "bdi",
+    "bdo",
+    "blockquote",
+    "body",
+    "br",
+    "button",
+    "canvas",
+    "caption",
+    "cite",
+    "code",
+    "col",
+    "colgroup",
+    "data",
+    "datalist",
+    "dd",
+    "del",
+    "details",
+    "dfn",
+    "dialog",
+    "div",
+    "dl",
+    "dt",
+    "em",
+    "embed",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "head",
+    "header",
+    "hgroup",
+    "hr",
+    "html",
+    "i",
+    "iframe",
+    "img",
+    "input",
+    "ins",
+    "kbd",
+    "label",
+    "legend",
+    "li",
+    "link",
+    "main",
+    "map",
+    "mark",
+    "menu",
+    "meta",
+    "meter",
+    "nav",
+    "noscript",
+    "object",
+    "ol",
+    "optgroup",
+    "option",
+    "output",
+    "p",
+    "picture",
+    "pre",
+    "progress",
+    "q",
+    "rp",
+    "rt",
+    "ruby",
+    "s",
+    "samp",
+    "script",
+    "search",
+    "section",
+    "select",
+    "slot",
+    "small",
+    "source",
+    "span",
+    "strong",
+    "style",
+    "sub",
+    "summary",
+    "sup",
+    "table",
+    "tbody",
+    "td",
+    "template",
+    "textarea",
+    "tfoot",
+    "th",
+    "thead",
+    "time",
+    "title",
+    "tr",
+    "track",
+    "u",
+    "ul",
+    "var",
+    "video",
+    "wbr",
+];
+
+/// The attributes every HTML element takes.
+const GLOBAL_ATTRIBUTES: &[&str] = &[
+    "accesskey",
+    "autocapitalize",
+    "autofocus",
+    "class",
+    "contenteditable",
+    "dir",
+    "draggable",
+    "enterkeyhint",
+    "hidden",
+    "id",
+    "inert",
+    "inputmode",
+    "lang",
+    "nonce",
+    "popover",
+    "role",
+    "slot",
+    "spellcheck",
+    "style",
+    "tabindex",
+    "title",
+    "translate",
+];
+
+impl Razor {
+    /// HTML's part of a Razor file's completion with no HTML server: the elements where a tag's name is typed, the
+    /// global attributes inside a start tag, else none.
+    fn markup_names(&self, params: &Value) -> Value {
+        let nothing = json!({ "isIncomplete": false, "items": [] });
+        let Some(uri) = uri_of(params) else { return nothing };
+        let Some(html) = self.texts.lock().unwrap().get(&uri).map(|(text, _)| text.clone()) else { return nothing };
+        let position = &params["request"]["position"];
+        let (Some(line), Some(column)) = (position["line"].as_u64(), position["character"].as_u64()) else {
+            return nothing;
+        };
+        let Some(at) = offset(&html, line as usize, column as usize) else { return nothing };
+        let bytes = html.as_bytes();
+        let mut start = at;
+        while start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || matches!(bytes[start - 1], b'-' | b':')) {
+            start -= 1;
+        }
+        let names: &[&str] = match start.checked_sub(1).map(|i| bytes[i]) {
+            Some(b'<') => ELEMENTS,
+            Some(c) if c.is_ascii_whitespace() && in_start_tag(bytes, start) => GLOBAL_ATTRIBUTES,
+            _ => return nothing,
+        };
+        let items: Vec<Value> = names.iter().map(|n| json!({ "label": n, "kind": 10, "insertText": n })).collect();
+        json!({ "isIncomplete": false, "items": items })
+    }
+}
+
+/// Whether a place is inside a start tag, past its name: a `<` and a letter before it, with no `>` between, outside a
+/// quoted value.
+fn in_start_tag(html: &[u8], at: usize) -> bool {
+    let mut quote = None;
+    for i in (0..at).rev() {
+        let c = html[i];
+        match quote {
+            Some(open) if c == open => quote = None,
+            Some(_) => {}
+            None if c == b'"' || c == b'\'' => quote = Some(c),
+            None if c == b'>' => return false,
+            None if c == b'<' => return i + 1 < at && html[i + 1].is_ascii_alphabetic(),
+            None => {}
+        }
+    }
+    false
+}
+
+/// The byte offset of a line and a UTF-16 column in `text`, its lines ended by `\n`.
+fn offset(text: &str, line: usize, column: usize) -> Option<usize> {
+    let start = if line == 0 { 0 } else { text.match_indices('\n').nth(line - 1)?.0 + 1 };
+    let mut units = 0;
+    for (i, c) in text[start..].char_indices() {
+        if units >= column || c == '\n' {
+            return Some(start + i);
+        }
+        units += c.len_utf16();
+    }
+    Some(text.len())
 }
 
 /// The Razor file a message is about: VS Code's Razor names it `textDocument`, or `uri` at the top.

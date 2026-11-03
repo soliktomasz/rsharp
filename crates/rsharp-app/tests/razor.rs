@@ -86,3 +86,43 @@ fn a_razor_component_is_checked_completed_and_reformatted_through_roslyn(cx: &mu
         text(&main, cx)
     );
 }
+
+#[gpui::test]
+fn without_node_a_razor_tags_lt_still_lists_htmls_elements(cx: &mut TestAppContext) {
+    if rsharp_lsp::roslyn_server().is_none() {
+        eprintln!("skipped: Roslyn's language server is not installed");
+        return;
+    }
+    let run = Run::new("razor-no-node", &[("Shop.csproj", PROJECT), ("Counter.razor", COUNTER)]);
+    let (main, cx) = run.window(cx);
+    cx.update(|_, cx| {
+        cx.global_mut::<rsharp_app::state::Ide>().servers = true;
+        // No HTML server: Settings name a Node.js that is not there.
+        let mut named = rsharp_app::settings::settings(cx).clone();
+        named.node_interpreter = "/no/such/node".into();
+        rsharp_app::settings::apply(named, cx);
+    });
+    main.update_in(cx, |main, window, cx| {
+        main.open_workspace(&run.folder, window, cx);
+        main.open_file(&run.folder.join("Counter.razor"), Some((1, 0)), window, cx);
+    });
+    let loaded =
+        |cx: &mut VisualTestContext| main.read_with(cx, |m, _| m.server_ready() || m.server_failed().is_some());
+    assert!(wait_for(cx, loaded), "Roslyn never loaded the project");
+    let editor = main.read_with(cx, |m, _| m.editor().unwrap());
+    cx.simulate_input("<");
+    let listed = |cx: &mut VisualTestContext| {
+        editor.read_with(cx, |e, _| e.completion_shown().is_some_and(|s| s.iter().any(|n| n == "div")))
+    };
+    assert!(
+        wait_for(cx, |cx| {
+            // Razor may answer before the file has moved into the project: asked again until then.
+            if editor.read_with(cx, |e, _| e.completion_shown().is_none()) {
+                cx.simulate_keystrokes("ctrl-space");
+            }
+            listed(cx)
+        }),
+        "a Razor tag's `<` without Node.js did not list HTML's elements: {:?}",
+        editor.read_with(cx, |e, _| e.completion_shown())
+    );
+}
