@@ -50,7 +50,9 @@ pub fn init(state_root: std::path::PathBuf, cx: &mut gpui::App) {
     rsharp_core::logs::start(&state_root.join("logs"));
     keymap::bind(cx);
     let store = rsharp_core::state::StateStore::open(state_root);
-    cx.set_global(settings::Settings(store.read::<settings::AppSettings>().clamped()));
+    let read = store.read::<settings::AppSettings>().clamped();
+    settings::follow(&read);
+    cx.set_global(settings::Settings(read));
     cx.set_global(state::Ide { store, servers: true });
     templates::init(cx);
     cx.on_action(|_: &keymap::OpenSettings, cx| settings_dialog::open(cx));

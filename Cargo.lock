@@ -4851,6 +4851,7 @@ dependencies = [
  "log",
  "rsharp-core",
  "serde_json",
+ "ureq",
 ]
 
 [[package]]

@@ -1,8 +1,6 @@
 //! The web language servers, as Passenger's WebLanguages runs them: typescript-language-server over TypeScript's own
 //! tsserver for TypeScript and JavaScript, and VS Code's HTML, CSS and JSON servers (vscode-langservers-extracted), the
 //! npm packages the build put under `sidecars/web` (RSHARP_WEB), each run on the machine's Node.js.
-// shortcut: a schema a JSON file names itself (its `$schema`) is not downloaded, only SchemaStore's carried ones are
-// read; download one as Rider's Remote JSON Schemas does when a file's own schema is wanted.
 
 use crate::roslyn::client_capabilities;
 use crate::{Answers, LanguageServer, ServerEvent, ServerFailed};
@@ -113,7 +111,9 @@ pub fn start_web(
         if method == "vscode/content" {
             // Its one parameter, the schema's URI, may come alone or as the protocol's positional parameters.
             let uri = params.as_str().or(params[0].as_str()).unwrap_or_default().to_string();
-            return Some(Box::new(move || carried_schema(&uri).map(Value::String).unwrap_or(Value::Null)));
+            return Some(Box::new(move || {
+                carried_schema(&uri).or_else(|| downloaded_schema(&uri)).map(Value::String).unwrap_or(Value::Null)
+            }));
         }
         (method == "workspace/configuration").then(|| {
             let items: Vec<Value> = params["items"]
@@ -202,6 +202,34 @@ fn carried_schema(uri: &str) -> Option<String> {
     let name = path.rsplit('/').next().filter(|n| !n.is_empty())?;
     let file = if name.ends_with(".json") { name.to_string() } else { format!("{name}.json") };
     std::fs::read_to_string(PathBuf::from(env!("RSHARP_WEB")).join("schemas").join(file)).ok()
+}
+
+/// Whether a schema a JSON file names on the web is downloaded: Settings' Remote JSON Schemas, which the app keeps
+/// this told of.
+pub static REMOTE_SCHEMAS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// A schema on the web a file names (its `$schema`), downloaded over HTTP or HTTPS while Settings allow it and kept for
+/// the process; none when it is not allowed or could not be had, which the JSON server says where the file names it.
+fn downloaded_schema(uri: &str) -> Option<String> {
+    use std::sync::atomic::Ordering;
+    static KEPT: std::sync::Mutex<Option<std::collections::HashMap<String, String>>> = std::sync::Mutex::new(None);
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    if !(uri.starts_with("https://") || uri.starts_with("http://")) || !REMOTE_SCHEMAS.load(Ordering::Relaxed) {
+        return None;
+    }
+    if let Some(text) = KEPT.lock().unwrap().as_ref().and_then(|kept| kept.get(uri)) {
+        return Some(text.clone());
+    }
+    let agent = AGENT.get_or_init(|| {
+        ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(15)))
+            .user_agent(concat!("RSharp/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .into()
+    });
+    let text = agent.get(uri).call().ok()?.body_mut().with_config().limit(16 << 20).read_to_string().ok()?;
+    KEPT.lock().unwrap().get_or_insert_default().insert(uri.to_string(), text.clone());
+    Some(text)
 }
 
 /// The client's abilities as Roslyn is told them, less pulled diagnostics (VS Code's servers then push theirs, as

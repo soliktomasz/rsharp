@@ -155,7 +155,9 @@ terminal and takes focus for a moment.
   JSON lines in turn, the project's own prettier (`installed`, found from the file up as Node.js finds it) doing the
   work; `eslint_covers`/`prettier_covers` are Rider's default "Run for files". The JSON server is told which
   well-known file takes which of SchemaStore's schemas (`SCHEMAS`, Passenger's associations), which the build copies to
-  `sidecars/web/schemas`, and its `vscode/content` is answered from them (`carried_schema`). `razor` is Razor, cohosted in Roslyn's
+  `sidecars/web/schemas`, and its `vscode/content` is answered from them (`carried_schema`), else, for a file's own
+  `$schema` on the web while Settings' Remote JSON Schemas allows (`REMOTE_SCHEMAS`, which `settings::follow` keeps),
+  downloaded and kept for the process (`downloaded_schema`). `razor` is Razor, cohosted in Roslyn's
   server, as Passenger's client answers it (`LanguageServer.cs`, `RazorHtml.cs`): every `LanguageServer` has one
   (`razor`, empty but for Roslyn's), Roslyn's start answers Razor's requests to the client through it first — the legend
   Razor registers for its colours (why Roslyn's client capabilities take dynamic registration, which the web servers'

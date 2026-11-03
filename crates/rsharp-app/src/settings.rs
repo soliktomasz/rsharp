@@ -41,6 +41,9 @@ pub struct AppSettings {
     /// Languages & Frameworks | Node.js | Node interpreter: the `node` the web servers, ESLint and Prettier run on;
     /// empty for the one found as a login shell would.
     pub node_interpreter: String,
+    /// Languages & Frameworks | Schemas and DTDs | Remote JSON Schemas: a JSON file's own `$schema` on the web is
+    /// downloaded to check and complete it; those carried never are.
+    pub download_json_schemas: bool,
 }
 
 /// Rider's XAML code style (Passenger's XamlFormatSettings, by its names, which the XAML host reads): its XML formatter's
@@ -164,6 +167,7 @@ impl Default for AppSettings {
             eslint_fix_on_save: false,
             prettier_on_save: false,
             node_interpreter: String::new(),
+            download_json_schemas: true,
         }
     }
 }
@@ -219,5 +223,11 @@ pub fn node(cx: &gpui::App) -> Result<std::path::PathBuf, String> {
 pub fn apply(new: AppSettings, cx: &mut gpui::App) {
     let new = new.clamped();
     store(cx).write(&new);
+    follow(&new);
     cx.set_global(Settings(new));
+}
+
+/// What the non-UI crates read of the settings, told them as they come into force.
+pub fn follow(settings: &AppSettings) {
+    rsharp_lsp::web::REMOTE_SCHEMAS.store(settings.download_json_schemas, std::sync::atomic::Ordering::Relaxed);
 }

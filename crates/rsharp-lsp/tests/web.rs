@@ -151,3 +151,31 @@ fn a_package_json_is_checked_and_completed_by_its_carried_schema() {
     let offered = json.completion(2, 5);
     assert!(offered.iter().any(|l| l.contains("name")), "package.json's keys were not offered: {offered:?}");
 }
+
+#[test]
+fn a_json_files_own_schema_on_the_web_is_downloaded_and_checks_it() {
+    // The schema served from this machine, so no test reaches the web.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let schema = r#"{ "type": "object", "properties": { "name": { "type": "string" } } }"#;
+        for stream in listener.incoming().flatten() {
+            let mut stream = stream;
+            let mut asked = [0; 1024];
+            let _ = stream.read(&mut asked);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{schema}",
+                schema.len()
+            );
+        }
+    });
+    let text = format!("{{ \"$schema\": \"http://127.0.0.1:{port}/shop.json\", \"name\": 3 }}\n");
+    let Some(json) = open("remote", "shop.json", &text) else { return };
+    let problems = json.problems();
+    assert!(
+        problems.iter().any(|p| p.contains("Incorrect type") && p.contains("string")),
+        "the file's own schema on the web did not check it: {problems:?}"
+    );
+}

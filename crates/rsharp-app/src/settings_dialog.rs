@@ -200,6 +200,15 @@ static PAGES: &[Page] = &[
     },
     Page {
         group: "Languages & Frameworks",
+        name: "Remote JSON Schemas",
+        options: &[Opt::Check {
+            label: "Allow downloading JSON Schemas from remote sources",
+            get: |s| s.download_json_schemas,
+            set: |s, value| s.download_json_schemas = value,
+        }],
+    },
+    Page {
+        group: "Languages & Frameworks",
         name: "ESLint",
         options: &[Opt::Check {
             label: "Run eslint --fix on save",
