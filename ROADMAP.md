@@ -517,8 +517,8 @@ of a file's HTML answered by the HTML server. A language inside another is colou
 style, a Markdown fence in a language with a grammar here, and Markdown's code spans, emphasis markers and links. Not
 yet: HTML's elements in a Razor file without Node.js, a Markdown heading or emphasis drawn bold or italic, a JSON file's own
 `$schema` downloaded (SchemaStore's for package.json, tsconfig.json, appsettings.json and the rest are carried),
-Settings' ESLint, Prettier and Node.js pages (Rider's Automatic configuration is the one in force), a server that ends
-started again.
+Settings' ESLint and Prettier package choices (Rider's Automatic configuration is the one in force), and a server
+that ends started again. Settings' Node.js page names the Node interpreter they all run on.
 - The web language servers bundle (TypeScript, HTML, CSS, JSON, ESLint), driven by the `rsharp-lsp` client on
   Node.js, plus Prettier.
 - Colours for other files: tree-sitter grammars (XML, JSON, CSS, JS/TS, HTML, Markdown, YAML) in place of

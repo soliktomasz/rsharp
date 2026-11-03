@@ -78,3 +78,25 @@ fn typescript_is_marked_completed_and_reformatted_by_its_server(cx: &mut TestApp
         text(&main, cx)
     );
 }
+
+#[gpui::test]
+fn a_node_interpreter_settings_name_that_is_not_there_is_said_and_the_file_keeps_its_colours(cx: &mut TestAppContext) {
+    let run = Run::new("web-no-node", &[("site.ts", SITE)]);
+    let (main, cx) = run.window(cx);
+    cx.update(|_, cx| {
+        cx.global_mut::<rsharp_app::state::Ide>().servers = true;
+        let mut named = rsharp_app::settings::settings(cx).clone();
+        named.node_interpreter = "/no/such/node".into();
+        rsharp_app::settings::apply(named, cx);
+    });
+    main.update_in(cx, |main, window, cx| {
+        main.open_workspace(&run.folder, window, cx);
+        main.open_file(&run.folder.join("site.ts"), None, window, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        main.read_with(cx, |m, _| m.said().map(str::to_string)),
+        Some("TypeScript has its colours only: Settings name /no/such/node as Node.js, which is not there".into()),
+        "the status bar did not say why TypeScript's server could not start"
+    );
+}

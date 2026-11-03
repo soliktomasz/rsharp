@@ -770,11 +770,11 @@ impl CodeEditor {
     }
 
     /// The project's own prettier and the Node.js to run it on, for a file Prettier covers; none for the rest.
-    fn prettier_for(&self) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    fn prettier_for(&self, cx: &App) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
         if !rsharp_lsp::web::prettier_covers(&self.path) {
             return None;
         }
-        Some((rsharp_core::programs::node()?, rsharp_lsp::web::installed(&self.path, "prettier")?))
+        Some((crate::settings::node(cx).ok()?, rsharp_lsp::web::installed(&self.path, "prettier")?))
     }
 
     /// A save as Settings ask it be made: what the project's ESLint can fix fixed, then the file laid out by its
@@ -782,7 +782,7 @@ impl CodeEditor {
     /// for the caller to save at once.
     pub fn save_tidied(&mut self, cx: &mut Context<Self>) -> bool {
         let settings = crate::settings::settings(cx);
-        let prettier = settings.prettier_on_save.then(|| self.prettier_for()).flatten();
+        let prettier = settings.prettier_on_save.then(|| self.prettier_for(cx)).flatten();
         let lint = settings.eslint_fix_on_save.then(|| self.buffer.read(cx).lint_at(0..=u64::MAX)).flatten();
         let Some((server, uri, _, problems)) = lint else {
             let Some((node, package)) = prettier else { return false };
@@ -833,7 +833,7 @@ impl CodeEditor {
         // Rider's Prettier "Run on 'Reformat Code' action": the files it covers, where the project has prettier.
         if rsharp_lsp::web::prettier_covers(&self.path)
             && let Some(package) = rsharp_lsp::web::installed(&self.path, "prettier")
-            && let Some(node) = rsharp_core::programs::node()
+            && let Ok(node) = crate::settings::node(cx)
         {
             self.prettify(node, package, false, cx);
             return;

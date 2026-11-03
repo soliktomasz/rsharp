@@ -148,7 +148,7 @@ terminal and takes focus for a moment.
   the person's `roslyn-language-server` tool, which opens the solution (`solution/open`) or finds the projects.
   `web` is the web language servers, Passenger's pins (its `WebServers/package-lock.json`) put in `sidecars/web` by the
   same build.rs through `npm ci` (RSHARP_WEB; without npm they are left out, said as a warning), each started on Node.js
-  (`programs::node`) by `start_web`: typescript-language-server for TypeScript and JavaScript, VS Code's HTML, CSS and
+  (`settings::node`: Settings' Node interpreter, else `programs::node`) by `start_web`: typescript-language-server for TypeScript and JavaScript, VS Code's HTML, CSS and
   JSON servers, which push their problems (the client capabilities leave pulled diagnostics out for them), and
   VS Code's ESLint server (`WebServer::Eslint`), which answers pulls only and gets VS Code's extension's settings whole.
   `prettify` is Prettier: Passenger's `prettier.cjs` (copied to `sidecars/web`) on one warm Node.js for the process,

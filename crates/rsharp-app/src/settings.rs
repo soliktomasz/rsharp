@@ -38,6 +38,9 @@ pub struct AppSettings {
     /// Languages & Frameworks | JavaScript | Prettier | Run on save: a save first lays a file Prettier covers out with
     /// the project's prettier.
     pub prettier_on_save: bool,
+    /// Languages & Frameworks | Node.js | Node interpreter: the `node` the web servers, ESLint and Prettier run on;
+    /// empty for the one found as a login shell would.
+    pub node_interpreter: String,
 }
 
 /// Rider's XAML code style (Passenger's XamlFormatSettings, by its names, which the XAML host reads): its XML formatter's
@@ -160,6 +163,7 @@ impl Default for AppSettings {
             xaml_format: XamlFormat::default(),
             eslint_fix_on_save: false,
             prettier_on_save: false,
+            node_interpreter: String::new(),
         }
     }
 }
@@ -199,6 +203,16 @@ impl gpui::Global for Settings {}
 
 pub fn settings(cx: &gpui::App) -> &AppSettings {
     &cx.global::<Settings>().0
+}
+
+/// The Node.js the web servers, ESLint and Prettier run on: the one Settings names, else the one found; or why none.
+pub fn node(cx: &gpui::App) -> Result<std::path::PathBuf, String> {
+    let named = settings(cx).node_interpreter.trim();
+    if named.is_empty() {
+        return rsharp_core::programs::node().ok_or_else(|| "Node.js was not found".to_string());
+    }
+    let path = std::path::PathBuf::from(named);
+    if path.is_file() { Ok(path) } else { Err(format!("Settings name {named} as Node.js, which is not there")) }
 }
 
 /// Puts `new` in force and keeps it; every view observing [`Settings`] draws again.

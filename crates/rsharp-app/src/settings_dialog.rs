@@ -191,6 +191,15 @@ static PAGES: &[Page] = &[
     },
     Page {
         group: "Languages & Frameworks",
+        name: "Node.js",
+        options: &[Opt::Text {
+            label: "Node interpreter (empty for the one found)",
+            get: |s| &s.node_interpreter,
+            set: |s, path| s.node_interpreter = path,
+        }],
+    },
+    Page {
+        group: "Languages & Frameworks",
         name: "ESLint",
         options: &[Opt::Check {
             label: "Run eslint --fix on save",

@@ -55,8 +55,9 @@ impl MainWindow {
 
     fn start_web(&mut self, kind: WebServer, cx: &mut Context<Self>) {
         let Some(folder) = self.workspace.as_ref().map(|w| w.folder.clone()) else { return };
-        let Some(node) = rsharp_core::programs::node() else {
-            return self.web_unavailable(kind, "Node.js was not found".into(), cx);
+        let node = match crate::settings::node(cx) {
+            Ok(node) => node,
+            Err(why) => return self.web_unavailable(kind, why, cx),
         };
         let (sender, mut events) = futures::channel::mpsc::unbounded();
         let task = cx.spawn(async move |this, cx| {

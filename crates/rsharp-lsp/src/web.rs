@@ -286,6 +286,7 @@ pub struct Prettified {
 static PRETTIER: std::sync::Mutex<Option<Runner>> = std::sync::Mutex::new(None);
 
 struct Runner {
+    node: PathBuf,
     input: std::process::ChildStdin,
     lines: std::sync::mpsc::Receiver<String>,
     next: u64,
@@ -304,6 +305,10 @@ pub fn prettify(
 ) -> Result<Option<Prettified>, String> {
     use std::io::{BufRead, Write};
     let mut runner = PRETTIER.lock().unwrap_or_else(|p| p.into_inner());
+    // Another Node.js named in Settings since: the runner starts again on it.
+    if runner.as_ref().is_some_and(|r| r.node != node) {
+        *runner = None;
+    }
     if runner.is_none() {
         let script = PathBuf::from(env!("RSHARP_WEB")).join("prettier.cjs");
         if env!("RSHARP_WEB").is_empty() || !script.is_file() {
@@ -325,7 +330,7 @@ pub fn prettify(
                 }
             })
             .map_err(|e| e.to_string())?;
-        *runner = Some(Runner { input, lines, next: 0, _child: child });
+        *runner = Some(Runner { node: node.to_path_buf(), input, lines, next: 0, _child: child });
     }
     let ignore = file.ancestors().skip(1).map(|f| f.join(".prettierignore")).find(|p| p.is_file());
     let answer = (|| -> Result<Value, String> {
