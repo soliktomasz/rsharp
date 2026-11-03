@@ -10,7 +10,7 @@ use gpui::{
     Subscription, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill, font, point, prelude::*, px,
     relative, size,
 };
-use rsharp_languages::{FoldRegion, Highlight, folds, folds_in, highlights, matching_bracket};
+use rsharp_languages::{FoldRegion, Highlight, folds, folds_in, highlights_with, matching_bracket};
 use rsharp_text::*;
 use std::ops::Range;
 use std::path::PathBuf;
@@ -1690,8 +1690,9 @@ impl Element for EditorElement {
             let inline_values = buffer.inline_values.clone();
             let exception = buffer.exception.clone();
             let parsed = buffer.grammar.zip(buffer.tree.as_ref());
-            let syntax: Vec<Highlight> =
-                parsed.map(|(g, tree)| highlights(g, tree, text, byte_range.clone())).unwrap_or_default();
+            let syntax: Vec<Highlight> = parsed
+                .map(|(g, tree)| highlights_with(g, tree, &buffer.injections, text, byte_range.clone()))
+                .unwrap_or_default();
             // Roslyn's colours win where it named a word; the syntax's fill the rest.
             let tokens: Vec<(Range<usize>, Hsla)> = editor
                 .assist

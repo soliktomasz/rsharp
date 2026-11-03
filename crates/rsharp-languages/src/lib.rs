@@ -45,9 +45,8 @@ pub struct Highlight {
     pub kind: Kind,
 }
 
-/// The tree-sitter grammar a file is parsed and coloured by, chosen by its name as Passenger's `Language.ForPath`.
-// shortcut: a language inside another (an HTML file's <script> and <style>, a Markdown fence, Markdown's inline
-// emphasis and links) keeps its host's colour; colour it through the grammars' injection queries when one is asked for.
+/// The tree-sitter grammar a file is parsed and coloured by, chosen by its name as Passenger's `Language.ForPath`;
+/// `MarkdownInline` is Markdown's paragraphs' own, only ever [`injections`]' of a Markdown file.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum Grammar {
     CSharp,
@@ -60,10 +59,11 @@ pub enum Grammar {
     Html,
     Markdown,
     Yaml,
+    MarkdownInline,
 }
 
 impl Grammar {
-    const ALL: usize = 10;
+    const ALL: usize = 11;
 
     pub fn for_path(path: &Path) -> Option<Grammar> {
         let extension = path.extension()?.to_str()?.to_ascii_lowercase();
@@ -97,7 +97,24 @@ impl Grammar {
             Grammar::Html => tree_sitter_html::LANGUAGE.into(),
             Grammar::Markdown => tree_sitter_md::LANGUAGE.into(),
             Grammar::Yaml => tree_sitter_yaml::LANGUAGE.into(),
+            Grammar::MarkdownInline => tree_sitter_md::INLINE_LANGUAGE.into(),
         }
+    }
+
+    /// The grammar a Markdown fence's info string names, as GitHub's names go.
+    fn named(name: &str) -> Option<Grammar> {
+        Some(match name.to_ascii_lowercase().as_str() {
+            "cs" | "csharp" | "c#" => Grammar::CSharp,
+            "xml" | "xaml" | "axaml" | "csproj" | "msbuild" => Grammar::Xml,
+            "json" | "jsonc" => Grammar::Json,
+            "css" => Grammar::Css,
+            "js" | "javascript" | "jsx" | "mjs" | "cjs" => Grammar::JavaScript,
+            "ts" | "typescript" => Grammar::TypeScript,
+            "tsx" => Grammar::Tsx,
+            "html" | "htm" | "razor" | "cshtml" => Grammar::Html,
+            "yml" | "yaml" => Grammar::Yaml,
+            _ => return None,
+        })
     }
 
     /// The grammar's own highlights query, compiled the first time a file of it is coloured. TypeScript's adds to
@@ -119,6 +136,7 @@ impl Grammar {
                 Grammar::Html => tree_sitter_html::HIGHLIGHTS_QUERY.to_string(),
                 Grammar::Markdown => tree_sitter_md::HIGHLIGHT_QUERY_BLOCK.to_string(),
                 Grammar::Yaml => tree_sitter_yaml::HIGHLIGHTS_QUERY.to_string(),
+                Grammar::MarkdownInline => tree_sitter_md::HIGHLIGHT_QUERY_INLINE.to_string(),
             };
             Query::new(&self.language(), &source).expect("the grammar's own query compiles")
         })
@@ -149,6 +167,7 @@ impl Grammar {
             ],
             Grammar::Markdown => &["section", "fenced_code_block"],
             Grammar::Yaml => &["block_mapping_pair"],
+            Grammar::MarkdownInline => &[],
         }
     }
 }
@@ -436,6 +455,142 @@ pub fn highlights(grammar: Grammar, tree: &Tree, text: &Rope, range: Range<usize
     out
 }
 
+/// A language inside the file's own: its grammar's parse over the stretches it holds, in the file's own offsets, and
+/// whether its colours replace the file's there (a fence's code) or lie over them (a paragraph's emphasis).
+pub struct Injection {
+    pub grammar: Grammar,
+    pub tree: Tree,
+    ranges: Vec<Range<usize>>,
+    replaces: bool,
+}
+
+/// The languages inside a file: an HTML file's `<script>` and `<style>`, a Markdown fence in a language with a grammar
+/// here, and Markdown's paragraphs. Each language is parsed once over all its stretches. Run off the UI thread.
+// shortcut: each is parsed afresh after an edit, not from its tree before; reuse it once a page's scripts are large
+// enough for the parse after a key to show.
+pub fn injections(grammar: Grammar, tree: &Tree, text: &Rope) -> Vec<Injection> {
+    if !matches!(grammar, Grammar::Html | Grammar::Markdown) {
+        return Vec::new();
+    }
+    let mut wanted: Vec<(Grammar, bool, Vec<tree_sitter::Range>)> = Vec::new();
+    let mut add = |grammar: Grammar, replaces: bool, node: Node| match wanted.iter_mut().find(|(g, ..)| *g == grammar) {
+        Some((.., ranges)) => ranges.push(node.range()),
+        None => wanted.push((grammar, replaces, vec![node.range()])),
+    };
+    let mut cursor = tree.walk();
+    'walk: loop {
+        let node = cursor.node();
+        let mut deeper = true;
+        match node.kind() {
+            "script_element" | "style_element" => {
+                let into = if node.kind() == "script_element" { Grammar::JavaScript } else { Grammar::Css };
+                let mut children = node.walk();
+                if let Some(raw) = node.children(&mut children).find(|c| c.kind() == "raw_text") {
+                    add(into, true, raw);
+                }
+                deeper = false;
+            }
+            "fenced_code_block" => {
+                let mut children = node.walk();
+                let parts: Vec<Node> = node.children(&mut children).collect();
+                let named = parts.iter().find(|c| c.kind() == "info_string").and_then(|info| {
+                    let mut words = info.walk();
+                    let language = info.children(&mut words).find(|c| c.kind() == "language")?;
+                    Grammar::named(&text.byte_slice(language.byte_range()).to_string())
+                });
+                if let (Some(into), Some(content)) = (named, parts.iter().find(|c| c.kind() == "code_fence_content")) {
+                    add(into, true, *content);
+                }
+                deeper = false;
+            }
+            "inline" => {
+                add(Grammar::MarkdownInline, false, node);
+                deeper = false;
+            }
+            _ => {}
+        }
+        if deeper && cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                break 'walk;
+            }
+        }
+    }
+    wanted
+        .into_iter()
+        .filter_map(|(grammar, replaces, ranges)| {
+            let mut parser = Parser::new();
+            parser.set_language(&grammar.language()).ok()?;
+            parser.set_included_ranges(&ranges).ok()?;
+            let mut read = |byte: usize, _: Point| -> &[u8] {
+                if byte >= text.len_bytes() {
+                    return &[];
+                }
+                let (chunk, start, _, _) = text.chunk_at_byte(byte);
+                &chunk.as_bytes()[byte - start..]
+            };
+            let tree = parser.parse_with_options(&mut read, None, None)?;
+            let ranges = ranges.iter().map(|r| r.start_byte..r.end_byte).collect();
+            Some(Injection { grammar, tree, ranges, replaces })
+        })
+        .collect()
+}
+
+/// The colours within `range`, the languages inside the file's own among them: [`highlights`] with each injection's
+/// over or in place of the file's, each piece once, in order.
+pub fn highlights_with(
+    grammar: Grammar,
+    tree: &Tree,
+    injections: &[Injection],
+    text: &Rope,
+    range: Range<usize>,
+) -> Vec<Highlight> {
+    let mut out = highlights(grammar, tree, text, range.clone());
+    for injection in injections {
+        let shown: Vec<Range<usize>> = injection
+            .ranges
+            .iter()
+            .filter(|r| r.start < range.end && range.start < r.end)
+            .map(|r| r.start.max(range.start)..r.end.min(range.end))
+            .collect();
+        if shown.is_empty() {
+            continue;
+        }
+        let mut inner: Vec<Highlight> = Vec::new();
+        for part in &shown {
+            inner.extend(highlights(injection.grammar, &injection.tree, text, part.clone()).into_iter().filter_map(
+                |h| {
+                    let clipped = h.range.start.max(part.start)..h.range.end.min(part.end);
+                    (!clipped.is_empty()).then_some(Highlight { range: clipped, kind: h.kind })
+                },
+            ));
+        }
+        // What the file's own colours give up: the whole stretch for code from plain text up, else where an inner
+        // colour lies.
+        let taken: Vec<Range<usize>> =
+            if injection.replaces { shown } else { inner.iter().map(|h| h.range.clone()).collect() };
+        out = out.into_iter().flat_map(|h| subtract(h, &taken)).collect();
+        out.extend(inner);
+        out.sort_by_key(|h| h.range.start);
+    }
+    out
+}
+
+/// A highlight less the ranges `taken`, sorted, which it may lose a middle to.
+fn subtract(h: Highlight, taken: &[Range<usize>]) -> Vec<Highlight> {
+    let mut left = vec![h.range.clone()];
+    for t in taken {
+        left = left
+            .into_iter()
+            .flat_map(|r| [r.start..r.end.min(t.start), r.start.max(t.end)..r.end])
+            .filter(|r| !r.is_empty())
+            .collect();
+    }
+    left.into_iter().map(|range| Highlight { range, kind: h.kind }).collect()
+}
+
 /// An interpolated string's text, its `{…}` holes left out so what is inside them takes its own colours.
 fn string_pieces(node: &Node) -> Vec<Range<usize>> {
     let mut pieces = Vec::new();
@@ -509,6 +664,14 @@ fn kind_of(grammar: Grammar, capture: &str, node: &Node, text: &Rope) -> Option<
             "property" => Kind::Property,
             "tag" => Kind::Tag,
             "attribute" => Kind::AttributeName,
+            _ => return None,
+        },
+        // Code spans in code's colour and links' destinations in theirs; emphasis's markers as keywords, its words plain.
+        (Grammar::MarkdownInline, _) => match capture {
+            "text.literal" => Kind::Code,
+            "text.uri" => Kind::LinkDestination,
+            "punctuation.delimiter" if node_kind == "emphasis_delimiter" => Kind::Keyword,
+            "punctuation.delimiter" if node_kind == "code_span_delimiter" => Kind::Code,
             _ => return None,
         },
         (Grammar::Markdown, _) => match capture {
@@ -672,6 +835,31 @@ mod tests {
             "YAML's keys are not told apart, or a plain scalar is coloured"
         );
         assert_eq!(Grammar::for_path(std::path::Path::new("notes.txt")), None, "plain text took a grammar");
+    }
+
+    #[test]
+    fn a_language_inside_another_takes_its_own_colours() {
+        use Kind::*;
+        let shown = |name: &str, source: &str, words: &[&str]| {
+            let grammar = Grammar::for_path(std::path::Path::new(name)).unwrap();
+            let text = Rope::from_str(source);
+            let tree = parse(grammar, &text, None);
+            let inner = injections(grammar, &tree, &text);
+            let h = highlights_with(grammar, &tree, &inner, &text, 0..text.len_bytes());
+            words.iter().map(|w| kind_at(&h, source, w)).collect::<Vec<_>>()
+        };
+        let html = "<script>\nconst n = 42;\n</script>\n<style>\n.card { color: red; }\n</style>\n";
+        assert_eq!(
+            shown("index.html", html, &["script", "const", "42", "card", "color"]),
+            [Some(Tag), Some(Keyword), Some(Number), Some(Tag), Some(Keyword)],
+            "HTML's script and style are not coloured as JavaScript and CSS"
+        );
+        let md = "# Title\n\nSee `code` and **bold** <https://x.org>.\n\n```cs\nclass A { }\n```\n\n```\nplain\n```\n";
+        assert_eq!(
+            shown("README.md", md, &["Title", "`code", "**", "https", "class", "A {", "plain"]),
+            [Some(Heading), Some(Code), Some(Keyword), Some(LinkDestination), Some(Keyword), Some(Type), Some(Code)],
+            "Markdown's inline code, emphasis and links, or a fence's language, are not coloured as Rider colours them"
+        );
     }
 
     #[test]

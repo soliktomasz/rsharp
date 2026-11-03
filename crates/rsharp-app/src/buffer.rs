@@ -7,7 +7,7 @@ use futures::StreamExt;
 use gpui::{App, AppContext, Context, Entity, EntityId, EventEmitter, Global, Task, WeakEntity};
 use rsharp_core::editorconfig::EditorConfig;
 use rsharp_core::encodings::{Charset, decode, encode};
-use rsharp_languages::{Grammar, edit as edit_tree, parse};
+use rsharp_languages::{Grammar, Injection, edit as edit_tree, injections, parse};
 use rsharp_lsp::LanguageServer;
 use rsharp_text::{Change, Document, Edit, EditPlan, Indent, LineEnding, Rope, Selection, detect_indent, line_end};
 use serde_json::{Value, json};
@@ -63,6 +63,9 @@ pub struct Buffer {
     on_disk: Option<(std::time::SystemTime, u64)>,
     pub diagnostics: Vec<Diagnostic>,
     pub tree: Option<Tree>,
+    /// The languages inside the file's own (an HTML file's scripts and styles, Markdown's fences and paragraphs), parsed
+    /// with the tree.
+    pub injections: Arc<Vec<Injection>>,
     /// The document's version the tree was parsed from: brackets are paired only in a tree that is current.
     pub tree_version: u64,
     pub git_base: Option<Arc<str>>,
@@ -245,6 +248,7 @@ impl Buffer {
             on_disk: None,
             diagnostics: Vec::new(),
             tree: None,
+            injections: Arc::default(),
             tree_version: u64::MAX,
             git_base: None,
             git_hunks: Arc::new(Vec::new()),
@@ -502,10 +506,18 @@ impl Buffer {
             if pause > Duration::ZERO {
                 cx.background_executor().timer(pause).await;
             }
-            let tree = cx.background_executor().spawn(async move { parse(grammar, &text, old.as_ref()) }).await;
+            let (tree, inner) = cx
+                .background_executor()
+                .spawn(async move {
+                    let tree = parse(grammar, &text, old.as_ref());
+                    let inner = injections(grammar, &tree, &text);
+                    (tree, inner)
+                })
+                .await;
             let _ = this.update(cx, |buffer, cx| {
                 if buffer.document.version() == version {
                     buffer.tree = Some(tree);
+                    buffer.injections = Arc::new(inner);
                     buffer.tree_version = version;
                     cx.emit(BufferEvent::Parsed);
                     cx.notify();

@@ -117,6 +117,10 @@ terminal and takes focus for a moment.
   JSON, CSS, JavaScript, TypeScript and TSX, HTML, Markdown, YAML) is parsed and coloured the same way, by its grammar's
   own query, its captures mapped to Rider's markup and data kinds, and folds by its `bodies`; another file is plain
   text. A new grammar is its crate, its arm in each of `Grammar`'s matches and in `kind_of`, and its notice.
+  `injections` are the languages inside a file's own (HTML's `<script>` and `<style>`, a Markdown fence in a language
+  `Grammar::named` knows, Markdown's paragraphs through its inline grammar), each parsed once over all its stretches with
+  tree-sitter's included ranges, so its offsets are the file's; the buffer keeps them with its tree, and
+  `highlights_with` colours a fence's code from plain text up and lays a paragraph's colours over the file's.
   `testing` reads test declarations, traits and caret context from that same tree, without visiting method bodies.
 - Unit tests: `rsharp-core::testing` owns test identities, MSBuild's actual target paths, and native Rust socket
   clients for Microsoft.Testing.Platform and VSTest. `rsharp-app::test_finder` caches closed files by stamp and
