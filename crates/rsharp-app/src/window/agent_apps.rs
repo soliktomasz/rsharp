@@ -4,7 +4,6 @@
 
 use super::agent::said;
 use super::*;
-use crate::settings::settings;
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -142,7 +141,6 @@ impl MainWindow {
     /// A Terminal tab as it stands, once it has ended or `wait` has passed: its screen and its exit code.
     fn agent_terminal_reply(&mut self, id: usize, wait: Duration, cx: &mut Context<Self>) -> Reply {
         let terminal = self.terminal.clone();
-        let _ = settings(cx);
         cx.spawn(async move |_, cx| {
             let mut waited = Duration::ZERO;
             loop {

@@ -6,7 +6,6 @@
 use super::agent::said;
 use super::*;
 use crate::git_view::GitRequest;
-use crate::settings::settings;
 use rsharp_core::git::{ChangeKind, Repository};
 use rsharp_text::LineChange;
 use serde_json::{Value, json};
@@ -237,9 +236,6 @@ impl MainWindow {
     /// status bar says of it, which is the error when it failed. A refresh the controller is in the middle of is waited
     /// out first, as a person's click would meet it already done.
     fn agent_git(&mut self, cx: &mut Context<Self>, request: impl FnOnce(&Self) -> GitRequest + 'static) -> Reply {
-        if !settings(cx).agents_enabled {
-            return Task::ready(Err("Agents are not enabled".into()));
-        }
         cx.spawn(async move |this, cx| {
             let mut request = Some(request);
             let mut started = false;

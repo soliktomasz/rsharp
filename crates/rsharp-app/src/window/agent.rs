@@ -5,8 +5,8 @@
 
 use super::*;
 use crate::settings::settings;
-use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedSender, unbounded};
+use futures::{FutureExt, StreamExt};
 use rsharp_mcp::{AgentSocket, Ide};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,7 +29,14 @@ struct Call {
 /// The socket's side of the window: a call crosses to the UI thread and its answer comes back.
 struct Bridge(UnboundedSender<Call>);
 
+/// The tool name an admission question travels as, which no tool has.
+const ADMIT: &str = "\0admit";
+
 impl Ide for Bridge {
+    fn admit(&self, agent: &str) -> Result<(), String> {
+        self.call(agent, ADMIT, &Value::Null).map(drop)
+    }
+
     fn call(&self, agent: &str, tool: &str, arguments: &Value) -> Result<Value, String> {
         let (reply, answer) = std::sync::mpsc::channel();
         let call = Call { agent: agent.into(), tool: tool.into(), arguments: arguments.clone(), reply };
@@ -42,7 +49,13 @@ impl Ide for Bridge {
 pub(super) struct Agents {
     socket: Option<AgentSocket>,
     _serving: Option<Task<()>>,
+    /// Whether agents were let in without asking at the last change of settings: turning it off ends their connections.
+    let_in: bool,
+    _settings: Option<gpui::Subscription>,
 }
+
+/// What the person may answer when an agent asks to work in the window.
+const ANSWERS: [&str; 3] = ["Allow", "Always for this folder", "No"];
 
 pub(super) fn said(text: impl Into<String>) -> Value {
     json!([{ "type": "text", "text": text.into() }])
@@ -69,7 +82,99 @@ impl MainWindow {
                 cx.spawn(async move |_| drop(call.reply.send(answer.await))).detach();
             }
         }));
+        self.agents.let_in = crate::settings::agents_let_in(cx, self.folder());
+        self.agents._settings = Some(cx.observe_global::<crate::settings::Settings>(|w, cx| {
+            let now = crate::settings::agents_let_in(cx, w.folder());
+            if w.agents.let_in
+                && !now
+                && let Some(socket) = &w.agents.socket
+            {
+                socket.shut_out();
+            }
+            w.agents.let_in = now;
+        }));
         self.describe_agents();
+    }
+
+    /// Lets an agent in, or asks the person: Allow for this connection, Always for this folder (kept in Settings), or No.
+    /// Nobody answering within a minute is a no.
+    fn agent_admit(&mut self, agent: &str, cx: &mut Context<Self>) -> Task<Result<Value, String>> {
+        if crate::settings::agents_let_in(cx, self.folder()) {
+            return Task::ready(Ok(said("Let in")));
+        }
+        if self.choice_dialog.is_some() {
+            return Task::ready(Err("The window is asking the person something else: call again in a moment".into()));
+        }
+        let (sender, answer) = futures::channel::oneshot::channel::<bool>();
+        let (handle, folder) = (self.handle, self.folder().map(Path::to_path_buf));
+        let message = format!(
+            "{agent} wants to work in this window{}.\n\nIt can read and change your files, run and debug your program, and use Git.",
+            folder.as_ref().map(|f| format!(" ({})", f.display())).unwrap_or_default()
+        );
+        let mut sender = Some(sender);
+        // Asked from the task, after the update that carried the call has ended: a window is not updated twice at once.
+        let ask = move |cx: &mut gpui::AsyncApp| {
+            handle.update(cx, |m, window, cx| {
+                let before = window.focused(cx);
+                let dialog =
+                    cx.new(|cx| crate::choice_dialog::ChoiceDialog::new("Agent access", &message, &ANSWERS, 2, cx));
+                cx.subscribe_in(&dialog, window, move |m, _, ended: &crate::choice_dialog::Ended, window, cx| {
+                    m.choice_dialog = None;
+                    if let Some(before) = &before {
+                        window.focus(before);
+                    }
+                    let allowed = match ended {
+                        crate::choice_dialog::Ended::Chosen("Allow") => true,
+                        crate::choice_dialog::Ended::Chosen("Always for this folder") => {
+                            if let Some(folder) = m.folder().map(|f| f.display().to_string()) {
+                                let mut settings = settings(cx).clone();
+                                if !settings.agent_folders.split(';').any(|f| f.trim() == folder) {
+                                    if !settings.agent_folders.trim().is_empty() {
+                                        settings.agent_folders.push(';');
+                                    }
+                                    settings.agent_folders.push_str(&folder);
+                                    crate::settings::apply(settings, cx);
+                                }
+                            }
+                            true
+                        }
+                        _ => false,
+                    };
+                    if let Some(sender) = sender.take() {
+                        let _ = sender.send(allowed);
+                    }
+                })
+                .detach();
+                window.focus(&dialog.focus_handle(cx));
+                m.choice_dialog = Some(dialog);
+                cx.notify();
+            })
+        };
+        let place =
+            self.folder().map_or("the RSharp window".to_string(), |f| format!("the RSharp window on {}", f.display()));
+        let agent = agent.to_string();
+        cx.spawn(async move |this, cx| {
+            if ask(cx).is_err() {
+                return Err("The window has closed".to_string());
+            }
+            let timeout = cx.background_executor().timer(Duration::from_secs(60));
+            let said_yes = futures::select_biased! {
+                answered = answer.fuse() => answered.ok(),
+                () = timeout.fuse() => None,
+            };
+            match said_yes {
+                Some(true) => Ok(said("Let in")),
+                Some(false) => Err(format!("The person at {place} did not let {agent} work there. Ask them, or do without it; a later call asks them again.")),
+                None => {
+                    // The question is taken back, so a late answer finds nothing to settle.
+                    let _ = this.update(cx, |w, cx| {
+                        w.choice_dialog = None;
+                        cx.notify();
+                    });
+                    Err(format!("Nobody at {place} answered within a minute whether {agent} may work there. A later call asks again."))
+                }
+            }
+        })
     }
 
     pub(super) fn describe_agents(&self) {
@@ -90,10 +195,8 @@ impl MainWindow {
         arguments: &Value,
         cx: &mut Context<Self>,
     ) -> Task<Result<Value, String>> {
-        if !settings(cx).agents_enabled {
-            return Task::ready(Err(format!(
-                "{agent} may not work in this RSharp window: the person turns on Settings > MCP Server > Enable MCP Server first."
-            )));
+        if tool == ADMIT {
+            return self.agent_admit(agent, cx);
         }
         if let Some(reply) = self.agent_editor_tool(tool, arguments, cx) {
             return reply;

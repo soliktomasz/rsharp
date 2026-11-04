@@ -50,6 +50,9 @@ pub struct AppSettings {
     /// MCP Server | Enable MCP Server: an agent that joins this window by `rsharp --mcp-attach` may work in it. Off, its
     /// calls are refused saying so.
     pub agents_enabled: bool,
+    /// MCP Server | the folders whose agents are let in without asking, apart by `;` (what a question's Always for this
+    /// folder adds). Never changed by an agent.
+    pub agent_folders: String,
     /// Languages & Frameworks | Schemas and DTDs | Remote JSON Schemas: a JSON file's own `$schema` on the web is
     /// downloaded to check and complete it; those carried never are.
     pub download_json_schemas: bool,
@@ -177,6 +180,7 @@ impl Default for AppSettings {
             prettier_on_save: false,
             node_interpreter: String::new(),
             agents_enabled: false,
+            agent_folders: String::new(),
             eslint_package: String::new(),
             prettier_package: String::new(),
             download_json_schemas: true,
@@ -229,6 +233,21 @@ pub fn node(cx: &gpui::App) -> Result<std::path::PathBuf, String> {
     }
     let path = std::path::PathBuf::from(named);
     if path.is_file() { Ok(path) } else { Err(format!("Settings name {named} as Node.js, which is not there")) }
+}
+
+/// Whether agents may work in a window on `folder` without being asked: Enable MCP Server, or the folder among those
+/// they are always let into.
+pub fn agents_let_in(cx: &gpui::App, folder: Option<&std::path::Path>) -> bool {
+    let settings = settings(cx);
+    settings.agents_enabled
+        || folder.is_some_and(|folder| {
+            settings
+                .agent_folders
+                .split(';')
+                .map(str::trim)
+                .filter(|f| !f.is_empty())
+                .any(|f| rsharp_core::paths::same(std::path::Path::new(f), folder))
+        })
 }
 
 /// The ESLint or Prettier package (`name`) for a file: the folder Settings name when they do, else the project's own found

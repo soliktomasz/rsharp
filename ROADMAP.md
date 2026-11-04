@@ -574,8 +574,12 @@ Done when: a CPU and a memory snapshot of the same app match what Passenger show
 Begun: the way in. Each window listens on a socket of its own (`rsharp_mcp::AgentSocket`, in the user's own temp folder,
 `RSHARP_AGENTS` for a test's) with its folder written beside it; `rsharp --mcp-attach [FOLDER]` (`rsharp_mcp::attach`) is the
 agent's MCP server for its session, answering initialize and tools/list and passing each tool call to the window that has the
-folder, found at the call; the window answers on its UI thread (`window/agent.rs`) only while Settings > MCP Server >
-Enable MCP Server is on, and `--no-mcp` leaves a process's windows unlistening. The window answers `workspace`, `open_file`,
+folder, found at the call, and starting RSharp on it when no window has it (`RSHARP_NO_START` leaves that to the person);
+the window answers on its UI thread (`window/agent.rs`) once the agent is let in, before the connection's first call: at
+once while Settings > MCP Server > Enable MCP Server is on or the folder is among those always let in, else the person is
+asked (Allow, Always for this folder, No; a minute unanswered is a No); turning access off ends the connections. That
+page also has the folders and each agent's setup command (Claude Code, Codex, `.mcp.json`) with Copy. `--no-mcp` leaves
+a process's windows unlistening. The window answers `workspace`, `open_file`,
 `save_all`, `editor_text`, `edit` (once as written, saved), `find_in_files` and `replace_in_files` (RSharp's own search:
 text with ASCII case ignored and a file mask, no regex or scopes), `settings` and `settings_set` (values only, no kinds
 or ranges), `problems`, `build_output` and `local_history`/`local_history_revert` (by version, not Passenger's change
@@ -591,8 +595,7 @@ its hot spots), `hot_reload`, and the debugged Avalonia app's through its inspec
 `app_details`, `app_capture`, `app_input`, `app_binding_errors`; the app is started with `debug_start`) so far. Not yet:
 the rest of Passenger's tools (`build`, `run`, `run_output`, `stop`, `tests_run`, `tests_list`, `vcs_stash`, `debug_run_to`, the web, XAML and MSBuild languages' own
 answers, refactor, build, run and tests; debug, VCS, NuGet, terminal, profile, hot reload; the app tools through the
-window), the admission dialog with Always for a folder, starting RSharp when no window has the folder, and the
-setup commands on the Settings page. The hand-written JSON-RPC stays: `rmcp` is not needed for tools alone.
+window), and Passenger's first-use question for a tool that changes something. The hand-written JSON-RPC stays: `rmcp` is not needed for tools alone.
 - All of Passenger's MCP tools (the `rmcp` crate), each answering with its operation's own result.
 - An agent's socket, `--mcp`, `--mcp-attach`, admission and asking.
 - Settings' MCP Server page.

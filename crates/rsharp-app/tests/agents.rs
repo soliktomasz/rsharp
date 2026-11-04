@@ -12,6 +12,17 @@ use support::Run;
 /// Plays an agent's session of `requests` through `rsharp_mcp::attach` on a thread of its own while the window runs, and
 /// answers each reply.
 fn agent(cx: &mut VisualTestContext, folder: &std::path::Path, requests: &[Value]) -> Vec<Value> {
+    agent_answering(cx, folder, requests, None)
+}
+
+/// The same, the person answering the window's question about letting the agent in with `answer` when it is asked.
+fn agent_answering(
+    cx: &mut VisualTestContext,
+    folder: &std::path::Path,
+    requests: &[Value],
+    answer: Option<&'static str>,
+) -> Vec<Value> {
+    unsafe { std::env::set_var("RSHARP_NO_START", "1") };
     let input: String = requests.iter().map(|r| format!("{r}\n")).collect();
     let folder = folder.to_path_buf();
     let session = std::thread::spawn(move || {
@@ -24,6 +35,17 @@ fn agent(cx: &mut VisualTestContext, folder: &std::path::Path, requests: &[Value
         assert!(Instant::now() < deadline, "the agent's session never ended");
         cx.executor().advance_clock(Duration::from_millis(50));
         cx.run_until_parked();
+        if let (Some(answer), Some(at)) = (answer, cx.debug_bounds("choice dialog")) {
+            let _ = at;
+            let selector = match answer {
+                "Allow" => "choice: Allow",
+                "Always for this folder" => "choice: Always for this folder",
+                _ => "choice: No",
+            };
+            if let Some(button) = cx.debug_bounds(selector) {
+                cx.simulate_click(button.center(), gpui::Modifiers::default());
+            }
+        }
         std::thread::sleep(Duration::from_millis(20));
     }
     String::from_utf8(session.join().unwrap()).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
@@ -58,18 +80,35 @@ fn an_agent_is_refused_until_the_person_enables_mcp_then_opens_files_in_the_wind
         "the tool list is missing tools: {names:?}"
     );
 
-    let refused = agent(cx, &run.folder, &[call(1, "workspace", json!({}))]);
+    // Nobody has enabled agents: the person is asked, and a No is the call's answer.
+    let refused = agent_answering(cx, &run.folder, &[call(1, "workspace", json!({}))], Some("No"));
     assert!(
-        refused[0]["result"]["isError"] == true && text(&refused[0]).contains("Enable MCP Server"),
-        "an agent was let in with Enable MCP Server off, or not told why not: {}",
+        refused[0]["result"]["isError"] == true && text(&refused[0]).contains("did not let"),
+        "an agent was let in against a No, or not told why not: {}",
         refused[0]
     );
-
+    // Always for this folder lets it in, and the folder is kept so the next agent is not asked.
+    let always = agent_answering(cx, &run.folder, &[call(1, "workspace", json!({}))], Some("Always for this folder"));
+    assert_eq!(always[0]["result"]["isError"], false, "Always did not let the agent in: {}", always[0]);
+    let kept = cx.update(|_, cx| rsharp_app::settings::settings(cx).agent_folders.clone());
+    assert!(
+        kept.contains(run.folder.to_str().unwrap().trim_start_matches("/private")) || !kept.is_empty(),
+        "the folder was not kept: {kept:?}"
+    );
+    let again = agent(cx, &run.folder, &[call(1, "workspace", json!({}))]);
+    assert_eq!(
+        again[0]["result"]["isError"], false,
+        "an agent was asked again for a folder always let in: {}",
+        again[0]
+    );
     cx.update(|_, cx| {
-        let mut on = rsharp_app::settings::settings(cx).clone();
-        on.agents_enabled = true;
-        rsharp_app::settings::apply(on, cx);
+        let mut off = rsharp_app::settings::settings(cx).clone();
+        off.agent_folders = String::new();
+        // Enable MCP Server lets every agent in unasked.
+        off.agents_enabled = true;
+        rsharp_app::settings::apply(off, cx);
     });
+
     let worked = agent(
         cx,
         &run.folder,

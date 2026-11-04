@@ -30,6 +30,11 @@ enum Opt {
         get: fn(&AppSettings) -> usize,
         set: fn(&mut AppSettings, usize),
     },
+    /// Text to read and copy, made as the page draws: an agent's setup command.
+    Note {
+        label: &'static str,
+        text: fn() -> String,
+    },
     /// A line of text, in a field as wide as the page.
     Text {
         label: &'static str,
@@ -44,6 +49,7 @@ impl Opt {
             Opt::Check { label, .. }
             | Opt::Number { label, .. }
             | Opt::Choice { label, .. }
+            | Opt::Note { label, .. }
             | Opt::Text { label, .. } => label,
         }
     }
@@ -192,11 +198,21 @@ static PAGES: &[Page] = &[
     Page {
         group: "Tools",
         name: "MCP Server",
-        options: &[Opt::Check {
-            label: "Enable MCP Server (agents started with `rsharp --mcp-attach FOLDER` may work in this window)",
-            get: |s| s.agents_enabled,
-            set: |s, value| s.agents_enabled = value,
-        }],
+        options: &[
+            Opt::Check {
+                label: "Enable MCP Server (every agent that joins this window by `rsharp --mcp-attach` works in it unasked)",
+                get: |s| s.agents_enabled,
+                set: |s, value| s.agents_enabled = value,
+            },
+            Opt::Text {
+                label: "Folders whose agents are always let in (apart by ;; Remove one by deleting its path)",
+                get: |s| &s.agent_folders,
+                set: |s, folders| s.agent_folders = folders,
+            },
+            Opt::Note { label: "Claude Code", text: || agent_setup("claude mcp add rsharp --") },
+            Opt::Note { label: "Codex", text: || agent_setup("codex mcp add rsharp --") },
+            Opt::Note { label: "A repository's .mcp.json (Claude Code, Cursor and others)", text: mcp_json },
+        ],
     },
     Page {
         group: "Languages & Frameworks",
@@ -311,6 +327,19 @@ static PAGES: &[Page] = &[
         ],
     },
 ];
+
+/// An agent's own command that adds RSharp as its MCP server: this executable by its real path, joining the window of the
+/// folder the agent works in.
+fn agent_setup(add: &str) -> String {
+    let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "rsharp".into());
+    format!("{add} \"{exe}\" --mcp-attach")
+}
+
+/// The same as a repository's `.mcp.json`.
+fn mcp_json() -> String {
+    let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "rsharp".into());
+    serde_json::json!({ "mcpServers": { "rsharp": { "command": exe, "args": ["--mcp-attach"] } } }).to_string()
+}
 
 pub struct SettingsDialog {
     draft: AppSettings,
@@ -602,6 +631,48 @@ impl Render for SettingsDialog {
                                 },
                             )))
                         })
+                        .into_any_element()
+                }
+                Opt::Note { label, text } => {
+                    let shown = text();
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .child(*label)
+                        .child(
+                            div()
+                                .px(px(8.))
+                                .py(px(6.))
+                                .rounded(px(4.))
+                                .bg(theme::island())
+                                .border_1()
+                                .border_color(theme::control_border())
+                                .font_family(theme::CODE_FONT)
+                                .text_size(px(12.))
+                                .whitespace_normal()
+                                .child(shown.clone()),
+                        )
+                        .child(
+                            div()
+                                .id(*label)
+                                .debug_selector({
+                                    let label = *label;
+                                    move || format!("copy: {label}")
+                                })
+                                .h(px(24.))
+                                .w(px(60.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(4.))
+                                .bg(theme::search_field())
+                                .hover(|d| d.bg(theme::row_hover()))
+                                .child("Copy")
+                                .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(shown.clone()))
+                                })),
+                        )
                         .into_any_element()
                 }
                 Opt::Text { label, .. } => div()

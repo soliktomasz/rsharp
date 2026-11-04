@@ -7,8 +7,8 @@
 use serde_json::{Value, json};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[cfg(unix)]
@@ -19,6 +19,9 @@ use uds_windows::{UnixListener, UnixStream};
 /// What a window does with an agent's tool call: its content (MCP's content array) or why not. Called on a thread of the
 /// connection's own, so it may wait for the UI thread.
 pub trait Ide: Send + Sync + 'static {
+    /// Whether the person lets this agent work in the window: asked before the connection's first call, and again at
+    /// the next call after a refusal. The message is the call's answer.
+    fn admit(&self, agent: &str) -> Result<(), String>;
     fn call(&self, agent: &str, tool: &str, arguments: &Value) -> Result<Value, String>;
 }
 
@@ -55,6 +58,8 @@ static OPENED: AtomicUsize = AtomicUsize::new(0);
 pub struct AgentSocket {
     path: PathBuf,
     closed: Arc<AtomicBool>,
+    /// The connections open, which [`AgentSocket::shut_out`] ends.
+    clients: Arc<Mutex<Vec<UnixStream>>>,
 }
 
 impl AgentSocket {
@@ -65,11 +70,15 @@ impl AgentSocket {
         let listener = UnixListener::bind(&path)?;
         listener.set_nonblocking(true)?;
         let closed = Arc::new(AtomicBool::new(false));
-        let stopping = closed.clone();
+        let clients: Arc<Mutex<Vec<UnixStream>>> = Arc::default();
+        let (stopping, held) = (closed.clone(), clients.clone());
         std::thread::Builder::new().name("agent socket".into()).spawn(move || {
             while !stopping.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        if let Ok(kept) = stream.try_clone() {
+                            held.lock().unwrap().push(kept);
+                        }
                         let (ide, stopping) = (ide.clone(), stopping.clone());
                         std::thread::spawn(move || serve(stream, ide.as_ref(), &stopping));
                     }
@@ -78,13 +87,20 @@ impl AgentSocket {
                 }
             }
         })?;
-        Ok(Self { path, closed })
+        Ok(Self { path, closed, clients })
     }
 
     /// Writes the window's folder beside the socket, as it opens and changes, for `--mcp-attach` to choose by.
     pub fn describe(&self, folder: Option<&Path>) {
         let text = folder.map(|f| f.display().to_string()).unwrap_or_default();
         let _ = std::fs::write(self.path.with_extension("folder"), text);
+    }
+
+    /// Ends every agent's connection to the window: each is asked to be let in again at its next call.
+    pub fn shut_out(&self) {
+        for client in self.clients.lock().unwrap().drain(..) {
+            let _ = client.shutdown(std::net::Shutdown::Both);
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -103,17 +119,21 @@ impl Drop for AgentSocket {
 fn serve(stream: UnixStream, ide: &dyn Ide, closed: &AtomicBool) {
     let _ = stream.set_nonblocking(false);
     let Ok(mut writer) = stream.try_clone() else { return };
+    let mut admitted = false;
     for line in BufReader::new(stream).lines() {
         let Ok(line) = line else { break };
         if closed.load(Ordering::Acquire) {
             break;
         }
         let Ok(request) = serde_json::from_str::<Value>(&line) else { continue };
-        let reply = match ide.call(
-            request["agent"].as_str().unwrap_or("An agent"),
-            request["tool"].as_str().unwrap_or_default(),
-            &request["arguments"],
-        ) {
+        let agent = request["agent"].as_str().unwrap_or("An agent");
+        // Every call waits until the agent is let in; once it is, the connection stays so until it ends or is shut out.
+        let answer = match admitted {
+            true => Ok(()),
+            false => ide.admit(agent).inspect(|()| admitted = true),
+        }
+        .and_then(|()| ide.call(agent, request["tool"].as_str().unwrap_or_default(), &request["arguments"]));
+        let reply = match answer {
             Ok(content) => json!({ "id": request["id"], "content": content }),
             Err(why) => json!({ "id": request["id"], "error": why }),
         };
@@ -148,6 +168,31 @@ fn window_for(folder: &Path) -> Option<UnixStream> {
     found
 }
 
+/// No window has the folder: RSharp is started on it, in a window the person sees, and waited for (half a minute) until its
+/// socket answers. `RSHARP_NO_START` leaves it to the person.
+fn start_window(folder: &Path) -> Option<UnixStream> {
+    if std::env::var_os("RSHARP_NO_START").is_some() {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    // Not under this process's Lifeline: the window is the person's, and outlives the agent.
+    std::process::Command::new(exe)
+        .arg(folder)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
+        if let Some(stream) = window_for(folder) {
+            return Some(stream);
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    None
+}
+
 /// `--mcp-attach [FOLDER]`: MCP on `input` and `output` for the agent's whole session. `initialize` and `tools/list` are
 /// answered here; a tool call goes to the window that has the folder, found at the call (the person may open it after the
 /// agent starts), and says so when there is none.
@@ -171,7 +216,9 @@ pub fn attach(folder: &Path, input: impl BufRead, mut output: impl Write) -> io:
             "tools/list" => Ok(json!({ "tools": crate::all_tools() })),
             "tools/call" => {
                 if window.is_none() {
-                    window = window_for(folder).and_then(|s| Some((s.try_clone().ok()?, BufReader::new(s))));
+                    window = window_for(folder)
+                        .or_else(|| start_window(folder))
+                        .and_then(|s| Some((s.try_clone().ok()?, BufReader::new(s))));
                 }
                 let params = &message["params"];
                 Ok(match window.as_mut() {
