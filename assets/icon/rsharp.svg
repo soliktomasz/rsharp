@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- RSharp's app icon: the IDE's island on its frame, an R and a sharp. Original artwork, MIT like the project. -->
+  <defs>
+    <linearGradient id="frame" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#34373D"/>
+      <stop offset="1" stop-color="#202226"/>
+    </linearGradient>
+    <linearGradient id="island" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1D1E21"/>
+      <stop offset="1" stop-color="#141517"/>
+    </linearGradient>
+    <linearGradient id="sharp" gradientUnits="userSpaceOnUse" x1="630" y1="240" x2="820" y2="460">
+      <stop offset="0" stop-color="#5A8DF0"/>
+      <stop offset="1" stop-color="#3871E1"/>
+    </linearGradient>
+    <clipPath id="cap"><rect x="0" y="292" width="1024" height="440"/></clipPath>
+    <filter id="drop" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#frame)" filter="url(#drop)"/>
+  <rect x="101.5" y="101.5" width="821" height="821" rx="183.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="3"/>
+  <rect x="164" y="164" width="696" height="696" rx="128" fill="url(#island)"/>
+  <g fill="none" stroke="#E4E6EB" stroke-width="92" stroke-linejoin="round" clip-path="url(#cap)">
+    <path d="M288 270 V760"/>
+    <path d="M288 338 H448 A118 118 0 0 1 448 574 H288"/>
+    <path d="M420 560 L590 770"/>
+  </g>
+  <g stroke="url(#sharp)" stroke-width="40" stroke-linecap="round">
+    <path d="M706 252 L684 452"/>
+    <path d="M782 252 L760 452"/>
+    <path d="M654 318 H818"/>
+    <path d="M644 390 H808"/>
+  </g>
+</svg>

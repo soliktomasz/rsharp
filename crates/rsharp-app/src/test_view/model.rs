@@ -149,6 +149,32 @@ fn method_identity(test: &TestItem) -> String {
     format!("{}|{}", test.project.display(), test.method().replace('+', "."))
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Counts {
+    pub total: usize,
+    pub not_run: usize,
+    pub running: usize,
+    pub passed: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    pub duration: Duration,
+}
+impl Counts {
+    pub fn of(&self, state: TestState) -> usize {
+        let mut copy = *self;
+        *copy.of_mut(state)
+    }
+    fn of_mut(&mut self, state: TestState) -> &mut usize {
+        match state {
+            TestState::NotRun => &mut self.not_run,
+            TestState::Running => &mut self.running,
+            TestState::Passed => &mut self.passed,
+            TestState::Failed => &mut self.failed,
+            TestState::Skipped => &mut self.skipped,
+        }
+    }
+}
+
 /// One visible row; groups carry the unique tests below them for Run Selected.
 #[derive(Clone, Debug)]
 pub struct TestRow {
@@ -328,13 +354,22 @@ impl TestModel {
             .filter(|t| self.results.get(&identity(t)).is_some_and(|r| r.state == TestState::Failed))
             .collect()
     }
-    pub fn counts(&self) -> (usize, usize) {
-        let tests = self.tests();
-        let failed = tests
-            .iter()
-            .filter(|test| self.results.get(&identity(test)).is_some_and(|result| result.state == TestState::Failed))
-            .count();
-        (tests.len(), failed)
+    /// How many tests stand in each state, and how long those that ran took together.
+    pub fn counts(&self) -> Counts {
+        let mut counts = Counts::default();
+        for test in self.tests() {
+            counts.total += 1;
+            counts.duration += self.results.get(&identity(&test)).map_or(Duration::ZERO, |r| r.duration);
+            *counts.of_mut(self.status(&test)) += 1;
+        }
+        counts
+    }
+    fn status(&self, test: &TestItem) -> TestState {
+        if self.running.contains(&identity(test)) {
+            TestState::Running
+        } else {
+            self.results.get(&identity(test)).map_or(TestState::NotRun, |r| r.state)
+        }
     }
     pub fn rows(&self, state: &UnitTestsState, query: &str, collapsed: &BTreeSet<String>) -> Vec<TestRow> {
         let all = self.tests();
@@ -355,11 +390,7 @@ impl TestModel {
         let mut roots: BTreeMap<(usize, String), Node> = BTreeMap::new();
         for test in all {
             let result = self.results.get(&identity(&test)).cloned();
-            let status = if self.running.contains(&identity(&test)) {
-                TestState::Running
-            } else {
-                result.as_ref().map_or(TestState::NotRun, |r| r.state)
-            };
+            let status = self.status(&test);
             if !state.outcomes.is_empty() && !state.outcomes.contains(&status) {
                 continue;
             }

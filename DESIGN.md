@@ -288,6 +288,26 @@ Soft rounded rectangles at four radii: 10px for islands, 6px for tabs, toolbar w
   (whose form has a Function name field) and Exception breakpoints, and the chosen item's form on the right, with
   Add Function Breakpoint, Add Exception Breakpoint, Remove and Done in a 56px footer.
 
+### Unit Tests Window
+- A 32px toolbar: Run All (icon and label), then 28px icon buttons with tooltips — Run Selected, Rerun Failed, Stop |
+  Expand All, Collapse All — dimmed to 35% while they cannot act. At its right, one chip per outcome (Failed, Passed,
+  Skipped, Not Run, and Running only during a run): the expui test icon and its count, 24px, 4px radius. A chip is a
+  filter: pressed it takes tab-selected with its border, and pressed chips together show only their outcomes; a chip
+  with no tests is at 45%.
+- Below it the search field (search-field ground) and the borderless "Group by" chooser.
+- The footer leads with Rider's results bar, 96×4px on progress-track: failed in `failed` (#DB5C5C), passed in
+  `passed` (#57965C), skipped in text-secondary; then "N tests · n passed · n failed · n skipped · time".
+
+### NuGet Window
+- Package rows are 44px: the package icon, the id with its latest version right-aligned (warning when vulnerable),
+  and the description's first line at 12px in text-secondary beneath. Feed is a borderless "Feed All Feeds" chooser.
+- Details: the id and version chooser, then the projects (32px rows; Install is the accent button, Update and
+  Remove bordered), advisories, "by … · from …" and the description last, so a short island still shows the projects.
+
+### App Icon
+- `assets/icon/rsharp.svg`: a graphite squircle (the frame) holding a darker inset island, a bold R in light grey and
+  a blue sharp (#5A8DF0 to the accent) at its shoulder. `RSharp.icns` is made from it and carried by the bundle.
+
 ### Empty Editor Hints
 - Two aligned columns 10px apart: instructions right-aligned in text-secondary, the keys left-aligned in the accent (an instruction that is not a key stays text-secondary).
 

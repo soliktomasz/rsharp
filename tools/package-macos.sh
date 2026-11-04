@@ -35,6 +35,9 @@ echo "package-macos: building rsharp ($profile)" >&2
 rm -rf "$out"
 mkdir -p "$out/Contents/MacOS" "$out/Contents/Resources"
 cp "$dir/rsharp" "$out/Contents/MacOS/rsharp"
+# The icon is assets/icon/rsharp.svg made into an .icns once (rsvg-convert at 16 to 1024, then iconutil), committed so
+# packaging needs neither tool.
+cp assets/icon/RSharp.icns "$out/Contents/Resources/RSharp.icns"
 if [ -d "$dir/sidecars" ]; then
     # -L takes the links the build made (Roslyn's server is one, into the NuGet cache) as what they point at.
     # Resources, not MacOS: a bundle's MacOS folder is its code, which codesign reads file by file, and npm's tree is
@@ -54,6 +57,7 @@ cat >"$out/Contents/Info.plist" <<PLIST
 <dict>
 	<key>CFBundleDevelopmentRegion</key><string>en</string>
 	<key>CFBundleExecutable</key><string>rsharp</string>
+	<key>CFBundleIconFile</key><string>RSharp</string>
 	<key>CFBundleIdentifier</key><string>$bundle_id</string>
 	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
 	<key>CFBundleName</key><string>RSharp</string>

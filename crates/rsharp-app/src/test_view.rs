@@ -9,7 +9,9 @@ use gpui::{
     App, Bounds, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels, SharedString, Subscription,
     Window, anchored, deferred, div, point, prelude::*, px, uniform_list,
 };
-pub use model::{GroupLevel, PRESETS, TestModel, TestRow, UnitTestsState, categories, duration_grade, state_label};
+pub use model::{
+    Counts, GroupLevel, PRESETS, TestModel, TestRow, UnitTestsState, categories, duration_grade, state_label,
+};
 use rsharp_core::testing::{TestItem, TestOutcome, TestState};
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -27,7 +29,6 @@ pub enum TestAction {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Popup {
     Grouping,
-    Outcomes,
 }
 
 pub struct TestView {
@@ -36,7 +37,7 @@ pub struct TestView {
     search: Entity<TextField>,
     collapsed: BTreeSet<String>,
     rows: Vec<TestRow>,
-    counts: (usize, usize),
+    counts: Counts,
     selected: Option<String>,
     running: bool,
     available: bool,
@@ -65,7 +66,7 @@ impl TestView {
             search,
             collapsed: BTreeSet::new(),
             rows: vec![],
-            counts: (0, 0),
+            counts: Counts::default(),
             selected: None,
             running: false,
             available: true,
@@ -122,7 +123,7 @@ impl TestView {
         self.results_refresh = None;
         self.model = TestModel::default();
         self.rows.clear();
-        self.counts = (0, 0);
+        self.counts = Counts::default();
         self.selected = None;
         self.collapsed.clear();
         self.running = false;
@@ -260,55 +261,56 @@ impl TestView {
     fn command(
         &self,
         id: &'static str,
-        label: &'static str,
+        tip: &'static str,
         image: &'static str,
         enabled: bool,
         event: fn() -> TestAction,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        button(id, label, enabled)
+        icon_button(id, tip, image, enabled)
             .debug_selector(move || format!("tests {id}"))
-            .child(icon(image, 16.))
-            .child(label)
             .when(enabled, |d| d.on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.emit(event()))))
     }
+    /// Rider's Unit Tests toolbar: run and stop, then the tree's own, then the outcomes as one-click filters.
     fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let idle = !self.running;
         div()
+            .h(px(32.))
+            .flex_none()
             .flex()
-            .flex_wrap()
             .items_center()
-            .gap(px(4.))
+            .gap(px(2.))
             .px(px(8.))
-            .py(px(4.))
-            .child(self.command(
-                "run all",
-                "Run All",
-                "run",
-                !self.running && self.available,
-                || TestAction::RunAll,
-                cx,
-            ))
+            .child(
+                button("tests run all", idle && self.available)
+                    .debug_selector(|| "tests run all".into())
+                    .tooltip(|_, cx| cx.new(|_| crate::window::Tip("Run All Tests".into())).into())
+                    .child(icon("run", 16.))
+                    .child("Run All")
+                    .when(idle && self.available, |d| {
+                        d.on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(TestAction::RunAll)))
+                    }),
+            )
             .child(self.command(
                 "run selected",
-                "Run Selected",
+                "Run Selected Tests",
                 "run",
-                !self.running && !self.selected_tests().is_empty(),
+                idle && !self.selected_tests().is_empty(),
                 || TestAction::RunSelected,
                 cx,
             ))
             .child(self.command(
                 "run failed",
-                "Run Failed",
+                "Rerun Failed Tests",
                 "rerun",
-                !self.running && self.counts.1 > 0,
+                idle && self.counts.failed > 0,
                 || TestAction::RunFailed,
                 cx,
             ))
             .child(self.command("stop", "Stop", "stop", self.running, || TestAction::Stop, cx))
-            .child(div().flex_1())
+            .child(rule())
             .child(
-                button("tests expand", "Expand All", true)
-                    .child("Expand All")
+                icon_button("tests expand", "Expand All", "expand-all", true)
                     .debug_selector(|| "tests expand all".into())
                     .on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
                         v.collapsed.clear();
@@ -316,36 +318,76 @@ impl TestView {
                     })),
             )
             .child(
-                button("tests collapse", "Collapse All", true)
-                    .child("Collapse All")
+                icon_button("tests collapse", "Collapse All", "collapse-all", true)
                     .debug_selector(|| "tests collapse all".into())
                     .on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
                         v.collapsed.extend(v.rows.iter().filter(|r| r.expandable).map(|r| r.key.clone()));
                         v.refresh(cx);
                     })),
             )
+            .child(div().flex_1())
+            .children(
+                [TestState::Failed, TestState::Passed, TestState::Skipped, TestState::NotRun, TestState::Running]
+                    .into_iter()
+                    .filter(|state| *state != TestState::Running || self.counts.running > 0)
+                    .map(|state| self.outcome_chip(state, cx)),
+            )
+    }
+    /// A state and its count; pressed, it shows only tests in the pressed states.
+    fn outcome_chip(&self, state: TestState, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let count = self.counts.of(state);
+        let on = self.state.outcomes.contains(&state);
+        let label = state_label(state);
+        div()
+            .id(SharedString::from(format!("tests outcome {label}")))
+            .debug_selector(move || format!("tests outcome: {label}"))
+            .h(px(24.))
+            .px(px(6.))
+            .rounded(px(4.))
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .border_1()
+            .border_color(if on { theme::tab_selected_border() } else { gpui::transparent_black().into() })
+            .when(on, |d| d.bg(theme::tab_selected()))
+            .when(!on, |d| d.hover(|d| d.bg(theme::button_hover())))
+            .when(count == 0 && !on, |d| d.opacity(0.45))
+            .child(icon(state_icon(state), 16.))
+            .child(div().text_color(if on { theme::text() } else { theme::text_muted() }).child(count.to_string()))
+            .tooltip(move |_, cx| {
+                cx.new(|_| {
+                    crate::window::Tip(
+                        if on { format!("Stop showing only {label}") } else { format!("Show {label}") }.into(),
+                    )
+                })
+                .into()
+            })
+            .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
+                let mut outcomes = v.state.outcomes.clone();
+                if outcomes.contains(&state) {
+                    outcomes.retain(|s| s != &state);
+                } else {
+                    outcomes.push(state);
+                }
+                v.filter(outcomes, cx);
+            }))
+            .into_any_element()
     }
     fn filters(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let triggers = Rc::new(Cell::new([Bounds::<Pixels>::default(); 2]));
-        let trigger_layout = triggers.clone();
+        let trigger = Rc::new(Cell::new(Bounds::<Pixels>::default()));
+        let trigger_layout = trigger.clone();
         let grouping = PRESETS
             .iter()
             .find(|(_, levels)| *levels == self.state.grouping.as_slice())
             .map(|(name, _)| *name)
             .unwrap_or("Custom");
-        let filter = if self.state.outcomes.is_empty() {
-            "All Outcomes".into()
-        } else {
-            self.state.outcomes.iter().map(|s| state_label(*s)).collect::<Vec<_>>().join(", ")
-        };
         div()
             .on_children_prepainted(move |bounds, _, _| {
-                if let [_, grouping, outcomes] = bounds.as_slice() {
-                    trigger_layout.set([*grouping, *outcomes]);
+                if let [_, grouping] = bounds.as_slice() {
+                    trigger_layout.set(*grouping);
                 }
             })
             .flex()
-            .flex_wrap()
             .gap(px(6.))
             .items_center()
             .px(px(8.))
@@ -362,30 +404,22 @@ impl TestView {
                     .items_center()
                     .gap(px(6.))
                     .rounded(px(4.))
+                    .bg(theme::search_field())
                     .border_1()
                     .border_color(theme::control_border())
                     .child(icon("search", 16.))
                     .child(div().flex_1().child(self.search.clone())),
             )
             .child(
-                button("tests grouping", "Group By", true)
+                button("tests grouping", true)
                     .debug_selector(|| "tests group by".into())
-                    .child(format!("Group By: {grouping}"))
+                    .flex_none()
+                    .child(div().text_color(theme::text_muted()).child("Group by"))
+                    .child(grouping)
                     .child(icon("chevron-down", 16.))
-                    .children(self.popup(Popup::Grouping, triggers.clone(), cx))
+                    .children(self.popup(Popup::Grouping, trigger, cx))
                     .on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
                         v.popup = if v.popup == Some(Popup::Grouping) { None } else { Some(Popup::Grouping) };
-                        cx.notify();
-                    })),
-            )
-            .child(
-                button("tests outcomes", "Outcomes", true)
-                    .debug_selector(|| "tests outcomes".into())
-                    .child(filter)
-                    .child(icon("chevron-down", 16.))
-                    .children(self.popup(Popup::Outcomes, triggers, cx))
-                    .on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
-                        v.popup = if v.popup == Some(Popup::Outcomes) { None } else { Some(Popup::Outcomes) };
                         cx.notify();
                     })),
             )
@@ -393,14 +427,14 @@ impl TestView {
     fn popup(
         &self,
         kind: Popup,
-        triggers: Rc<Cell<[Bounds<Pixels>; 2]>>,
+        trigger: Rc<Cell<Bounds<Pixels>>>,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
         if self.popup != Some(kind) {
             return None;
         }
         let mut items = Vec::new();
-        if kind == Popup::Grouping {
+        {
             for (i, (name, levels)) in PRESETS.iter().enumerate() {
                 let levels = levels.to_vec();
                 let chosen = self.state.grouping == levels;
@@ -435,37 +469,6 @@ impl TestView {
                         .into_any_element(),
                 );
             }
-        } else {
-            items.push(
-                choice("tests all outcomes", "All Outcomes", self.state.outcomes.is_empty())
-                    .debug_selector(|| "tests outcome: All".into())
-                    .on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
-                        cx.stop_propagation();
-                        v.filter(vec![], cx);
-                    }))
-                    .into_any_element(),
-            );
-            for (i, state) in
-                [TestState::NotRun, TestState::Running, TestState::Passed, TestState::Failed, TestState::Skipped]
-                    .into_iter()
-                    .enumerate()
-            {
-                items.push(
-                    choice(("tests outcome", i), state_label(state), self.state.outcomes.contains(&state))
-                        .debug_selector(move || format!("tests outcome: {}", state_label(state)))
-                        .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| {
-                            cx.stop_propagation();
-                            let mut outcomes = v.state.outcomes.clone();
-                            if outcomes.contains(&state) {
-                                outcomes.retain(|s| s != &state);
-                            } else {
-                                outcomes.push(state);
-                            }
-                            v.filter(outcomes, cx);
-                        }))
-                        .into_any_element(),
-                );
-            }
         }
         Some(
             deferred(
@@ -484,10 +487,10 @@ impl TestView {
                             .bg(theme::popup())
                             .border_1()
                             .border_color(theme::popup_border())
+                            .shadow_lg()
                             .on_mouse_down_out(cx.listener(move |v, event: &gpui::MouseDownEvent, _, cx| {
-                                let trigger = triggers.get()[if kind == Popup::Grouping { 0 } else { 1 }];
                                 // Outside dismissal runs before the trigger's click can toggle this popup closed.
-                                if v.popup == Some(kind) && !trigger.contains(&event.position) {
+                                if v.popup == Some(kind) && !trigger.get().contains(&event.position) {
                                     v.popup = None;
                                     cx.notify();
                                 }
@@ -531,7 +534,7 @@ impl TestView {
             .child(div().flex_none().text_color(theme::text_secondary()).child(if row.duration.is_zero() {
                 String::new()
             } else {
-                format!("{:.0} ms", row.duration.as_secs_f64() * 1000.)
+                duration_text(row.duration)
             }))
             .on_click(cx.listener(move |v, event: &ClickEvent, window, cx| {
                 window.focus(&v.focus);
@@ -648,17 +651,26 @@ impl TestView {
 }
 impl Render for TestView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (count, failed) = self.counts;
+        let counts = self.counts;
         let summary = if self.looking {
             "Looking for tests…".into()
-        } else if self.status.is_empty() {
-            format!("{count} tests · {failed} failed")
-        } else {
+        } else if !self.status.is_empty() {
             self.status.clone()
+        } else if counts.total == counts.not_run {
+            format!("{} tests", counts.total)
+        } else {
+            let mut parts = vec![format!("{} tests", counts.total)];
+            for (n, word) in [(counts.passed, "passed"), (counts.failed, "failed"), (counts.skipped, "skipped")] {
+                if n > 0 {
+                    parts.push(format!("{n} {word}"));
+                }
+            }
+            parts.push(duration_text(counts.duration));
+            parts.join(" · ")
         };
         let empty = if self.looking {
             "Looking for tests…"
-        } else if count == 0 {
+        } else if counts.total == 0 {
             "No tests found. Add test methods to a test project."
         } else {
             "No tests match the search and outcome filters"
@@ -703,13 +715,15 @@ impl Render for TestView {
             .child(
                 div()
                     .h(px(28.))
+                    .flex_none()
                     .px(px(8.))
                     .flex()
                     .items_center()
                     .gap(px(8.))
+                    .child(results_bar(&counts))
                     .child(div().flex_1().truncate().text_color(theme::text_muted()).child(summary))
                     .child(
-                        button("tests log", "Runner Output", true)
+                        button("tests log", true)
                             .debug_selector(|| "tests runner output".into())
                             .child(if self.show_log { "Test Details" } else { "Runner Output" })
                             .on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
@@ -720,17 +734,55 @@ impl Render for TestView {
             )
     }
 }
-fn button(id: impl Into<gpui::ElementId>, _: impl Into<SharedString>, enabled: bool) -> gpui::Stateful<gpui::Div> {
+/// Rider's test progress bar: each finished state's share of the tests, the rest the empty track.
+fn results_bar(counts: &Counts) -> gpui::Div {
+    let total = counts.total.max(1) as f32;
+    let width = 96.;
+    let part = |n: usize, colour: gpui::Rgba| div().h_full().w(px(width * n as f32 / total)).bg(colour);
+    div()
+        .flex_none()
+        .w(px(width))
+        .h(px(4.))
+        .rounded(px(2.))
+        .overflow_hidden()
+        .flex()
+        .bg(theme::progress_track())
+        .child(part(counts.failed, theme::failed()))
+        .child(part(counts.passed, theme::passed()))
+        .child(part(counts.skipped, theme::text_secondary()))
+}
+fn duration_text(duration: std::time::Duration) -> String {
+    let ms = duration.as_secs_f64() * 1000.;
+    if ms < 1000. { format!("{ms:.0} ms") } else { format!("{:.1} s", ms / 1000.) }
+}
+fn rule() -> gpui::Div {
+    div().w(px(1.)).h(px(16.)).mx(px(4.)).bg(theme::separator())
+}
+fn icon_button(id: &'static str, tip: &'static str, image: &'static str, enabled: bool) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .size(px(28.))
+        .flex_none()
+        .rounded(px(6.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .when(enabled, |d| d.hover(|d| d.bg(theme::button_hover())).active(|d| d.bg(theme::button_pressed())))
+        .when(!enabled, |d| d.opacity(0.35))
+        .child(icon(image, 16.))
+        .tooltip(move |_, cx| cx.new(|_| crate::window::Tip(tip.into())).into())
+}
+fn button(id: impl Into<gpui::ElementId>, enabled: bool) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
         .h(px(28.))
-        .px(px(6.))
-        .rounded(px(4.))
+        .px(px(8.))
+        .rounded(px(6.))
         .flex()
         .items_center()
         .gap(px(4.))
         .when(enabled, |d| d.hover(|d| d.bg(theme::button_hover())).active(|d| d.bg(theme::button_pressed())))
-        .when(!enabled, |d| d.opacity(0.45))
+        .when(!enabled, |d| d.opacity(0.35))
 }
 fn choice(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>, selected: bool) -> gpui::Stateful<gpui::Div> {
     div()
@@ -748,11 +800,11 @@ fn choice(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>, select
 }
 fn state_icon(state: TestState) -> &'static str {
     match state {
-        TestState::Failed => "error",
+        TestState::Failed => "test-failed",
         TestState::Running => "run",
-        TestState::Passed => "check",
-        TestState::Skipped => "warning",
-        TestState::NotRun => "file-csharp",
+        TestState::Passed => "test-passed",
+        TestState::Skipped => "test-ignored",
+        TestState::NotRun => "test-not-run",
     }
 }
 /// Both .NET's `in path:line N` and adapter `path:N` locations.

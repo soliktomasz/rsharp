@@ -142,6 +142,14 @@ pub fn error() -> Rgba {
 pub fn warning() -> Rgba {
     rgb(0xE5A336)
 }
+/// A passed test's green: the stroke of expui's `run/testPassed_dark.svg` (and of `run/run_dark.svg`).
+pub fn passed() -> Rgba {
+    rgb(0x57965C)
+}
+/// A failed test's red: the fill of expui's `run/testError_dark.svg` and `general/error_dark.svg`.
+pub fn failed() -> Rgba {
+    rgb(0xDB5C5C)
+}
 
 /// The colour picker's marker ring and its shadow, light over dark so it shows on any colour. Rider's picker paints
 /// its own in code, not from its theme, so these are RSharp's.

@@ -66,6 +66,9 @@ gpui brings about 550 crates of its own. Their notices are not yet written out: 
   bundled Terminal platform plugin's `plugins/terminal/lib/terminal.jar`; New Session's `add.svg` is
   `expui/general/add_dark.svg` from `lib/intellij.platform.ide.jar`. The toolbar's `debug.svg` and `settings.svg` are
   `expui/run/debug_dark.svg` and `expui/general/settings_dark.svg` from the same jar.
+  The Unit Tests window's `test-passed`, `test-failed`, `test-ignored` and `test-not-run` are
+  `expui/run/testPassed`, `testError` (Rider draws a failure red), `testIgnored` and `testNotRunYet` (`_dark`); `expand-all` and `collapse-all` are
+  `expui/general/expandAll_dark.svg` and `collapseAll_dark.svg`, all from `lib/intellij.platform.ide.jar`.
   The Debug window's `debug-resume`, `debug-pause`, `debug-step-over`, `debug-step-into`, `debug-step-out` and
   `debug-mute` are `expui/run/resume`, `pause`, `stepOver`, `stepInto`, `stepOut` and `muteBreakpoints` (`_dark`);
   the stripe's `tw-debug`, `tw-commit`, `tw-git`, `tw-profiler` and `tw-hierarchy` are `expui/toolwindows/debug`,

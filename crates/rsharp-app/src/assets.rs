@@ -65,6 +65,12 @@ static FILES: &[(&str, &[u8])] = carried![
     "icons/up.svg",
     "icons/warning.svg",
     "icons/words.svg",
+    "icons/collapse-all.svg",
+    "icons/expand-all.svg",
+    "icons/test-failed.svg",
+    "icons/test-ignored.svg",
+    "icons/test-not-run.svg",
+    "icons/test-passed.svg",
 ];
 
 static FONTS: &[&[u8]] = &[

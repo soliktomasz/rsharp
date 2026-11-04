@@ -592,16 +592,16 @@ fn button(id: impl Into<gpui::ElementId>, label: impl Into<SharedString>, enable
     let id = id.into();
     div()
         .id(id)
-        .h(px(24.))
-        .px(px(10.))
-        .rounded(px(4.))
+        .h(px(26.))
+        .px(px(12.))
+        .rounded(px(6.))
         .flex()
         .items_center()
         .justify_center()
         .border_1()
         .border_color(theme::control_border())
         .when(enabled, |d| d.hover(|d| d.bg(theme::button_hover())).active(|d| d.bg(theme::button_pressed())))
-        .when(!enabled, |d| d.text_color(theme::text_muted()))
+        .when(!enabled, |d| d.opacity(0.35))
         .child(label)
 }
 
@@ -653,15 +653,25 @@ impl NuGetView {
                     .items_center()
                     .gap(px(6.))
                     .rounded(px(4.))
+                    .bg(theme::search_field())
                     .border_1()
                     .border_color(theme::control_border())
                     .child(icon("search", 16.))
                     .child(div().flex_1().child(self.search.clone())),
             )
             .child(
-                button("nuget feed", feed, true)
+                div()
+                    .id("nuget feed")
                     .debug_selector(|| "nuget feed".into())
+                    .h(px(28.))
+                    .px(px(8.))
+                    .rounded(px(6.))
+                    .flex()
+                    .items_center()
                     .gap(px(4.))
+                    .hover(|d| d.bg(theme::button_hover()))
+                    .child(div().text_color(theme::text_muted()).child("Feed"))
+                    .child(feed)
                     .child(icon("chevron-down", 16.))
                     .children(self.choices(Popup::Feeds, cx))
                     .on_click(cx.listener(|v, _: &ClickEvent, _, cx| {
@@ -673,9 +683,13 @@ impl NuGetView {
                 div()
                     .id("nuget prerelease")
                     .debug_selector(|| "nuget prerelease".into())
+                    .h(px(28.))
+                    .px(px(6.))
+                    .rounded(px(6.))
+                    .hover(|d| d.bg(theme::button_hover()))
                     .flex()
                     .items_center()
-                    .gap(px(4.))
+                    .gap(px(6.))
                     .child(
                         div()
                             .size(px(16.))
@@ -700,24 +714,50 @@ impl NuGetView {
             .map(|(i, row)| {
                 let chosen = self.selected == Some(i);
                 let id = row.id.clone();
+                let vulnerable = !self.advisories(&row.id).is_empty();
+                let searching = !self.search.read(cx).text().trim().is_empty();
                 div()
                     .id(("nuget package", i))
                     .debug_selector(move || format!("nuget package: {id}"))
-                    .h(px(24.))
+                    .h(px(44.))
                     .px(px(8.))
                     .rounded(px(4.))
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(px(8.))
                     .when(chosen, |d| d.bg(theme::selection()))
                     .when(!chosen, |d| d.hover(|d| d.bg(theme::row_hover())))
                     .child(icon("package", 16.))
-                    .child(div().flex_1().truncate().child(row.id.clone()))
-                    .child(div().flex_none().text_color(theme::text_secondary()).child(row.version.clone()))
-                    .when(!self.advisories(&row.id).is_empty(), |d| d.child(icon("warning", 14.)))
-                    .when(row.installed && !self.search.read(cx).text().trim().is_empty(), |d| {
-                        d.child(icon("check", 14.))
-                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .child(div().flex_1().min_w_0().truncate().child(row.id.clone()))
+                                    .when(vulnerable, |d| d.child(icon("warning", 14.)))
+                                    .when(row.installed && searching, |d| d.child(icon("test-passed", 14.)))
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .when(vulnerable, |d| d.text_color(theme::warning()))
+                                            .when(!vulnerable, |d| d.text_color(theme::text_secondary()))
+                                            .child(row.version.clone()),
+                                    ),
+                            )
+                            .child(div().truncate().text_size(px(12.)).text_color(theme::text_secondary()).child(
+                                if row.description.is_empty() {
+                                    row.authors.clone()
+                                } else {
+                                    row.description.lines().next().unwrap_or_default().to_string()
+                                },
+                            )),
+                    )
                     .on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.select(Some(i), cx)))
             })
             .collect();
@@ -770,7 +810,10 @@ impl NuGetView {
                 let can = !self.busy && version.is_some();
                 let name = project.name.clone();
                 div()
-                    .h(px(30.))
+                    .h(px(32.))
+                    .px(px(6.))
+                    .rounded(px(4.))
+                    .hover(|d| d.bg(theme::row_hover()))
                     .flex()
                     .items_center()
                     .gap(px(8.))
@@ -787,6 +830,9 @@ impl NuGetView {
                     .map(|d| match &current {
                         None => d.child(
                             button(("nuget install", i), "Install", can)
+                                .when(can, |b| {
+                                    b.bg(theme::accent()).text_color(theme::on_accent()).border_color(theme::accent())
+                                })
                                 .debug_selector(move || format!("nuget install: {name}"))
                                 .when(can, |b| {
                                     b.on_click(cx.listener(move |v, _: &ClickEvent, _, cx| v.install(i, cx)))
@@ -819,7 +865,8 @@ impl NuGetView {
             .min_w_0()
             .min_h_0()
             .overflow_y_scroll()
-            .px(px(12.))
+            .px(px(14.))
+            .py(px(8.))
             .flex()
             .flex_col()
             .gap(px(6.))
@@ -862,12 +909,18 @@ impl NuGetView {
                     .child(div().truncate().text_color(theme::accent()).child(advisory.url.clone()))
                     .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| cx.open_url(&url)))
             }))
-            .when(!row.description.is_empty(), |d| d.child(div().child(row.description.clone())))
-            .when(!row.authors.is_empty(), |d| {
-                d.child(div().text_color(theme::text_secondary()).child(format!("by {}", row.authors)))
+            .when(!row.authors.is_empty() || !row.feeds.is_empty(), |d| {
+                let mut said = Vec::new();
+                if !row.authors.is_empty() {
+                    said.push(format!("by {}", row.authors));
+                }
+                if !row.feeds.is_empty() {
+                    said.push(format!("from {}", row.feeds.join(", ")));
+                }
+                d.child(div().pt(px(8.)).text_color(theme::text_secondary()).child(said.join(" · ")))
             })
-            .when(!row.feeds.is_empty(), |d| {
-                d.child(div().text_color(theme::text_secondary()).child(format!("From {}", row.feeds.join(", "))))
+            .when(!row.description.is_empty(), |d| {
+                d.child(div().text_color(theme::text_muted()).child(row.description.clone()))
             })
             .into_any_element()
     }
