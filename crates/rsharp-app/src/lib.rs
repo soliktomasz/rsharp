@@ -17,6 +17,7 @@ pub mod editor_area;
 pub mod editor_window;
 pub mod evaluate_dialog;
 pub mod field;
+pub mod file_structure;
 pub mod find_action;
 pub mod find_bar;
 pub mod fuzzy;

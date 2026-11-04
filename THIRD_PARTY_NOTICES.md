@@ -73,6 +73,9 @@ gpui brings about 550 crates of its own. Their notices are not yet written out: 
   The Unit Tests window's `test-passed`, `test-failed`, `test-ignored` and `test-not-run` are
   `expui/run/testPassed`, `testError` (Rider draws a failure red), `testIgnored` and `testNotRunYet` (`_dark`); `expand-all` and `collapse-all` are
   `expui/general/expandAll_dark.svg` and `collapseAll_dark.svg`, all from `lib/intellij.platform.ide.jar`.
+  File Structure's `node-class`, `node-interface`, `node-enum`, `node-method`, `node-property`, `node-field`,
+  `node-constant` and `node-constructor` are `expui/nodes/class`, `interface`, `enum`, `method`, `property`, `field`,
+  `constant` and `constructor` (`_dark`), from `lib/intellij.platform.ide.jar`.
   The Debug window's `debug-resume`, `debug-pause`, `debug-step-over`, `debug-step-into`, `debug-step-out` and
   `debug-mute` are `expui/run/resume`, `pause`, `stepOver`, `stepInto`, `stepOut` and `muteBreakpoints` (`_dark`);
   the stripe's `tw-debug`, `tw-commit`, `tw-git`, `tw-profiler` and `tw-hierarchy` are `expui/toolwindows/debug`,

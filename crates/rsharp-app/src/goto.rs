@@ -39,6 +39,8 @@ pub enum Kind {
     FindInFiles,
     /// Find in Files with a replacement and Replace All.
     ReplaceInFiles,
+    /// File Structure: the shown file's outline, given whole, filtered as typed with each match's containers kept.
+    FileStructure,
 }
 
 impl Kind {
@@ -51,6 +53,7 @@ impl Kind {
             Kind::Everything => "Search everywhere",
             Kind::RecentLocations => "Recent locations",
             Kind::FindInFiles | Kind::ReplaceInFiles => "Find in files",
+            Kind::FileStructure => "Filter by name",
         }
     }
 
@@ -73,12 +76,16 @@ pub enum Scope {
 
 /// A place listed: what it is called, what is beside it (its folder, its container, its line), and where it is (a
 /// line and UTF-16 column, from 0, or none for a file).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Place {
     pub name: String,
     pub detail: String,
     pub path: PathBuf,
     pub at: Option<(usize, usize)>,
+    /// File Structure's indent, a level per container.
+    pub depth: usize,
+    /// The icon in place of the file's: a symbol's kind.
+    pub icon: Option<&'static str>,
 }
 
 pub enum Ended {
@@ -101,6 +108,12 @@ pub struct Given {
     pub open: HashMap<PathBuf, String>,
     pub here: Option<PathBuf>,
     pub server: Option<Arc<LanguageServer>>,
+    /// The title above the field (File Structure's, naming the file).
+    pub title: Option<String>,
+    /// File Structure's outline of `here_file`, and the line the caret is on, whose innermost symbol it opens on.
+    pub outline: Vec<crate::file_structure::OutlineRow>,
+    pub here_file: Option<PathBuf>,
+    pub caret_line: Option<usize>,
 }
 
 pub struct GoToPopup {
@@ -119,6 +132,9 @@ pub struct GoToPopup {
     /// Recent Locations' places, the latest first.
     given: Vec<Place>,
     server: Option<Arc<LanguageServer>>,
+    title: Option<String>,
+    outline: Vec<crate::file_structure::OutlineRow>,
+    here_file: PathBuf,
     places: Vec<Place>,
     selected: usize,
     asking: Option<Task<()>>,
@@ -151,6 +167,9 @@ impl GoToPopup {
             open: Arc::new(given.open),
             given: given.places,
             server: given.server,
+            title: given.title,
+            outline: given.outline,
+            here_file: given.here_file.unwrap_or_default(),
             places: Vec::new(),
             selected: 0,
             asking: None,
@@ -168,7 +187,23 @@ impl GoToPopup {
         } else {
             popup.query_changed(cx);
         }
+        // Rider's File Structure opens on the innermost symbol the caret is in.
+        if let Some(line) = given.caret_line.filter(|_| kind == Kind::FileStructure) {
+            let inside =
+                |row: &crate::file_structure::OutlineRow| row.range.start.line <= line && line <= row.range.end.line;
+            popup.selected = popup.outline.iter().rposition(inside).unwrap_or(0);
+        }
         popup
+    }
+
+    /// The title over the field, when the popup has one.
+    pub fn title(&self) -> Option<String> {
+        self.title.clone()
+    }
+
+    /// The name of the row Enter would go to.
+    pub fn chosen_name(&self) -> Option<String> {
+        self.places.get(self.selected).map(|place| place.name.clone())
     }
 
     /// What the popup lists, as "name detail", as a person reads it.
@@ -197,7 +232,7 @@ impl GoToPopup {
 
     fn file_place(&self, path: &Path) -> Place {
         let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        Place { name, detail: self.relative(path), path: path.to_path_buf(), at: None }
+        Place { name, detail: self.relative(path), path: path.to_path_buf(), ..Default::default() }
     }
 
     /// The files whose names fit the query, best first; with `keep_order` the given order (the latest first) kept for
@@ -233,6 +268,33 @@ impl GoToPopup {
         let query = self.field.read(cx).text();
         self.selected = 0;
         match self.kind {
+            Kind::FileStructure => {
+                let kept = crate::file_structure::filter(&self.outline, &query);
+                self.places = kept
+                    .iter()
+                    .map(|&i| {
+                        let row = &self.outline[i];
+                        let (name, kind) = row.label();
+                        Place {
+                            name: name.to_string(),
+                            detail: kind.to_string(),
+                            path: self.here_file.clone(),
+                            at: Some((row.selection.start.line, row.selection.start.character)),
+                            depth: row.depth,
+                            icon: Some(crate::file_structure::kind_icon(row.kind)),
+                            ..Default::default()
+                        }
+                    })
+                    .collect();
+                // The first row that matches itself, not one kept as a match's container.
+                let lowered = query.trim().to_lowercase();
+                self.selected = self
+                    .places
+                    .iter()
+                    .position(|p| lowered.is_empty() || p.name.to_lowercase().contains(&lowered))
+                    .or_else(|| self.places.iter().position(|p| fuzzy::score(query.trim(), &p.name).is_some()))
+                    .unwrap_or(0);
+            }
             Kind::File => self.places = self.files_matching(&query, false),
             Kind::RecentFiles => self.places = self.files_matching(&query, true),
             Kind::RecentLocations => {
@@ -272,7 +334,13 @@ impl GoToPopup {
                                 let detail =
                                     if s.container.is_empty() { file } else { format!("{} ({file})", s.container) };
                                 let at = (s.location.span.start.line, s.location.span.start.character);
-                                let place = Place { name: s.name, detail, path: s.location.path, at: Some(at) };
+                                let place = Place {
+                                    name: s.name,
+                                    detail,
+                                    path: s.location.path,
+                                    at: Some(at),
+                                    ..Default::default()
+                                };
                                 Some((score, TYPE_KINDS.contains(&s.kind), place))
                             })
                             .collect();
@@ -303,7 +371,13 @@ impl GoToPopup {
                             .map(|h| {
                                 let file = h.path.file_name().unwrap_or_default().to_string_lossy().into_owned();
                                 let detail = format!("{file}:{}", h.line + 1);
-                                Place { name: h.text, detail, path: h.path, at: Some((h.line, h.column)) }
+                                Place {
+                                    name: h.text,
+                                    detail,
+                                    path: h.path,
+                                    at: Some((h.line, h.column)),
+                                    ..Default::default()
+                                }
                             })
                             .collect();
                         popup.selected = 0;
@@ -365,14 +439,15 @@ impl Render for GoToPopup {
                     .debug_selector(move || format!("go to: {row}"))
                     .h(px(ROW_HEIGHT))
                     .mx(px(6.))
-                    .px(px(8.))
+                    .pl(px(8. + place.depth as f32 * 18.))
+                    .pr(px(8.))
                     .rounded(px(4.))
                     .flex()
                     .items_center()
                     .gap(px(8.))
                     .when(row == self.selected, |d| d.bg(theme::selection()))
                     .when(row != self.selected, |d| d.hover(|d| d.bg(theme::row_hover())))
-                    .child(icon(file_icon(&place.path.to_string_lossy()), 16.))
+                    .child(icon(place.icon.unwrap_or_else(|| file_icon(&place.path.to_string_lossy())), 16.))
                     .child(
                         div()
                             .flex_1()
@@ -485,6 +560,9 @@ impl Render for GoToPopup {
                 p.choose(s, cx)
             }))
             .on_action(cx.listener(|_, _: &Dismiss, _, cx| cx.emit(Ended::Dismissed)))
+            .children(self.title.clone().map(|title| {
+                div().h(px(32.)).px(px(14.)).flex().items_center().font_weight(gpui::FontWeight::SEMIBOLD).child(title)
+            }))
             .child(
                 div()
                     .h(px(40.))

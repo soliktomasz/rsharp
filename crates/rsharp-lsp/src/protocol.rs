@@ -159,11 +159,17 @@ pub fn hierarchy_items(answer: &Value) -> Vec<HierarchyItem> {
 /// A document's symbols, each with its depth in the outline, as a hierarchical answer nests them (or a flat one lists
 /// them, at depth 0): its name, its kind and where its name is.
 pub fn outline(answer: &Value) -> Vec<(usize, String, u64, Span)> {
-    fn walk(items: &Value, depth: usize, out: &mut Vec<(usize, String, u64, Span)>) {
+    outline_spans(answer).into_iter().map(|(depth, name, kind, _, at)| (depth, name, kind, at)).collect()
+}
+
+/// `outline` with all each symbol spans before where its name is, so the symbol a place is inside can be found.
+pub fn outline_spans(answer: &Value) -> Vec<(usize, String, u64, Span, Span)> {
+    fn walk(items: &Value, depth: usize, out: &mut Vec<(usize, String, u64, Span, Span)>) {
         for item in items.as_array().into_iter().flatten() {
             let Some(name) = item["name"].as_str() else { continue };
-            let at = item.get("selectionRange").or(item["location"].get("range")).map(Span::from).unwrap_or_default();
-            out.push((depth, name.to_string(), item["kind"].as_u64().unwrap_or(0), at));
+            let range = item.get("range").or(item["location"].get("range")).map(Span::from).unwrap_or_default();
+            let at = item.get("selectionRange").map(Span::from).unwrap_or(range);
+            out.push((depth, name.to_string(), item["kind"].as_u64().unwrap_or(0), range, at));
             walk(&item["children"], depth + 1, out);
         }
     }

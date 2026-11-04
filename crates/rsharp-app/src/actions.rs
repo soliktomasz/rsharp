@@ -31,7 +31,9 @@ use crate::window::{
     SetNextStatement, ShowBreakpoints, SmartStepInto, StepInto, StepOut, StepOver, Stop, StopDebug, ToggleBreakpoint,
     ToggleBuild, ToggleDebug, ToggleRun,
 };
-use crate::window::{Back, FindInFiles, Forward, GoToFile, GoToSymbol, GoToType, LastEditLocation, RecentFiles};
+use crate::window::{
+    Back, FileStructure, FindInFiles, Forward, GoToFile, GoToSymbol, GoToType, LastEditLocation, RecentFiles,
+};
 use crate::window::{
     CloseAllButPinned, CloseAllTabs, CloseOtherTabs, CloseTabsToLeft, CloseTabsToRight, FileEncoding, LineSeparators,
     OpenTabInNewWindow, PinTab, ReopenClosedTab, ShowHistory, SplitDown, SplitRight, Unsplit, UnsplitAll,
@@ -169,6 +171,7 @@ pub static ALL: &[IdeAction] = &[
     ide!("File…", "Navigate", ["go to file", "open file", "find file"], GoToFile),
     ide!("Class…", "Navigate", ["go to type", "go to class", "find type"], GoToType),
     ide!("Symbol…", "Navigate", ["go to symbol", "go to member", "find symbol"], GoToSymbol),
+    ide!("File Structure", "Navigate", ["structure", "outline", "members of file"], FileStructure),
     ide!("Find in Files…", "Edit", ["search in files", "find in path", "grep"], FindInFiles),
     ide!("Replace in Files…", "Edit", ["replace in path", "find and replace in files"], ReplaceInFiles),
     ide!("Search Everywhere", "Navigate", ["go to everything", "search all"], SearchEverywhere),

@@ -130,6 +130,7 @@ actions!(
         GoToFile,
         GoToType,
         GoToSymbol,
+        FileStructure,
         FindInFiles,
         SearchEverywhere,
         RecentLocations,
@@ -1392,7 +1393,7 @@ impl MainWindow {
 
     /// Opens a Go to popup over the window: the files it looks among, the open files' text and the server given it.
     fn open_go_to(&mut self, kind: crate::goto::Kind, window: &mut Window, cx: &mut Context<Self>) {
-        use crate::goto::{Ended, Given, GoToPopup, Kind};
+        use crate::goto::{Given, Kind};
         let Some(folder) = self.folder().map(Path::to_path_buf) else { return };
         let shown = self.active_editor().map(|e| e.read(cx).path.clone());
         let mut given = Given { server: self.server.clone(), ..Default::default() };
@@ -1414,6 +1415,18 @@ impl MainWindow {
             }
             _ => {}
         }
+        self.show_go_to(kind, folder, given, window, cx);
+    }
+
+    fn show_go_to(
+        &mut self,
+        kind: crate::goto::Kind,
+        folder: PathBuf,
+        given: crate::goto::Given,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::goto::{Ended, GoToPopup};
         let before = window.focused(cx);
         let popup = cx.new(|cx| GoToPopup::new(kind, folder, given, cx));
         cx.subscribe_in(&popup, window, move |w, _, ended: &Ended, window, cx| {
@@ -1445,6 +1458,67 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// File Structure (Alt+\\): the shown C# file's outline from Roslyn, opened on the symbol the caret is in, as
+    /// Passenger's Navigator.ShowFileStructure.
+    fn open_file_structure(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(folder) = self.folder().map(Path::to_path_buf) else { return };
+        let Some(editor) = self.active_editor() else { return };
+        let (path, caret_line) = {
+            let editor = editor.read(cx);
+            (editor.buffer.read(cx).path.clone(), editor.caret().line)
+        };
+        let Some(server) = self.server.clone() else {
+            self.said = Some("File Structure needs Roslyn, which is not running".into());
+            cx.notify();
+            return;
+        };
+        if !self.server_ready() {
+            self.said = Some("File Structure needs Roslyn, which is still loading".into());
+            cx.notify();
+            return;
+        }
+        let uri = rsharp_core::paths::to_uri(&path);
+        let answer = crate::language::ask(
+            &server,
+            "textDocument/documentSymbol",
+            serde_json::json!({ "textDocument": { "uri": uri } }),
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            let answer = answer.await;
+            let _ = this.update_in(cx, |w, window, cx| {
+                let outline: Vec<_> = answer
+                    .as_ref()
+                    .map(rsharp_lsp::outline_spans)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(depth, name, kind, range, selection)| crate::file_structure::OutlineRow {
+                        depth,
+                        name,
+                        kind,
+                        range,
+                        selection,
+                    })
+                    .collect();
+                if outline.is_empty() {
+                    w.said = Some("File Structure found no types or members in this file".into());
+                    cx.notify();
+                    return;
+                }
+                let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                let given = crate::goto::Given {
+                    title: Some(format!("File Structure: {name}")),
+                    outline,
+                    here_file: Some(path.clone()),
+                    caret_line: Some(caret_line),
+                    ..Default::default()
+                };
+                w.show_go_to(crate::goto::Kind::FileStructure, folder, given, window, cx);
+            });
+        })
+        .detach();
+    }
+
     /// Recent Locations' places: those left and edited, the latest first, one for each stretch of a file, each with its
     /// line's text.
     fn recent_locations(&self, cx: &App) -> Vec<crate::goto::Place> {
@@ -1471,6 +1545,7 @@ impl MainWindow {
                     detail: format!("{file}:{}", s.line + 1),
                     path: s.path.clone(),
                     at: Some((s.line, s.column)),
+                    ..Default::default()
                 }
             })
             .collect()
@@ -2120,6 +2195,12 @@ impl MainWindow {
     }
 
     /// Whether Roslyn has said the solution's projects are loaded.
+    /// The shown editor holds a C# file, which File Structure and the C# actions need.
+    fn shows_csharp(&self, cx: &App) -> bool {
+        self.active_editor()
+            .is_some_and(|e| e.read(cx).buffer.read(cx).grammar == Some(rsharp_languages::Grammar::CSharp))
+    }
+
     pub fn server_ready(&self) -> bool {
         matches!(self.server_state, ServerState::Ready)
     }
@@ -2361,6 +2442,9 @@ impl Render for MainWindow {
                 d.on_action(cx.listener(|w, _: &GoToFile, window, cx| w.open_go_to(Kind::File, window, cx)))
                     .on_action(cx.listener(|w, _: &GoToType, window, cx| w.open_go_to(Kind::Type, window, cx)))
                     .on_action(cx.listener(|w, _: &GoToSymbol, window, cx| w.open_go_to(Kind::Symbol, window, cx)))
+                    .when(self.shows_csharp(cx), |d| {
+                        d.on_action(cx.listener(|w, _: &FileStructure, window, cx| w.open_file_structure(window, cx)))
+                    })
                     .on_action(
                         cx.listener(|w, _: &FindInFiles, window, cx| w.open_go_to(Kind::FindInFiles, window, cx)),
                     )

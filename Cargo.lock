@@ -4779,6 +4779,7 @@ dependencies = [
  "futures",
  "gpui",
  "image",
+ "libc",
  "log",
  "regex",
  "rsharp-core",
