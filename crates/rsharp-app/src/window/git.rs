@@ -432,7 +432,7 @@ impl MainWindow {
         self.run_git(request, cx);
     }
 
-    fn run_git(&mut self, request: GitRequest, cx: &mut Context<Self>) {
+    pub(super) fn run_git(&mut self, request: GitRequest, cx: &mut Context<Self>) {
         if self.git.busy {
             self.git_problem(Some("A Git operation is already running".into()), cx);
             return;

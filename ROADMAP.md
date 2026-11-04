@@ -585,8 +585,9 @@ sets; no label), and the language tools from the window's own Roslyn over its ed
 and log message, `breakpoint_remove`, `breakpoints`, `debug_start`, `debug_processes`, `debug_attach`, `debug_detach`,
 `debug_stop`, `debug_state`, `debug_variables`, `debug_continue`, `debug_step`, `debug_pause`, `debug_set_next_statement`,
 `debug_evaluate`, `debug_set_value`, `debug_input`, `debug_output`; each that moves the program answers where it stopped)
-so far. Not yet: the rest of
-Passenger's tools (`debug_run_to`, the web, XAML and MSBuild languages' own
+and Git and NuGet (`vcs_status`, `vcs_diff`, `vcs_log`, `vcs_commit`, `vcs_checkout` with create, `vcs_resolve` by side,
+continue or abort; `nuget_search`, `nuget_install`, `nuget_remove`) so far. Not yet: the rest of
+Passenger's tools (`vcs_stash`, `debug_run_to`, the web, XAML and MSBuild languages' own
 answers, refactor, build, run and tests; debug, VCS, NuGet, terminal, profile, hot reload; the app tools through the
 window), the admission dialog with Always for a folder, starting RSharp when no window has the folder, and the
 setup commands on the Settings page. The hand-written JSON-RPC stays: `rmcp` is not needed for tools alone.

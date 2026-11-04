@@ -138,6 +138,7 @@ actions!(
 pub mod agent;
 mod agent_language;
 mod agent_tools;
+mod agent_vcs;
 mod build;
 mod debug;
 mod file_moves;

@@ -2,6 +2,7 @@
 //! on its standard input and output, with Roslyn on the folder behind its tools, so an agent sees the C# as the IDE
 //! does: its problems, its symbols, an outline, usages, a rename across files, and an edit checked as it lands. No UI.
 //! A place is a file with a line and column (from 1, as a person counts them), or a symbol's name.
+#![recursion_limit = "1024"]
 
 mod agents;
 mod app;
@@ -204,6 +205,37 @@ fn window_tools() -> Value {
         { "name": "debug_output", "annotations": { "readOnlyHint": true },
           "description": "The Debug console's last lines (200 by default): the program's output and the debugger's messages.",
           "inputSchema": { "type": "object", "properties": { "lines": { "type": "integer" } } } },
+        { "name": "vcs_status", "annotations": { "readOnlyHint": true },
+          "description": "The Git repository's branch, HEAD, any merge or rebase under way, and each changed file with its kind and its index and worktree letters.",
+          "inputSchema": { "type": "object", "properties": {} } },
+        { "name": "vcs_diff", "annotations": { "readOnlyHint": true },
+          "description": "A file's changes from HEAD, as the editor has the file: changed lines marked - and +, with two lines around each, numbered by the new text.",
+          "inputSchema": { "type": "object", "properties": { "file": { "type": "string" } }, "required": ["file"] } },
+        { "name": "vcs_log", "annotations": { "readOnlyHint": true },
+          "description": "The latest commits (20 by default, 200 at most), or one file's history: hash, author, time, refs and subject.",
+          "inputSchema": { "type": "object", "properties": { "limit": { "type": "integer" }, "file": { "type": "string" } } } },
+        { "name": "vcs_commit", "annotations": { "readOnlyHint": false, "destructiveHint": true },
+          "description": "Commits files (every changed tracked file by default) with a message, saving open files first; amend rewrites the last commit, push pushes after.",
+          "inputSchema": { "type": "object", "properties": {
+              "message": { "type": "string" }, "files": { "type": "array", "items": { "type": "string" } },
+              "amend": { "type": "boolean" }, "push": { "type": "boolean" } }, "required": ["message"] } },
+        { "name": "vcs_checkout", "annotations": { "readOnlyHint": false, "destructiveHint": true },
+          "description": "Checks out a branch (a full ref for a remote branch or a tag), or with create makes a new one from `from` (HEAD by default).",
+          "inputSchema": { "type": "object", "properties": {
+              "branch": { "type": "string" }, "create": { "type": "boolean" }, "from": { "type": "string" } }, "required": ["branch"] } },
+        { "name": "vcs_resolve", "annotations": { "readOnlyHint": false, "destructiveHint": true },
+          "description": "Settles a merge or rebase: a conflicted file by taking side yours or theirs whole, then action continue; or action abort.",
+          "inputSchema": { "type": "object", "properties": {
+              "file": { "type": "string" }, "side": { "type": "string" }, "action": { "type": "string" } } } },
+        { "name": "nuget_search", "annotations": { "readOnlyHint": true },
+          "description": "Packages on the folder's enabled NuGet sources matching a query: id, newest version, description, authors and feeds.",
+          "inputSchema": { "type": "object", "properties": { "query": { "type": "string" }, "prerelease": { "type": "boolean" } }, "required": ["query"] } },
+        { "name": "nuget_install", "annotations": { "readOnlyHint": false, "destructiveHint": true },
+          "description": "Adds a package at a version to a project (or moves it to that version) as `dotnet add package` does, saving the files it may write first. Answers the files that changed.",
+          "inputSchema": { "type": "object", "properties": { "project": { "type": "string" }, "package": { "type": "string" }, "version": { "type": "string" } }, "required": ["project", "package", "version"] } },
+        { "name": "nuget_remove", "annotations": { "readOnlyHint": false, "destructiveHint": true },
+          "description": "Removes a package from a project as `dotnet remove package` does. Answers the files that changed.",
+          "inputSchema": { "type": "object", "properties": { "project": { "type": "string" }, "package": { "type": "string" } }, "required": ["project", "package"] } },
         { "name": "editor_text", "annotations": { "readOnlyHint": true },
           "description": "A file's text as the editor has it (unsaved changes included), its lines numbered from 1, from and to being lines.",
           "inputSchema": { "type": "object", "properties": {
