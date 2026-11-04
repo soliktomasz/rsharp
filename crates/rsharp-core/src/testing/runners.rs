@@ -91,6 +91,27 @@ impl TestRunners {
     }
 
     pub fn run(&mut self, tests: &[TestItem], cancel: &AtomicBool, event: Events<'_>) -> Result<RunSummary, String> {
+        self.run_with(tests, cancel, event, None)
+    }
+
+    /// Debug Selected Tests: each host is handed to `debug` before its tests run.
+    pub fn run_debugged(
+        &mut self,
+        tests: &[TestItem],
+        cancel: &AtomicBool,
+        event: Events<'_>,
+        debug: DebugHook<'_>,
+    ) -> Result<RunSummary, String> {
+        self.run_with(tests, cancel, event, Some(debug))
+    }
+
+    fn run_with(
+        &mut self,
+        tests: &[TestItem],
+        cancel: &AtomicBool,
+        event: Events<'_>,
+        mut debug: Option<DebugHook<'_>>,
+    ) -> Result<RunSummary, String> {
         let mut groups: Vec<(TestAssembly, bool, Vec<(TestItem, Value)>)> = Vec::new();
         let mut seen = HashSet::new();
         for test in tests {
@@ -113,9 +134,23 @@ impl TestRunners {
                 break;
             }
             let part = if platform {
-                super::platform::run(&self.dotnet, &assembly, &tests, cancel, event)
+                super::platform::run(
+                    &self.dotnet,
+                    &assembly,
+                    &tests,
+                    cancel,
+                    event,
+                    debug.as_mut().map(|d| &mut **d as DebugHook<'_>),
+                )
             } else {
-                super::vstest::run(&self.dotnet, &self.folder, &tests, cancel, event)
+                super::vstest::run(
+                    &self.dotnet,
+                    &self.folder,
+                    &tests,
+                    cancel,
+                    event,
+                    debug.as_mut().map(|d| &mut **d as DebugHook<'_>),
+                )
             };
             summary.elapsed += part.elapsed;
             summary.canceled |= part.canceled;

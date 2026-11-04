@@ -122,6 +122,25 @@ pub struct RunSummary {
 
 type Events<'a> = &'a mut dyn FnMut(TestEvent);
 
+/// What Debug Selected Tests hands the debugger before any test runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DebugTarget {
+    /// A test host the runner would have started (MTP's test app, VSTest's testhost), started by the debugger instead;
+    /// it connects back to the runner.
+    Launch {
+        program: PathBuf,
+        arguments: Vec<String>,
+        working_directory: PathBuf,
+        environment: std::collections::BTreeMap<String, String>,
+    },
+    /// A process the runner started itself and waits on until a debugger is attached.
+    Attach { process_id: u32 },
+}
+
+/// Returns the debugged process's id once the debugger has started or attached to it, as Passenger's
+/// `ITestDebugLauncher` does; an error ends the run with that reason.
+pub type DebugHook<'a> = &'a mut dyn FnMut(DebugTarget) -> Result<u32, String>;
+
 fn canceled(cancel: &AtomicBool) -> bool {
     cancel.load(std::sync::atomic::Ordering::Relaxed)
 }

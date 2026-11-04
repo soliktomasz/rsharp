@@ -165,22 +165,46 @@ pub(super) fn outcome(mut test: TestItem, node: &Value) -> Option<TestOutcome> {
     })
 }
 
-fn start(dotnet: &Path, assembly: &TestAssembly, cancel: &AtomicBool) -> Result<Host, String> {
-    let mut host = Host::start(Encoding::Platform, cancel, |port| {
-        crate::dotnet::command(
-            dotnet,
-            [
-                "exec".to_string(),
-                assembly.path.to_string_lossy().into_owned(),
-                "--server".into(),
-                "--client-host".into(),
-                "127.0.0.1".into(),
-                "--client-port".into(),
-                port.to_string(),
-            ],
-            assembly.path.parent().unwrap_or(Path::new(".")),
-        )
-    })?;
+/// The test app's server mode, connecting back to the runner's port.
+fn server_arguments(port: u16) -> Vec<String> {
+    ["--server", "--client-host", "127.0.0.1", "--client-port"]
+        .map(String::from)
+        .into_iter()
+        .chain([port.to_string()])
+        .collect()
+}
+
+fn start(
+    dotnet: &Path,
+    assembly: &TestAssembly,
+    cancel: &AtomicBool,
+    debug: Option<DebugHook<'_>>,
+) -> Result<Host, String> {
+    let folder = assembly.path.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let mut host = match debug {
+        None => Host::start(Encoding::Platform, cancel, |port| {
+            crate::dotnet::command(
+                dotnet,
+                ["exec".to_string(), assembly.path.to_string_lossy().into_owned()]
+                    .into_iter()
+                    .chain(server_arguments(port)),
+                &folder,
+            )
+        })?,
+        // The same `dotnet exec` the runner would start, as Passenger's Host.StartAsync hands its debugger.
+        Some(debug) => Host::start_external(Encoding::Platform, cancel, |port| {
+            debug(DebugTarget::Launch {
+                program: dotnet.to_path_buf(),
+                arguments: ["exec".to_string(), assembly.path.to_string_lossy().into_owned()]
+                    .into_iter()
+                    .chain(server_arguments(port))
+                    .collect(),
+                working_directory: folder.clone(),
+                environment: Default::default(),
+            })
+            .map(drop)
+        })?,
+    };
     host.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":std::process::id(),"clientInfo":{"name":"RSharp","version":env!("CARGO_PKG_VERSION")},"capabilities":{"testing":{"debuggerProvider":false,"isStateful":true}}}}))?;
     let began = Instant::now();
     loop {
@@ -221,8 +245,9 @@ fn request(
     cancel: &AtomicBool,
     event: Events<'_>,
     changed: &mut dyn FnMut(&Value),
+    debug: Option<DebugHook<'_>>,
 ) -> Result<bool, String> {
-    let mut host = start(dotnet, assembly, cancel)?;
+    let mut host = start(dotnet, assembly, cancel, debug)?;
     let run_id = format!("{:08x}-0000-4000-8000-{:012x}", std::process::id(), super::runners::next_request());
     parameters["runId"] = json!(run_id);
     host.send(&json!({"jsonrpc":"2.0","id":2,"method":method,"params":parameters}))?;
@@ -290,11 +315,20 @@ pub(super) fn discover(
     event: Events<'_>,
 ) -> Result<Vec<(TestItem, Value)>, String> {
     let mut nodes = Vec::new();
-    let complete = request(dotnet, assembly, "testing/discoverTests", json!({}), cancel, event, &mut |node| {
-        if let Some(test) = item(assembly, node) {
-            nodes.push((test, node.clone()));
-        }
-    })?;
+    let complete = request(
+        dotnet,
+        assembly,
+        "testing/discoverTests",
+        json!({}),
+        cancel,
+        event,
+        &mut |node| {
+            if let Some(test) = item(assembly, node) {
+                nodes.push((test, node.clone()));
+            }
+        },
+        None,
+    )?;
     if !complete {
         return Err("Test discovery stopped".into());
     }
@@ -307,6 +341,7 @@ pub(super) fn run(
     tests: &[(TestItem, Value)],
     cancel: &AtomicBool,
     event: Events<'_>,
+    debug: Option<DebugHook<'_>>,
 ) -> RunSummary {
     let began = Instant::now();
     let selected: Vec<_> =
@@ -330,6 +365,7 @@ pub(super) fn run(
                 outcomes.push(result);
             }
         },
+        debug,
     );
     let error = result.as_ref().err().cloned().filter(|_| !canceled(cancel));
     RunSummary {

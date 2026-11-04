@@ -228,12 +228,46 @@ pub(super) fn discover(
     Ok(found)
 }
 
+/// What a debugged run asks of the editor, and the message that answers it: the testhost to start under the debugger
+/// (`CustomTestHostLaunch`), or one VSTest started to attach to (`EditorAttachDebugger2`, or the older bare id).
+fn debug_request(message: &Value) -> Option<(DebugTarget, &'static str)> {
+    let payload = &message["Payload"];
+    let attach = |pid: Option<u64>| {
+        Some((
+            DebugTarget::Attach { process_id: u32::try_from(pid?).ok()? },
+            "TestExecution.EditorAttachDebuggerCallback",
+        ))
+    };
+    match text(message, "MessageType")? {
+        "TestExecution.CustomTestHostLaunch" => Some((
+            DebugTarget::Launch {
+                program: PathBuf::from(text(payload, "FileName")?),
+                arguments: crate::run::command_line::split(text(payload, "Arguments").unwrap_or_default()),
+                working_directory: PathBuf::from(text(payload, "WorkingDirectory").unwrap_or(".")),
+                environment: payload["EnvironmentVariables"]
+                    .as_object()
+                    .map(|variables| {
+                        variables.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect()
+                    })
+                    .unwrap_or_default(),
+            },
+            "TestExecution.CustomTestHostLaunchCallback",
+        )),
+        "TestExecution.EditorAttachDebugger2" => {
+            attach(payload.get("ProcessID").or_else(|| payload.get("ProcessId")).and_then(Value::as_u64))
+        }
+        "TestExecution.EditorAttachDebugger" => attach(payload.as_u64()),
+        _ => None,
+    }
+}
+
 pub(super) fn run(
     dotnet: &Path,
     folder: &Path,
     tests: &[(TestItem, Value)],
     cancel: &AtomicBool,
     event: Events<'_>,
+    mut debug: Option<DebugHook<'_>>,
 ) -> RunSummary {
     let began = Instant::now();
     let mut outcomes = Vec::new();
@@ -241,13 +275,19 @@ pub(super) fn run(
     let mut run_canceled = false;
     let mut aborted = false;
     let mut error = None;
+    let mut refused = None;
     let result = (|| -> Result<(), String> {
         let mut host = start(dotnet, folder, cancel)?;
         let cases: Vec<_> = tests.iter().map(|(_, case)| case.clone()).collect();
+        // Debugging, VSTest hands over the testhost it would start (its custom host), as Passenger's DebugLauncher takes it.
         send(
             &mut host,
-            "TestExecution.RunAllWithDefaultHost",
-            json!({"TestCases":cases,"RunSettings":SETTINGS,"TestPlatformOptions":{}}),
+            if debug.is_some() {
+                "TestExecution.GetTestRunnerProcessStartInfoForRunSelected"
+            } else {
+                "TestExecution.RunAllWithDefaultHost"
+            },
+            json!({"TestCases":cases,"RunSettings":SETTINGS,"TestPlatformOptions":{},"DebuggingEnabled":debug.is_some()}),
         )?;
         let mut stopped = None;
         loop {
@@ -261,6 +301,28 @@ pub(super) fn run(
             }
             if let Some(message) = host.receive()? {
                 log(&message, event);
+                if let Some((target, callback)) = debug_request(&message) {
+                    let answer = match debug.as_mut() {
+                        Some(debug) => debug(target),
+                        None => Err("This run was not started for debugging".into()),
+                    };
+                    let error = answer.as_ref().err();
+                    let reply = if callback == "TestExecution.CustomTestHostLaunchCallback" {
+                        json!({"HostProcessId":answer.as_ref().map_or(-1, |pid| i64::from(*pid)),"ErrorMessage":error})
+                    } else {
+                        json!({"Attached":answer.is_ok(),"ErrorMessage":error})
+                    };
+                    send(&mut host, callback, reply)?;
+                    if let Err(why) = answer {
+                        // No test runs without the debugger the person asked for.
+                        refused = Some(why);
+                        if stopped.is_none() {
+                            send(&mut host, "TestExecution.Cancel", Value::Null)?;
+                            stopped = Some(Instant::now());
+                        }
+                    }
+                    continue;
+                }
                 let payload = &message["Payload"];
                 let kind = text(&message, "MessageType");
                 let changed = if kind == Some("TestExecution.Completed") { &payload["LastRunTests"] } else { payload };
@@ -298,6 +360,10 @@ pub(super) fn run(
     {
         aborted = true;
         error = Some(failure);
+    }
+    if let Some(why) = refused {
+        aborted = true;
+        error = Some(why);
     }
     RunSummary { elapsed: began.elapsed(), canceled: run_canceled || canceled(cancel), aborted, error, outcomes }
 }

@@ -110,7 +110,8 @@ fn decode(encoding: Encoding, buffer: &mut Vec<u8>) -> Result<Option<Value>, Str
 
 /// One request's process and socket. Its bounded reads let Stop work even halfway through a message.
 pub(super) struct Host {
-    child: crate::process::Child,
+    /// None when the debugger started the host: its session owns the program and ends it.
+    child: Option<crate::process::Child>,
     stream: TcpStream,
     buffer: Vec<u8>,
     encoding: Encoding,
@@ -124,22 +125,55 @@ impl Host {
         cancel: &AtomicBool,
         command: impl FnOnce(u16) -> Command,
     ) -> Result<Self, String> {
+        Self::listen(encoding, cancel, |port| {
+            let mut command = command(port);
+            command
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            let mut child =
+                crate::process::spawn(command).map_err(|e| format!("The test host could not start: {e}"))?;
+            let written = Arc::new(Mutex::new(Vec::new()));
+            let readers = vec![
+                drain(child.process.stdout.take().unwrap(), written.clone()),
+                drain(child.process.stderr.take().unwrap(), written.clone()),
+            ];
+            Ok((Some(child), written, readers))
+        })
+    }
+
+    /// A host something else starts (the debugger, given the port to connect back to).
+    pub fn start_external(
+        encoding: Encoding,
+        cancel: &AtomicBool,
+        launch: impl FnOnce(u16) -> Result<(), String>,
+    ) -> Result<Self, String> {
+        Self::listen(encoding, cancel, |port| {
+            launch(port)?;
+            Ok((None, Arc::new(Mutex::new(Vec::new())), Vec::new()))
+        })
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn listen(
+        encoding: Encoding,
+        cancel: &AtomicBool,
+        begin: impl FnOnce(u16) -> Result<(Option<crate::process::Child>, Arc<Mutex<Vec<u8>>>, Vec<JoinHandle<()>>), String>,
+    ) -> Result<Self, String> {
         if canceled(cancel) {
             return Err("Test request stopped".into());
         }
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).map_err(|e| e.to_string())?;
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
-        let mut command = command(listener.local_addr().map_err(|e| e.to_string())?.port());
-        command
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        let mut child = crate::process::spawn(command).map_err(|e| format!("The test host could not start: {e}"))?;
-        let written = Arc::new(Mutex::new(Vec::new()));
-        let readers = vec![
-            drain(child.process.stdout.take().unwrap(), written.clone()),
-            drain(child.process.stderr.take().unwrap(), written.clone()),
-        ];
+        let (mut child, written, readers) = begin(listener.local_addr().map_err(|e| e.to_string())?.port())?;
+        let give_up = |child: &mut Option<crate::process::Child>, readers: Vec<JoinHandle<()>>| {
+            if let Some(child) = child {
+                child.kill();
+            }
+            for reader in readers {
+                let _ = reader.join();
+            }
+        };
         let began = Instant::now();
         let stream = loop {
             match listener.accept() {
@@ -148,25 +182,18 @@ impl Host {
                 Err(error) => return Err(error.to_string()),
             }
             if canceled(cancel) {
-                child.kill();
-                for reader in readers {
-                    let _ = reader.join();
-                }
+                give_up(&mut child, readers);
                 return Err("Test request stopped".into());
             }
-            if let Some(status) = child.process.try_wait().map_err(|e| e.to_string())? {
+            if let Some(status) =
+                child.as_mut().map(|c| c.process.try_wait()).transpose().map_err(|e| e.to_string())?.flatten()
+            {
                 // End children that may still hold its pipes before quoting the last output.
-                child.kill();
-                for reader in readers {
-                    let _ = reader.join();
-                }
+                give_up(&mut child, readers);
                 return Err(with_output(format!("The test host ended ({status}) before it connected"), &written));
             }
             if began.elapsed() > Duration::from_secs(60) {
-                child.kill();
-                for reader in readers {
-                    let _ = reader.join();
-                }
+                give_up(&mut child, readers);
                 return Err(with_output("The test host did not connect within 60 seconds".into(), &written));
             }
             std::thread::sleep(POLL);
@@ -209,15 +236,17 @@ impl Host {
     }
 
     pub fn finish(&mut self, limit: Duration) {
-        let began = Instant::now();
-        while matches!(self.child.process.try_wait(), Ok(None)) {
-            if began.elapsed() >= limit {
-                self.child.kill();
-                break;
+        if let Some(child) = &mut self.child {
+            let began = Instant::now();
+            while matches!(child.process.try_wait(), Ok(None)) {
+                if began.elapsed() >= limit {
+                    child.kill();
+                    break;
+                }
+                std::thread::sleep(POLL);
             }
-            std::thread::sleep(POLL);
+            let _ = child.wait();
         }
-        let _ = self.child.wait();
         let _ = self.stream.shutdown(Shutdown::Both);
     }
 }
@@ -225,10 +254,12 @@ impl Host {
 impl Drop for Host {
     fn drop(&mut self) {
         let _ = self.stream.shutdown(Shutdown::Both);
-        if matches!(self.child.process.try_wait(), Ok(None)) {
-            self.child.kill();
-        } else {
-            let _ = self.child.wait();
+        if let Some(child) = &mut self.child {
+            if matches!(child.process.try_wait(), Ok(None)) {
+                child.kill();
+            } else {
+                let _ = child.wait();
+            }
         }
         for reader in self.readers.drain(..) {
             let _ = reader.join();
