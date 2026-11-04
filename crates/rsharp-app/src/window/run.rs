@@ -800,17 +800,37 @@ impl MainWindow {
             .chosen_run_configuration()
             .map(|configuration| configuration.name.clone())
             .unwrap_or_else(|| "No run configuration".to_string());
-        let running = self.run_cancel.is_some();
-        widget("run-widget").debug_selector(|| "run widget".into()).when(self.workspace.is_some(), |d| {
-            d.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(icon(if running { "stop" } else { "run" }, 16.))
-                .child(div().max_w(px(200.)).truncate().child(name))
-                .child(icon("chevron-down", 12.))
-                .on_click(cx.listener(|m, _: &ClickEvent, _, cx| {
-                    m.run_menu = !m.run_menu;
-                    cx.notify();
-                }))
-        })
+        // The menu is the widget's sibling, so a click on its rows does not toggle it open again.
+        div()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                widget("run-widget")
+                    .debug_selector(|| "run widget".into())
+                    .child(icon("project", 16.))
+                    .child(div().max_w(px(200.)).truncate().child(name))
+                    .child(icon("chevron-down", 12.))
+                    .on_click(cx.listener(|m, _: &ClickEvent, _, cx| {
+                        m.run_menu = !m.run_menu;
+                        cx.notify();
+                    })),
+            )
+            .children(self.run_menu.then(|| {
+                gpui::deferred(
+                    gpui::anchored()
+                        .position_mode(gpui::AnchoredPositionMode::Local)
+                        .position(gpui::point(px(0.), px(34.)))
+                        .snap_to_window_with_margin(px(8.))
+                        .child(
+                            div()
+                                .rounded(px(6.))
+                                .bg(theme::popup())
+                                .border_1()
+                                .border_color(theme::popup_border())
+                                .shadow_lg()
+                                .child(self.run_menu_view(cx)),
+                        ),
+                )
+            }))
     }
 
     pub(super) fn run_menu_view(&self, cx: &mut Context<Self>) -> gpui::AnyElement {

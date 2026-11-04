@@ -106,6 +106,7 @@ impl Focusable for GitView {
 impl GitView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let message = scratch_editor("COMMIT_EDITMSG", "", cx);
+        message.update(cx, |editor, _| editor.prose());
         let buffer = message.read(cx).buffer.clone();
         cx.observe(&buffer, |_, _, cx| cx.notify()).detach();
         Self {
@@ -505,29 +506,11 @@ impl GitView {
             .flex()
             .flex_col()
             .child(
-                uniform_list(
-                    "git changes",
-                    count,
-                    cx.processor(|v, range: std::ops::Range<usize>, _, cx| {
-                        range.map(|i| v.change_row(&v.listed()[i], i, true, cx)).collect()
-                    }),
-                )
-                .flex_1()
-                .min_h_0(),
-            )
-            .when(count == 0, |d| {
-                d.child(div().p(px(12.)).text_color(theme::text_muted()).child(if self.status.is_some() {
-                    "No changes"
-                } else {
-                    "Open a folder containing a Git repository."
-                }))
-            })
-            .child(
                 div()
                     .flex()
-                    .gap(px(6.))
-                    .px(px(8.))
-                    .py(px(5.))
+                    .gap(px(2.))
+                    .px(px(6.))
+                    .pb(px(4.))
                     .child(
                         action("git diff", if conflict { "Merge…" } else { "Show Diff" }, can && selected.is_some())
                             .on_click(cx.listener(move |v, _, _, cx| {
@@ -577,7 +560,35 @@ impl GitView {
                         )
                     }),
             )
+            .when(count > 0, |d| {
+                d.child(
+                    uniform_list(
+                        "git changes",
+                        count,
+                        cx.processor(|v, range: std::ops::Range<usize>, _, cx| {
+                            range.map(|i| v.change_row(&v.listed()[i], i, true, cx)).collect()
+                        }),
+                    )
+                    .flex_1()
+                    .min_h_0(),
+                )
+            })
+            .when(count == 0, |d| {
+                d.child(div().flex_1().p(px(12.)).text_color(theme::text_muted()).child(if self.status.is_some() {
+                    "No changes"
+                } else {
+                    "Open a folder containing a Git repository."
+                }))
+            })
             .child(self.compare_controls(cx))
+            .child(div().flex().px(px(4.)).pb(px(4.)).child(
+                checkbox_action("git amend", "Amend", self.amend, can).on_click(cx.listener(|v, _, _, cx| {
+                    if !v.busy {
+                        v.amend = !v.amend;
+                        cx.notify();
+                    }
+                })),
+            ))
             .child(
                 div()
                     .h(px(100.))
@@ -594,16 +605,10 @@ impl GitView {
                     .items_center()
                     .gap(px(6.))
                     .p(px(8.))
-                    .child(action("git amend", if self.amend { "Amend: on" } else { "Amend" }, can).on_click(
-                        cx.listener(|v, _, _, cx| {
-                            if !v.busy {
-                                v.amend = !v.amend;
-                                cx.notify();
-                            }
-                        }),
-                    ))
-                    .child(div().flex_1())
-                    .child(action("git commit", "Commit", can).on_click(cx.listener(|v, _, _, cx| v.commit(false, cx))))
+                    .child(
+                        primary_action("git commit", "Commit", can)
+                            .on_click(cx.listener(|v, _, _, cx| v.commit(false, cx))),
+                    )
                     .child(
                         action("git commit push", "Commit and Push", can)
                             .on_click(cx.listener(|v, _, _, cx| v.commit(true, cx))),
@@ -991,6 +996,29 @@ fn action(id: &'static str, title: impl Into<SharedString>, enabled: bool) -> Ac
         .when(!enabled, |d| d.text_color(theme::text_secondary()))
         .child(title.into());
     ActionButton { element, enabled }
+}
+
+/// Rider's Amend: a checkbox before its label, the same box a change row checks.
+fn checkbox_action(id: &'static str, title: &'static str, on: bool, enabled: bool) -> ActionButton {
+    let tick = div()
+        .size(px(16.))
+        .rounded(px(3.))
+        .border_1()
+        .border_color(theme::control_border())
+        .flex()
+        .items_center()
+        .justify_center()
+        .when(on, |d| d.bg(theme::accent()).child(icon("check", 14.)));
+    let mut button = action(id, "", enabled);
+    button.element = button.element.gap(px(6.)).child(tick).child(title);
+    button
+}
+
+/// The window's default button, in the accent as Rider draws it.
+fn primary_action(id: &'static str, title: &'static str, enabled: bool) -> ActionButton {
+    let mut button = action(id, title, enabled);
+    button.element = button.element.px(px(14.)).when(enabled, |d| d.bg(theme::accent()).text_color(theme::on_accent()));
+    button
 }
 
 fn scratch_editor<T: 'static>(name: &str, text: &str, cx: &mut Context<T>) -> Entity<CodeEditor> {

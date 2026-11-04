@@ -206,7 +206,7 @@ A near-black, cool-neutral chrome where colour belongs to code and to one restra
 
 ## Layout
 
-A fixed IDE shell, top to bottom: a 40px toolbar on the frame (project widget, branch widget; on macOS it starts 84px in to clear the traffic lights), then a row holding the 40px tool window stripe and the islands, then a 30px status bar on the frame (breadcrumbs left, Roslyn's state, caret, line separator and encoding right).
+A fixed IDE shell, top to bottom: a 40px toolbar on the frame, Rider New UI's order: project widget and branch widget on the left (on macOS from 84px in, clearing the traffic lights), then on the right Build, the run configuration widget, Run (Rerun while running), Debug, Stop while running, Search Everywhere and Settings, then a row holding the 40px tool window stripe and the islands, then a 30px status bar on the frame (breadcrumbs left, Roslyn's state, caret, line separator and encoding right).
 
 The Solution island is 280px wide; the editor island takes the rest. Islands are separated from each other and from the window edge and status bar by the 6px gap. Inside an island, a 40px header (14px side padding) or the 40px tab strip comes first. Tree rows are 24px, indented 18px per depth from a 6px start, inside 6px of island padding. The editor's gutter is the digit width times the line count's digits plus 32px, with 16px before text.
 
@@ -231,16 +231,22 @@ Soft rounded rectangles at four radii: 10px for islands, 6px for tabs, toolbar w
 - **Header:** 40px, 13px SemiBold, 14px side padding.
 
 ### Toolbar Widgets
-- 30px high, 8px side padding, 6px radius, 6px between icon and label; transparent at rest, button-hover on hover, button-pressed while pressed. The project widget leads with a 20px accent badge of two initials.
+- 30px high, 8px side padding, 6px radius, 6px between icon and label; transparent at rest, button-hover on hover, button-pressed while pressed. The project widget leads with a 20px accent badge of two initials. The run configuration widget leads with the project icon and opens its menu under itself.
+- Toolbar icon buttons are 30px squares with a 16px icon and a tooltip naming the action, dimmed to 35% while the action has nothing to act on.
 
 ### Tool Window Stripe
-- 32px square buttons with a 20px icon and 6px radius, centred in the 40px stripe. The shown window's button fills with the accent; others take the hover and pressed veils.
+- 32px square buttons with a 20px icon and 6px radius, centred in the 40px stripe. The shown window's button fills with the accent; others take the hover and pressed veils. Each tool window has its own IntelliJ expui tool window icon (Commit, Git, Debug, Profiler and Live Visual Tree take `commit`, `vcs`, `debug`, `profiler` and `hierarchy`); no two windows share one.
 
 ### Tree Rows
 - 24px, 4px radius, 4px between chevron, icon and name; a 16px blank stands in for a leaf's chevron. Hover veil; selection is selection with focus and selection-inactive without.
 
 ### Editor Tabs
 - 28px tabs in a 40px strip, 2px apart, 6px radius, a 1px border transparent unless selected. Unselected: text-muted, hover veil. Selected: tab-selected fill, tab-selected-border edge, text colour. A 16px close button (3px radius) at the end, replaced by the modified dot while unsaved.
+
+### Commit Window
+- Top down, as Rider's: the branch and Refresh, the toolbar (Show Diff, Rollback…, History), the changes (or "No
+  changes" in their place), Compare With, the Amend checkbox, the message box (no line numbers, wrapped), then Commit
+  as the primary button beside Commit and Push.
 
 ### Status Bar
 - Widgets are 22px, 6px side padding, 4px radius, text-muted. Breadcrumbs join with a 12px chevron at 60% opacity. The language server's failure and error messages take error, warnings take warning.
@@ -249,8 +255,9 @@ Soft rounded rectangles at four radii: 10px for islands, 6px for tabs, toolbar w
 - 28px, 14px side padding, 4px radius, accent fill with white text. Used on the welcome screen.
 
 ### Debug Window
-- The toolbar is 32px: 28px square buttons with 16px icons (Resume, Pause, Step Over, Step Into, Step Out, Stop),
-  dimmed to 35% while they cannot act, and the session's state at the right in text-secondary.
+- The toolbar is 32px: 28px square buttons with 16px expui icons in Rider's groups — Resume, Pause, Stop | Step Over,
+  Step Into, Step Out | Mute Breakpoints — split by 1px separator rules, dimmed to 35% while they cannot act. The
+  session's state is the island header's subtitle only.
 - After a step over, a Return values group sits above Variables: 24px rows with the method's name, `= value` in
   text-muted and the type in text-secondary. Its members are not opened in place yet.
 - Frames and Variables share the body: Frames is a 300px column of 24px rows (a paused program's threads above it

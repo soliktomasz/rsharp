@@ -10,12 +10,20 @@ macro_rules! carried {
 }
 
 static FILES: &[(&str, &[u8])] = carried![
+    "icons/add.svg",
     "icons/branch.svg",
     "icons/check.svg",
-    "icons/clear.svg",
     "icons/chevron-down.svg",
     "icons/chevron-right.svg",
+    "icons/clear.svg",
     "icons/close.svg",
+    "icons/debug-mute.svg",
+    "icons/debug-pause.svg",
+    "icons/debug-resume.svg",
+    "icons/debug-step-into.svg",
+    "icons/debug-step-out.svg",
+    "icons/debug-step-over.svg",
+    "icons/debug.svg",
     "icons/dependencies.svg",
     "icons/down.svg",
     "icons/error.svg",
@@ -35,17 +43,24 @@ static FILES: &[(&str, &[u8])] = carried![
     "icons/pin.svg",
     "icons/project.svg",
     "icons/regex.svg",
-    "icons/run.svg",
     "icons/rerun.svg",
+    "icons/run.svg",
     "icons/search.svg",
+    "icons/settings.svg",
     "icons/solution-folder.svg",
     "icons/solution.svg",
     "icons/stop.svg",
     "icons/tw-build.svg",
+    "icons/tw-commit.svg",
+    "icons/tw-debug.svg",
     "icons/tw-find.svg",
+    "icons/tw-git.svg",
+    "icons/tw-hierarchy.svg",
     "icons/tw-problems.svg",
-    "icons/tw-run.svg",
+    "icons/tw-profiler.svg",
     "icons/tw-project.svg",
+    "icons/tw-run.svg",
+    "icons/tw-terminal.svg",
     "icons/up.svg",
     "icons/warning.svg",
     "icons/words.svg",
@@ -92,5 +107,21 @@ pub fn file_icon(name: &str) -> &'static str {
         "md" | "txt" => "file-text",
         "editorconfig" | "gitignore" | "gitattributes" | "toml" | "yml" | "yaml" => "file-config",
         _ => "file-any",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// An icon left out of `FILES` draws as nothing, which is how the Debug window lost its step buttons.
+    #[test]
+    fn every_icon_on_disk_is_carried() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icons");
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let name = format!("icons/{}", entry.unwrap().file_name().to_string_lossy());
+            assert!(
+                super::FILES.iter().any(|(carried, _)| *carried == name),
+                "{name} is not carried, so it draws blank"
+            );
+        }
     }
 }

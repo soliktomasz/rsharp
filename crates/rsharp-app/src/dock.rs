@@ -103,11 +103,11 @@ impl Tool {
             Tool::Debug => "tw-debug",
             Tool::UnitTests => "check",
             Tool::Terminal => "tw-terminal",
-            Tool::Commit => "check",
-            Tool::Git => "branch",
+            Tool::Commit => "tw-commit",
+            Tool::Git => "tw-git",
             Tool::XamlPreview => "file-xml",
-            Tool::LiveTree => "framework",
-            Tool::Profiler => "run",
+            Tool::LiveTree => "tw-hierarchy",
+            Tool::Profiler => "tw-profiler",
         }
     }
 

@@ -64,7 +64,12 @@ gpui brings about 550 crates of its own. Their notices are not yet written out: 
   Run's `run.svg` and `tw-run.svg` use `expui/run/run_dark.svg` and `expui/toolwindows/run_dark.svg`.
   Terminal's `tw-terminal.svg` is IntelliJ Community's Apache-2.0 `expui/toolwindow/terminal_dark.svg`, from the
   bundled Terminal platform plugin's `plugins/terminal/lib/terminal.jar`; New Session's `add.svg` is
-  `expui/general/add_dark.svg` from `lib/intellij.platform.ide.jar`.
+  `expui/general/add_dark.svg` from `lib/intellij.platform.ide.jar`. The toolbar's `debug.svg` and `settings.svg` are
+  `expui/run/debug_dark.svg` and `expui/general/settings_dark.svg` from the same jar.
+  The Debug window's `debug-resume`, `debug-pause`, `debug-step-over`, `debug-step-into`, `debug-step-out` and
+  `debug-mute` are `expui/run/resume`, `pause`, `stepOver`, `stepInto`, `stepOut` and `muteBreakpoints` (`_dark`);
+  the stripe's `tw-debug`, `tw-commit`, `tw-git`, `tw-profiler` and `tw-hierarchy` are `expui/toolwindows/debug`,
+  `commit`, `vcs`, `profiler` and `hierarchy` (`@20x20_dark`), all from the same jar.
 
 The colours in `crates/rsharp-app/src/theme.rs` are values read from Rider's Islands Dark and Rider Dark themes.
 

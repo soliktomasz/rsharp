@@ -185,6 +185,8 @@ pub struct CodeEditor {
     console: Option<Console>,
     /// A console whose program reads its input: what is typed goes to the program rather than into the text.
     console_input: bool,
+    /// A text box for prose (a commit message): no line numbers or folds, wrapped, as Rider's message field.
+    prose: bool,
 }
 
 struct GitPopup {
@@ -372,7 +374,13 @@ impl CodeEditor {
             assist: assist::Assist::default(),
             console: None,
             console_input: false,
+            prose: false,
         }
+    }
+
+    pub(crate) fn prose(&mut self) {
+        self.prose = true;
+        self.soft_wrap = true;
     }
 
     pub(crate) fn console(&mut self, folder: PathBuf) {
@@ -1670,11 +1678,11 @@ impl Element for EditorElement {
                 .shape_line("0".into(), font_size, &[run(1, theme::editor::text().into(), &code_font)], None)
                 .width;
             // The numbers, then the folding column against the code.
-            let show_numbers = settings.show_line_numbers && editor.console.is_none();
+            let show_numbers = settings.show_line_numbers && editor.console.is_none() && !editor.prose;
             // Rider's colour swatches, in a column of their own beside the numbers while the file has colours.
             let swatch_column =
                 if editor.console.is_none() && !editor.buffer.read(cx).colours.is_empty() { px(16.) } else { px(0.) };
-            let gutter_width = if editor.console.is_some() {
+            let gutter_width = if editor.console.is_some() || editor.prose {
                 px(8.)
             } else if show_numbers {
                 char_width * digits as f32 + px(32.)

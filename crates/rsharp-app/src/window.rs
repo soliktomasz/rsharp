@@ -351,6 +351,8 @@ pub struct MainWindow {
     run_selected: Option<String>,
     /// Whether the toolbar's run menu is open.
     run_menu: bool,
+    /// Set by the first toolbar drawn: gpui knows which actions are available only once a frame exists.
+    drawn: std::cell::Cell<bool>,
     run_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     run_generation: u64,
     _run_task: Option<Task<()>>,
@@ -518,6 +520,7 @@ impl MainWindow {
             run_why_not: Vec::new(),
             run_selected: None,
             run_menu: false,
+            drawn: Default::default(),
             run_cancel: None,
             run_generation: 0,
             _run_task: None,
@@ -2425,18 +2428,6 @@ impl Render for MainWindow {
                     .map(|(available, keys, _)| self.main_menu_dropdown(available, keys, window, cx)),
             )
             .children(self.project_menu.then(|| self.project_widget_menu(cx)))
-            .children(self.run_menu.then(|| {
-                div()
-                    .absolute()
-                    .top(px(TOOLBAR_HEIGHT))
-                    .left(px(if cfg!(target_os = "macos") { 300. } else { 264. }))
-                    .rounded(px(6.))
-                    .bg(theme::popup())
-                    .border_1()
-                    .border_color(theme::popup_border())
-                    .shadow_lg()
-                    .child(self.run_menu_view(cx))
-            }))
             .children(self.tab_menu.map(|at| self.tab_menu_view(at, window, cx)))
             .children(self.status_menu.map(|kind| self.status_menu_view(kind, cx)))
             .children(self.refactoring.clone().map(|dialog| {
@@ -2516,8 +2507,9 @@ impl Render for MainWindow {
 
 impl MainWindow {
     /// The toolbar, which is the window's title bar on macOS and Windows, as Rider's header is.
-    fn toolbar(&self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn toolbar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let name = self.workspace.as_ref().map(Workspace::name);
+        let drawn = self.drawn.replace(true);
         div()
             .id("toolbar")
             .h(px(TOOLBAR_HEIGHT))
@@ -2558,7 +2550,6 @@ impl MainWindow {
                         cx.notify();
                     }))
             }))
-            .children(self.workspace.is_some().then(|| self.run_widget(cx)))
             .children(self.branch.clone().map(|branch| {
                 widget("branch-widget")
                     .debug_selector(|| "branch widget".into())
@@ -2572,7 +2563,49 @@ impl MainWindow {
                         cx.notify();
                     }))
             }))
-            .when(cfg!(windows), |d| d.child(div().flex_1()).child(caption_buttons()))
+            // Rider's right half: build, the run configuration and its Run/Debug, then Search and Settings.
+            .child(div().flex_1())
+            .when(self.workspace.is_some(), |d| {
+                d.child(toolbar_button(
+                    drawn,
+                    "toolbar-build",
+                    "tw-build",
+                    "Build Solution",
+                    Box::new(BuildSolution),
+                    window,
+                    cx,
+                ))
+                .child(self.run_widget(cx))
+                .child(match self.run_cancel.is_some() {
+                    true => toolbar_button(drawn, "toolbar-rerun", "rerun", "Rerun", Box::new(RunProgram), window, cx),
+                    false => toolbar_button(drawn, "toolbar-run", "run", "Run", Box::new(RunProgram), window, cx),
+                })
+                .child(toolbar_button(drawn, "toolbar-debug", "debug", "Debug", Box::new(DebugProgram), window, cx))
+                .when(self.run_cancel.is_some(), |d| {
+                    d.child(toolbar_button(drawn, "toolbar-stop", "stop", "Stop", Box::new(Stop), window, cx))
+                })
+            })
+            .child(toolbar_button(
+                drawn,
+                "toolbar-search",
+                "search",
+                "Search Everywhere",
+                Box::new(SearchEverywhere),
+                window,
+                cx,
+            ))
+            // Settings is the app's action, outside the window's dispatch tree, and always available.
+            .child(toolbar_button(
+                false,
+                "toolbar-settings",
+                "settings",
+                "Settings",
+                Box::new(crate::keymap::OpenSettings),
+                window,
+                cx,
+            ))
+            .when(!cfg!(windows), |d| d.child(div().w(px(4.))))
+            .when(cfg!(windows), |d| d.child(caption_buttons()))
     }
 
     /// The work area: a stripe down each side, the open tool windows as islands round the editor, and the gaps
@@ -3805,7 +3838,8 @@ impl MainWindow {
                         matches!(outcome.status, BuildStatus::Failed | BuildStatus::NotStarted)
                     }
                     (None, Some(outcome)) => matches!(outcome.status, RunStatus::Refused | RunStatus::Stopped),
-                    (None, None) => !self.is_building(),
+                    // A debug session's own progress ("Debugging X…") is news, not a failure.
+                    (None, None) => !self.is_building() && !self.is_debugging(),
                 };
                 status_widget(said.to_string())
                     .id("status-message")
@@ -4135,6 +4169,29 @@ fn widget(id: &'static str) -> gpui::Stateful<gpui::Div> {
         .rounded(px(6.))
         .hover(|d| d.bg(theme::button_hover()))
         .active(|d| d.bg(theme::button_pressed()))
+}
+
+/// A 30px icon button on the toolbar, dimmed as Find Action greys an action while it has nothing to act on.
+fn toolbar_button(
+    drawn: bool,
+    id: &'static str,
+    name: &'static str,
+    tip: &'static str,
+    action: Box<dyn gpui::Action>,
+    window: &Window,
+    cx: &mut App,
+) -> gpui::Stateful<gpui::Div> {
+    let available = !drawn || window.is_action_available(&*action, cx);
+    widget(id)
+        .debug_selector(move || format!("toolbar: {tip}"))
+        .w(px(30.))
+        .justify_center()
+        .px_0()
+        .when(!available, |d| d.opacity(0.35))
+        .child(icon(name, 16.))
+        .tooltip(move |_, cx| cx.new(|_| Tip(tip.into())).into())
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
 }
 
 fn status_widget(text: String) -> gpui::Div {

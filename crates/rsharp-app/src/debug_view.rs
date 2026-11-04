@@ -640,6 +640,11 @@ fn find<'a>(nodes: &'a mut Vec<Node>, path: &[usize]) -> Option<&'a mut Node> {
     if rest.is_empty() { Some(node) } else { find(node.children.as_mut()?, rest) }
 }
 
+/// The 1px rule between groups of a tool window's toolbar buttons, as IntelliJ's action toolbars draw it.
+fn separator() -> gpui::Div {
+    div().w(px(1.)).h(px(16.)).mx(px(4.)).bg(theme::separator())
+}
+
 impl Render for DebugView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let paused = self.phase == Phase::Paused;
@@ -679,12 +684,15 @@ impl Render for DebugView {
                     .flex()
                     .items_center()
                     .gap(px(2.))
+                    // Rider's order: the session's own buttons, then stepping, then the breakpoints'.
                     .child(self.tool("Resume", "debug-resume", paused, DebugAction::Resume, cx))
                     .child(self.tool("Pause", "debug-pause", running, DebugAction::Pause, cx))
+                    .child(self.tool("Stop", "stop", live, DebugAction::Stop, cx))
+                    .child(separator())
                     .child(self.tool("Step Over", "debug-step-over", paused, DebugAction::StepOver, cx))
                     .child(self.tool("Step Into", "debug-step-into", paused, DebugAction::StepInto, cx))
                     .child(self.tool("Step Out", "debug-step-out", paused, DebugAction::StepOut, cx))
-                    .child(self.tool("Stop", "stop", live, DebugAction::Stop, cx))
+                    .child(separator())
                     .child(self.tool_lit(
                         "Mute Breakpoints",
                         "debug-mute",
@@ -692,9 +700,7 @@ impl Render for DebugView {
                         self.muted,
                         DebugAction::ToggleMute,
                         cx,
-                    ))
-                    .child(div().flex_1())
-                    .child(div().pr(px(8.)).truncate().text_color(theme::text_secondary()).child(self.status.clone())),
+                    )),
             )
             .child(
                 div()
