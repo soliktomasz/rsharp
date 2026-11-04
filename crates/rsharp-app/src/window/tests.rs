@@ -494,6 +494,11 @@ impl MainWindow {
         self.tests.debugging && self.is_testing()
     }
 
+    /// The test run in flight was stopped.
+    pub(super) fn tests_stopped(&self) -> bool {
+        self.tests.cancel.as_ref().is_some_and(|c| c.load(Ordering::Acquire))
+    }
+
     pub(super) fn cancel_tests(&self) {
         if let Some(cancel) = &self.tests.cancel {
             cancel.store(true, Ordering::Release);

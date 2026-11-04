@@ -789,6 +789,7 @@ impl MainWindow {
         }
         self.refresh_git(cx);
         self.todos_changed(&paths, cx);
+        self.read_bookmark_texts(Some(&paths));
         self.package_sources_changed(&paths, cx);
         let solution = self.tree.as_ref().map(|t| t.solution().path.clone());
         let mut closed = Vec::new();

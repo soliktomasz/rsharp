@@ -1033,13 +1033,30 @@ impl Buffer {
     }
 
     /// The whole text replaced, as one step Undo takes back (Local History's Revert); every editor's carets follow.
+    /// Only the lines that differ are replaced, so what follows lines (bookmarks, breakpoints, carets, hints) moves with
+    /// its code through a reload rather than going with one edit of the whole text.
     pub fn replace_all(&mut self, text: String, cx: &mut Context<Self>) {
-        let len = self.document.text().len_bytes();
-        let plan = EditPlan {
-            edits: vec![Edit { range: 0..len, text }],
-            selections: vec![Selection::caret(0)],
-            ..Default::default()
+        let before = self.document.text().to_string();
+        let starts = |t: &str| -> Vec<usize> {
+            std::iter::once(0)
+                .chain(t.split_inclusive('\n').scan(0, |at, line| {
+                    *at += line.len();
+                    Some(*at)
+                }))
+                .collect()
         };
+        let (old, new) = (starts(&before), starts(&text));
+        let edits: Vec<Edit> = rsharp_text::diff_hunks(&before, &text)
+            .into_iter()
+            .map(|h| Edit {
+                range: old[h.before.start]..old[h.before.end],
+                text: text[new[h.after.start]..new[h.after.end]].to_string(),
+            })
+            .collect();
+        if edits.is_empty() {
+            return;
+        }
+        let plan = EditPlan { edits, selections: vec![Selection::caret(0)], ..Default::default() };
         let changes = self.document.apply(plan);
         let me = cx.entity_id();
         self.changed(changes, me, cx);

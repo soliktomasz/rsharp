@@ -319,7 +319,7 @@ pub fn comments_in(tree: &Tree) -> Vec<Range<usize>> {
     let mut cursor = tree.walk();
     'walk: loop {
         let node = cursor.node();
-        if node.kind().contains("comment") {
+        if node.kind().to_ascii_lowercase().contains("comment") {
             found.push(node.byte_range());
         } else if cursor.goto_first_child() {
             continue;

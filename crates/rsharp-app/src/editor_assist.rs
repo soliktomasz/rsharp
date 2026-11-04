@@ -85,6 +85,7 @@ pub struct Assist {
     pub template: Option<super::templates::Filling>,
     tokens_for: Option<(u64, Range<usize>)>,
     token_task: Option<Task<()>>,
+    lens_task: Option<Task<()>>,
     /// The lines the last frame showed.
     pub visible_lines: Range<usize>,
     hover_task: Option<Task<()>>,
@@ -1136,21 +1137,55 @@ impl CodeEditor {
             };
             let range = lsp::Span { start: lsp::Point::new(wanted.start, 0), end };
             let pause = if self.assist.tokens.is_empty() { Duration::ZERO } else { Duration::from_millis(300) };
+            // Code Vision on a task of its own, so its reference searches never hold back colours and hints: each lens
+            // on the lines asked resolved at once, the rest when they are shown.
+            let (lens_server, lens_uri, lens_text, lens_wanted) =
+                (server.clone(), uri.clone(), self.text.clone(), wanted.clone());
+            self.assist.lens_task = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(pause).await;
+                let wants = this.update(cx, |_, cx| crate::settings::settings(cx).code_vision).unwrap_or(false);
+                if !wants || lens_server.capabilities["codeLensProvider"].is_null() {
+                    return;
+                }
+                let Ok(listed) = this.update(cx, |_, cx| {
+                    ask(&lens_server, "textDocument/codeLens", json!({ "textDocument": lsp::document(&lens_uri) }), cx)
+                }) else {
+                    return;
+                };
+                let Some(answer) = listed.await else { return };
+                let shown: Vec<_> = lsp::code_lenses(&answer)
+                    .into_iter()
+                    .filter(|(span, _)| lens_wanted.contains(&span.start.line))
+                    .collect();
+                let Ok(asked) = this.update(cx, |_, cx| {
+                    shown
+                        .into_iter()
+                        .map(|(span, lens)| (span, ask(&lens_server, "codeLens/resolve", lens, cx)))
+                        .collect::<Vec<_>>()
+                }) else {
+                    return;
+                };
+                let (spans, answers): (Vec<_>, Vec<_>) = asked.into_iter().unzip();
+                let answers = futures::future::join_all(answers).await;
+                let mut found: Vec<(usize, String)> = spans
+                    .into_iter()
+                    .zip(answers)
+                    .filter_map(|(span, answer)| Some((offset(&lens_text, span.start), lsp::usages_title(&answer?)?)))
+                    .collect();
+                found.sort_by_key(|(at, _)| *at);
+                let _ = this.update(cx, |e, cx| {
+                    if e.version == version {
+                        e.assist.lenses = found;
+                        cx.notify();
+                    }
+                });
+            }));
             self.assist.token_task = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(pause).await;
                 let params = json!({ "textDocument": lsp::document(&uri), "range": range.to_json() });
                 // A server that has neither (VS Code's HTML, CSS and JSON) is not asked.
                 let has = |name: &str| !server.capabilities[name].is_null();
                 let (hints, colours) = (has("inlayHintProvider"), has("semanticTokensProvider"));
-                let wants_lenses = this.update(cx, |_, cx| crate::settings::settings(cx).code_vision).unwrap_or(false);
-                let lensed = if wants_lenses && has("codeLensProvider") {
-                    this.update(cx, |_, cx| {
-                        ask(&server, "textDocument/codeLens", json!({ "textDocument": lsp::document(&uri) }), cx)
-                    })
-                    .ok()
-                } else {
-                    None
-                };
                 let Ok((answer, hinted)) = this.update(cx, |_, cx| {
                     let none = || Task::ready(None);
                     let hinted =
@@ -1190,32 +1225,6 @@ impl CodeEditor {
                         Some(hints)
                     })
                     .await;
-                // Each lens on the lines asked is resolved for its count; the rest wait until they are shown.
-                let mut lenses = None;
-                if let Some(lensed) = lensed
-                    && let Some(answer) = lensed.await
-                {
-                    let shown: Vec<_> = lsp::code_lenses(&answer)
-                        .into_iter()
-                        .filter(|(span, _)| wanted.contains(&span.start.line))
-                        .collect();
-                    let asked = this
-                        .update(cx, |_, cx| {
-                            shown
-                                .into_iter()
-                                .map(|(span, lens)| (span, ask(&server, "codeLens/resolve", lens, cx)))
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                    let mut found = Vec::new();
-                    for (span, answer) in asked {
-                        if let Some(title) = answer.await.as_ref().and_then(lsp::usages_title) {
-                            found.push((offset(&text, span.start), title));
-                        }
-                    }
-                    found.sort_by_key(|(at, _)| *at);
-                    lenses = Some(found);
-                }
                 let legend = if razor { server.razor.legend() } else { rsharp_lsp::token_legend(&server) };
                 let tokens = cx
                     .background_executor()
@@ -1241,9 +1250,6 @@ impl CodeEditor {
                     }
                     if let Some(hints) = hints {
                         e.assist.hints = hints;
-                    }
-                    if let Some(lenses) = lenses {
-                        e.assist.lenses = lenses;
                     }
                     cx.notify();
                 });

@@ -87,6 +87,15 @@ fn call_and_type_hierarchies_list_from_roslyn(cx: &mut TestAppContext) {
         rows(cx)
     );
     assert_eq!(main.read_with(cx, |m, cx| m.hierarchy_title(cx)), Some("Hierarchy of Calls".to_string()));
+
+    // Closing the solution lets its Roslyn go: the window holds neither its rows nor its server.
+    main.update_in(cx, |main, window, cx| main.close_solution(window, cx));
+    cx.run_until_parked();
+    assert!(rows(cx).is_empty(), "the closed solution's hierarchy stayed listed");
+    assert!(
+        !main.read_with(cx, |m, cx| m.hierarchy_holds_server(cx)),
+        "the Hierarchy window kept the closed solution's Roslyn alive"
+    );
 }
 
 #[gpui::test]

@@ -79,3 +79,26 @@ fn click(cx: &mut VisualTestContext, selector: &'static str) {
     cx.simulate_click(at, Modifiers::default());
     cx.run_until_parked();
 }
+
+#[gpui::test]
+fn a_bookmark_follows_its_line_through_a_change_on_disk(cx: &mut TestAppContext) {
+    let run = Run::new("bookmarks-external", &[("Shop.cs", SHOP)]);
+    let source = rsharp_core::paths::canonical(&run.folder.join("Shop.cs"));
+    let (main, cx) = run.window(cx);
+    main.update_in(cx, |main, window, cx| {
+        main.open_workspace(&run.folder, window, cx);
+        main.open_file(&source, Some((4, 4)), window, cx);
+    });
+    cx.run_until_parked();
+    toggle(cx);
+    assert_eq!(marked(&main, &source, cx), [4]);
+    // Another program (a git checkout, an agent) adds a line above it: the open file reloads.
+    std::fs::write(&source, format!("using System;\n{SHOP}")).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while marked(&main, &source, cx) != [5] && std::time::Instant::now() < deadline {
+        cx.executor().advance_clock(std::time::Duration::from_millis(200));
+        cx.run_until_parked();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(marked(&main, &source, cx), [5], "a change on disk lost the bookmark rather than moving it");
+}

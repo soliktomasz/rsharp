@@ -342,6 +342,8 @@ pub struct MainWindow {
     /// The folder's bookmarks, by absolute path.
     bookmarks: rsharp_core::bookmarks::Bookmarks,
     bookmarks_focus: FocusHandle,
+    /// Closed files' lines for the Bookmarks window, read as bookmarks or their files change.
+    bookmark_texts: std::collections::HashMap<PathBuf, Vec<String>>,
     /// The TODO window's comments, once it has been asked for them.
     todos: Vec<todo::TodoEntry>,
     todo_task: Option<Task<()>>,
@@ -582,6 +584,7 @@ impl MainWindow {
             hierarchy,
             bookmarks: Default::default(),
             bookmarks_focus: cx.focus_handle(),
+            bookmark_texts: Default::default(),
             todos: Vec::new(),
             todo_task: None,
             todo_scanned: false,
@@ -791,6 +794,7 @@ impl MainWindow {
 
     fn start_server(&mut self, cx: &mut Context<Self>) {
         self.server = None;
+        self.hierarchy.update(cx, |view, cx| view.clear(cx));
         (self.evaluating, self.evaluate_again, self._evaluate_task) = (false, false, None);
         let Some(workspace) = &self.workspace else { return };
         if !cx.global::<crate::state::Ide>().servers {
@@ -960,6 +964,7 @@ impl MainWindow {
             ServerEvent::Ended => {
                 log::warn!("Roslyn stopped");
                 self.server = None;
+                self.hierarchy.update(cx, |view, cx| view.clear(cx));
                 self.server_state = ServerState::Failed("Roslyn stopped".into());
             }
         }
@@ -1619,6 +1624,11 @@ impl MainWindow {
         self.hierarchy.read(cx).rows()
     }
 
+    /// Whether the Hierarchy window still holds a Roslyn, which keeps its process alive.
+    pub fn hierarchy_holds_server(&self, cx: &App) -> bool {
+        self.hierarchy.read(cx).holds_server()
+    }
+
     pub fn hierarchy_title(&self, cx: &App) -> Option<String> {
         self.hierarchy.read(cx).title()
     }
@@ -2147,6 +2157,7 @@ impl MainWindow {
         self.host = None;
         (self.evaluating, self.evaluate_again, self._evaluate_task) = (false, false, None);
         self.server = None;
+        self.hierarchy.update(cx, |view, cx| view.clear(cx));
         self.server_state = ServerState::None;
         self._server_task = None;
         self.branch = None;

@@ -3722,3 +3722,56 @@ fn debugging_a_test_then_stop_leaves_no_test_app() {
         assert!(gone, "the debugged test app {pid} outlived Stop");
     }
 }
+
+#[test]
+fn stopping_a_debugged_test_as_its_session_starts_ends_the_run() {
+    let _alone = alone();
+    let Some((run, source)) = debugged_tests("debugger-test-stop-starting") else { return };
+    let mut cx = TestAppContext::single();
+    let (main, cx) = debug_adds(&run, &source, &mut cx);
+    let starting = pump(cx, |cx| main.read_with(cx, |main, _| main.debug_phase() == Phase::Starting));
+    assert!(starting, "the debugged test's session never started");
+    click(cx, "debug: Stop");
+    let ended = pump(cx, |cx| main.read_with(cx, |main, _| !main.is_testing() && !main.is_debugging()));
+    let status = main.read_with(cx, |main, cx| main.test_view().read(cx).status().to_string());
+    assert!(ended, "Stop while the debugger attached left the test run waiting: \"{status}\"");
+}
+
+#[test]
+fn debugging_tests_in_two_projects_runs_both() {
+    let _alone = alone();
+    let Some((run, _)) = debugged_tests("debugger-test-two-projects") else { return };
+    write(
+        &run.folder,
+        "Shop.slnx",
+        "<Solution><Project Path=\"Tests/Tests.csproj\" /><Project Path=\"More/More.csproj\" /></Solution>",
+    );
+    write(&run.folder, "More/More.csproj", &std::fs::read_to_string(run.folder.join("Tests/Tests.csproj")).unwrap());
+    write(
+        &run.folder,
+        "More/Orders.cs",
+        "using Xunit;\nnamespace More;\npublic class Orders\n{\n    [Fact] public void Counts() => Assert.Equal(2, 1 + 1);\n}\n",
+    );
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    for project in ["Tests/Tests.csproj", "More/More.csproj"] {
+        main.update(cx, |main, cx| {
+            main.set_evaluated(
+                rsharp_core::project::EvaluatedProject {
+                    path: run.folder.join(project),
+                    is_test_project: true,
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+    }
+    let view = main.read_with(cx, |main, _| main.test_view().clone());
+    assert!(pump(cx, |cx| view.read_with(cx, |v, _| v.tests().len() == 2)), "both projects' tests were not listed");
+    let tests = view.read_with(cx, |v, _| v.tests());
+    main.update(cx, |main, cx| main.debug_tests(tests, cx));
+    let ended = pump(cx, |cx| main.read_with(cx, |main, _| !main.is_testing() && !main.is_debugging()));
+    let status = view.read_with(cx, |v, _| v.status().to_string());
+    assert!(ended, "the debugged run never finished: \"{status}\"");
+    assert!(status.starts_with("2 passed"), "a project's tests were refused the debugger: \"{status}\"");
+}

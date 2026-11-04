@@ -111,6 +111,19 @@ impl HierarchyView {
         self.walk(directions[0], root, cx);
     }
 
+    /// Lets go of the server and the rows asked of it: the folder closed or its server ended.
+    pub fn clear(&mut self, cx: &mut Context<Self>) {
+        self.server = None;
+        self.nodes.clear();
+        self.asking.clear();
+        self.selected = None;
+        cx.notify();
+    }
+
+    pub fn holds_server(&self) -> bool {
+        self.server.is_some()
+    }
+
     pub fn title(&self) -> Option<String> {
         (!self.nodes.is_empty()).then(|| self.title.clone())
     }

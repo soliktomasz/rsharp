@@ -11,6 +11,22 @@ impl MainWindow {
             bookmarks.toggle(&folder.join(&mark.path), mark.line);
         }
         self.bookmarks = bookmarks;
+        self.read_bookmark_texts(None);
+    }
+
+    /// The lines of closed files' bookmarks, read when the bookmarks or those files change, never while drawing.
+    pub(super) fn read_bookmark_texts(&mut self, only: Option<&[PathBuf]>) {
+        let mut files: Vec<PathBuf> = self.bookmarks.all().iter().map(|m| m.path.clone()).collect();
+        files.dedup();
+        if let Some(only) = only {
+            files.retain(|f| only.contains(f));
+        }
+        for file in files {
+            let lines =
+                std::fs::read_to_string(&file).map(|t| t.lines().map(str::to_string).collect()).unwrap_or_default();
+            self.bookmark_texts.insert(file, lines);
+        }
+        self.bookmark_texts.retain(|file, _| self.bookmarks.all().iter().any(|m| &m.path == file));
     }
 
     /// The bookmarks to keep with the folder, each path from the folder.
@@ -37,6 +53,7 @@ impl MainWindow {
         }
         self.bookmarks.follow(path, |line| rsharp_text::map_line_kept(changes, line));
         if self.bookmarks.lines_in(path) != before {
+            self.read_bookmark_texts(Some(&[path.to_path_buf()]));
             self.show_bookmarks(path, cx);
             self.save_state(cx);
         }
@@ -49,6 +66,7 @@ impl MainWindow {
             (rsharp_core::paths::canonical(&editor.path), editor.caret().line)
         };
         let added = self.bookmarks.toggle(&path, line);
+        self.read_bookmark_texts(Some(&[path.clone()]));
         self.said = Some(if added { "Bookmark added" } else { "Bookmark removed" }.into());
         self.show_bookmarks(&path, cx);
         self.save_state(cx);
@@ -86,16 +104,15 @@ impl MainWindow {
         }))
     }
 
-    /// A bookmark's line as it reads now: the open text's, else the file's.
-    fn bookmark_text(mark: &rsharp_core::bookmarks::Bookmark, cx: &App) -> String {
+    /// A bookmark's line as it reads now: the open text's, else the line kept from the file.
+    fn bookmark_text(&self, mark: &rsharp_core::bookmarks::Bookmark, cx: &App) -> String {
         match crate::buffer::find(&mark.path, cx) {
             Some(buffer) => {
                 buffer.read(cx).document.text().get_line(mark.line).map(|l| l.to_string()).unwrap_or_default()
             }
-            None => std::fs::read_to_string(&mark.path)
-                .ok()
-                .and_then(|t| t.lines().nth(mark.line).map(str::to_string))
-                .unwrap_or_default(),
+            None => {
+                self.bookmark_texts.get(&mark.path).and_then(|lines| lines.get(mark.line)).cloned().unwrap_or_default()
+            }
         }
         .trim()
         .to_string()
@@ -108,7 +125,7 @@ impl MainWindow {
             .iter()
             .map(|mark| {
                 let file = mark.path.file_name().unwrap_or_default().to_string_lossy();
-                format!("{file}:{}  {}", mark.line + 1, Self::bookmark_text(mark, cx))
+                format!("{file}:{}  {}", mark.line + 1, self.bookmark_text(mark, cx))
             })
             .collect()
     }
@@ -145,7 +162,7 @@ impl MainWindow {
                     .hover(|d| d.bg(theme::row_hover()))
                     .child(icon("gutter-bookmark", 14.))
                     .child(div().flex_none().text_color(theme::text_secondary()).child(format!("{file}:{}", line + 1)))
-                    .child(div().truncate().font_family(theme::code_font()).child(Self::bookmark_text(mark, cx)))
+                    .child(div().truncate().font_family(theme::code_font()).child(self.bookmark_text(mark, cx)))
                     .on_click(
                         cx.listener(move |w, _: &ClickEvent, window, cx| {
                             w.open_file(&path, Some((line, 0)), window, cx)

@@ -50,6 +50,11 @@ pub(super) struct DebugState {
     /// Debug Selected Tests' runner, waiting for the session to run its test host.
     /// With the process attached to, which an attach's session may not report.
     tests: Option<(futures::channel::oneshot::Sender<Result<u32, String>>, Option<u32>)>,
+    /// The session runs a test run's host, whose next host waits for it rather than being refused.
+    for_tests: bool,
+    /// The next test host, waiting for this session to end.
+    queued_test_host:
+        Option<(rsharp_core::testing::DebugTarget, futures::channel::oneshot::Sender<Result<u32, String>>)>,
     /// The Terminal tab the program runs in, when the configuration starts it there.
     terminal: Option<usize>,
     /// Waits for that tab's program to start, to answer the adapter with its process.
@@ -217,6 +222,8 @@ impl DebugState {
             attached: None,
             recent_attached: None,
             tests: None,
+            for_tests: false,
+            queued_test_host: None,
             terminal: None,
             terminal_wait: None,
             pending: Vec::new(),
@@ -985,7 +992,12 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         if self.is_debugging() {
-            let _ = reply.send(Err("A debugging session is already running".into()));
+            // The run's previous host (another project's) is still ending: this one starts once it has.
+            if self.debug.for_tests && self.debug.queued_test_host.is_none() {
+                self.debug.queued_test_host = Some((target, reply));
+            } else {
+                let _ = reply.send(Err("A debugging session is already running".into()));
+            }
             return;
         }
         let Some(adapter) = rsharp_dap::adapter() else {
@@ -996,6 +1008,7 @@ impl MainWindow {
         };
         // The test host is the run's, not the person's: Stop ends it, as it ends a launched program.
         self.debug.attached = None;
+        self.debug.for_tests = true;
         let attaching = match &target {
             rsharp_core::testing::DebugTarget::Attach { process_id } => Some(*process_id),
             rsharp_core::testing::DebugTarget::Launch { .. } => None,
@@ -2027,8 +2040,31 @@ impl MainWindow {
         self.finish_debug(&format!("Debugging {name} stopped"), cx);
     }
 
+    /// A test run waiting for its host's session is told it will not come, so it ends rather than waits for good.
+    fn release_test_host(&mut self, why: &str) {
+        self.debug.for_tests = false;
+        if let Some((reply, _)) = self.debug.tests.take() {
+            let _ = reply.send(Err(why.to_string()));
+        }
+    }
+
+    /// A session over: the test run's next host starts, unless the run was stopped.
+    fn start_queued_test_host(&mut self, cx: &mut Context<Self>) {
+        let Some((target, reply)) = self.debug.queued_test_host.take() else { return };
+        if !self.is_testing() || self.tests_stopped() {
+            let _ = reply.send(Err("Tests stopped".into()));
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let _ = this.update(cx, |w, cx| w.debug_test_host(target, reply, cx));
+        })
+        .detach();
+    }
+
     /// The session ended or was stopped: the lists go, and the status bar says how.
     fn finish_debug(&mut self, message: &str, cx: &mut Context<Self>) {
+        self.release_test_host(message);
+        self.start_queued_test_host(cx);
         self.debug.input_task = None;
         self.end_hot_reload();
         self.debug.after_apply = None;
@@ -2063,6 +2099,10 @@ impl MainWindow {
 
     /// Leaving the folder: the session ends and everything it started with it.
     pub(super) fn leave_debug(&mut self, cx: &mut Context<Self>) {
+        self.release_test_host("The folder closed");
+        if let Some((_, reply)) = self.debug.queued_test_host.take() {
+            let _ = reply.send(Err("The folder closed".into()));
+        }
         self.debug.input_task = None;
         self.end_hot_reload();
         self.debug.after_apply = None;
@@ -2102,6 +2142,10 @@ impl MainWindow {
     }
 
     fn refuse_debug(&mut self, message: &str, cx: &mut Context<Self>) {
+        self.release_test_host(message);
+        if let Some((_, reply)) = self.debug.queued_test_host.take() {
+            let _ = reply.send(Err(message.to_string()));
+        }
         self.end_hot_reload();
         self.debug.after_apply = None;
         self.debug.never_restart = false;

@@ -11,3 +11,12 @@ fn a_files_comments_are_its_grammars_comment_nodes() {
     let found: Vec<&str> = comments_in(&tree).into_iter().map(|r| &source[r]).collect();
     assert_eq!(found, ["// first", "/* second */", "/// third"], "a comment was missed, or a string taken for one");
 }
+
+#[test]
+fn an_xml_files_comments_are_found_too() {
+    let source = "<Project>\n  <!-- TODO: drop this -->\n  <PropertyGroup />\n</Project>\n";
+    let text = Rope::from_str(source);
+    let tree = parse(Grammar::Xml, &text, None);
+    let found: Vec<&str> = comments_in(&tree).into_iter().map(|r| &source[r]).collect();
+    assert_eq!(found, ["<!-- TODO: drop this -->"], "a project file's TODO comment was not found");
+}
