@@ -136,6 +136,7 @@ actions!(
 );
 
 pub mod agent;
+mod agent_tools;
 mod build;
 mod debug;
 mod file_moves;

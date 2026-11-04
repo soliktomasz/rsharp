@@ -44,7 +44,7 @@ pub(super) struct Agents {
     _serving: Option<Task<()>>,
 }
 
-fn said(text: impl Into<String>) -> Value {
+pub(super) fn said(text: impl Into<String>) -> Value {
     json!([{ "type": "text", "text": text.into() }])
 }
 
@@ -94,6 +94,9 @@ impl MainWindow {
             return Task::ready(Err(format!(
                 "{agent} may not work in this RSharp window: the person turns on Settings > MCP Server > Enable MCP Server first."
             )));
+        }
+        if let Some(reply) = self.agent_editor_tool(tool, arguments, cx) {
+            return reply;
         }
         let place = |file: &str| {
             let path = PathBuf::from(file);

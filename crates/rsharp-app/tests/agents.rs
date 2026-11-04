@@ -94,3 +94,55 @@ fn tempfile_folder() -> std::path::PathBuf {
     std::fs::create_dir_all(&folder).unwrap();
     folder
 }
+
+#[gpui::test]
+fn an_agent_reads_edits_and_searches_the_files_and_changes_a_setting(cx: &mut TestAppContext) {
+    let run = Run::new(
+        "agents-files",
+        &[("A.cs", "class Alpha { int one = 1; int two = 1; }\n"), ("B.cs", "class Beta { }\n")],
+    );
+    unsafe { std::env::set_var("RSHARP_AGENTS", std::env::temp_dir().join(format!("rsa-{}", std::process::id()))) };
+    let (main, cx) = run.window(cx);
+    let folder = run.folder.clone();
+    main.update_in(cx, |main, window, cx| {
+        main.open_workspace(&folder, window, cx);
+        main.open_agent_socket(cx);
+    });
+    cx.update(|_, cx| {
+        let mut on = rsharp_app::settings::settings(cx).clone();
+        on.agents_enabled = true;
+        rsharp_app::settings::apply(on, cx);
+    });
+    let replies = agent(
+        cx,
+        &run.folder,
+        &[
+            call(1, "editor_text", json!({ "file": "A.cs" })),
+            call(2, "edit", json!({ "file": "A.cs", "oldText": "= 1;", "newText": "= 2;" })),
+            call(3, "edit", json!({ "file": "A.cs", "oldText": "int one = 1;", "newText": "int one = 5;" })),
+            call(4, "find_in_files", json!({ "text": "class", "mask": "*.cs" })),
+            call(5, "replace_in_files", json!({ "text": "Beta", "replacement": "Gamma" })),
+            call(6, "settings_set", json!({ "changes": { "noSuchSetting": 1 } })),
+            call(7, "settings_set", json!({ "changes": { "editorFontSize": 15 } })),
+            call(8, "settings_set", json!({ "changes": { "agentsEnabled": false } })),
+            call(9, "editor_text", json!({ "file": "B.cs" })),
+        ],
+    );
+    assert!(text(&replies[0]).starts_with("1: class Alpha"), "editor_text: {}", replies[0]);
+    assert_eq!(replies[1]["result"]["isError"], true, "an edit matching twice was made: {}", replies[1]);
+    assert!(text(&replies[1]).contains("2 times"), "the refusal does not say why: {}", replies[1]);
+    assert_eq!(replies[2]["result"]["isError"], false, "the unique edit failed: {}", replies[2]);
+    assert_eq!(
+        std::fs::read_to_string(run.folder.join("A.cs")).unwrap(),
+        "class Alpha { int one = 5; int two = 1; }\n",
+        "the edit was not saved"
+    );
+    let found: Value = serde_json::from_str(&text(&replies[3])).unwrap();
+    assert_eq!(found["count"], 2, "find_in_files: {found}");
+    assert!(text(&replies[4]).contains("Replaced 1 matches in 1 files"), "replace_in_files: {}", replies[4]);
+    assert!(text(&replies[8]).contains("Gamma"), "the replaced text is not in the editor's: {}", replies[8]);
+    assert_eq!(replies[5]["result"]["isError"], true, "an unknown setting was accepted");
+    assert!(text(&replies[6]).contains("15"), "editorFontSize: {}", replies[6]);
+    assert_eq!(replies[7]["result"]["isError"], true, "an agent turned off its own admission");
+    assert_eq!(cx.update(|_, cx| rsharp_app::settings::settings(cx).editor_font_size), 15.0);
+}
