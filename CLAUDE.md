@@ -278,6 +278,9 @@ terminal and takes focus for a moment.
   Hierarchy on the caret's symbol, each level's callers, callees, supertypes or subtypes asked of Roslyn as it opens.
   `window/bookmarks.rs` is Bookmarks (`rsharp_core::bookmarks`, kept in `FolderState`, carried through edits by
   `rsharp_text::map_line_kept`), the gutter's bookmark column and the Bookmarks window.
+  `window/todo.rs` is the TODO window: `rsharp_core::todo::scan` over `rsharp_languages::comments_in` for every file
+  a grammar here reads, the folder walked off the UI thread when the window is first shown, changed files found again
+  from the watcher's bursts.
   File Structure (Alt+\\, Cmd+F12 on macOS) is `goto.rs`' `Kind::FileStructure`, given the shown C#
   file's `textDocument/documentSymbol` outline (`rsharp_lsp::outline_spans`) and filtered by `file_structure::filter`,
   which keeps each match's containers as Passenger's FilterOutline does.

@@ -77,7 +77,8 @@ gpui brings about 550 crates of its own. Their notices are not yet written out: 
   `node-constant` and `node-constructor` are `expui/nodes/class`, `interface`, `enum`, `method`, `property`, `field`,
   `constant` and `constructor` (`_dark`), from `lib/intellij.platform.ide.jar`.
   Bookmarks' `gutter-bookmark` and `tw-bookmarks` are `expui/gutter/bookmark_dark.svg` and
-  `expui/toolwindows/bookmarks@20x20_dark.svg`, from the same jar.
+  `expui/toolwindows/bookmarks@20x20_dark.svg`, and the TODO window's `tw-todo` is
+  `expui/toolwindows/todo@20x20_dark.svg`, all from the same jar.
   The Debug window's `debug-resume`, `debug-pause`, `debug-step-over`, `debug-step-into`, `debug-step-out` and
   `debug-mute` are `expui/run/resume`, `pause`, `stepOver`, `stepInto`, `stepOut` and `muteBreakpoints` (`_dark`);
   the stripe's `tw-debug`, `tw-commit`, `tw-git`, `tw-profiler` and `tw-hierarchy` are `expui/toolwindows/debug`,

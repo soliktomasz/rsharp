@@ -137,6 +137,7 @@ actions!(
         NextBookmark,
         PreviousBookmark,
         ShowBookmarks,
+        ShowTodo,
         FindInFiles,
         SearchEverywhere,
         RecentLocations,
@@ -165,6 +166,7 @@ mod run;
 mod solution_actions;
 mod terminal;
 mod tests;
+mod todo;
 mod web;
 mod xaml;
 mod xaml_preview;
@@ -340,6 +342,11 @@ pub struct MainWindow {
     /// The folder's bookmarks, by absolute path.
     bookmarks: rsharp_core::bookmarks::Bookmarks,
     bookmarks_focus: FocusHandle,
+    /// The TODO window's comments, once it has been asked for them.
+    todos: Vec<todo::TodoEntry>,
+    todo_task: Option<Task<()>>,
+    todo_scanned: bool,
+    todo_focus: FocusHandle,
     build: Entity<crate::console::ConsoleView>,
     build_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     build_generation: u64,
@@ -575,6 +582,10 @@ impl MainWindow {
             hierarchy,
             bookmarks: Default::default(),
             bookmarks_focus: cx.focus_handle(),
+            todos: Vec::new(),
+            todo_task: None,
+            todo_scanned: false,
+            todo_focus: cx.focus_handle(),
             root_focus,
             workspace: None,
             branch: None,
@@ -675,6 +686,7 @@ impl MainWindow {
         self.dock = kept.dock.clone().unwrap_or_else(|| store.read::<DockLayout>()).complete().clamped();
         self.solution_wide = kept.solution_wide;
         self.load_bookmarks(&workspace.folder.clone(), &kept.bookmarks);
+        self.clear_todos();
         self.tree = workspace.solution.as_deref().and_then(rsharp_core::solution::read).map(|solution| {
             let cached: rsharp_core::project::Evaluations = store.read_for(&folder);
             let evaluated = cached.projects.into_iter().map(|p| (p.path.clone(), p)).collect();
@@ -686,6 +698,10 @@ impl MainWindow {
             cx.global::<crate::state::Ide>().servers.then(|| rsharp_lsp::SharedHost::carried(&folder)).flatten();
         self.load_breakpoints(&folder, cx);
         self.workspace = Some(workspace);
+        // A folder whose TODO window was left open finds its TODOs as it opens.
+        if self.dock.is_open(Tool::Todo) {
+            self.todo_shown(cx);
+        }
         if kept.show_hidden {
             self.set_show_hidden(true);
         }
@@ -2123,6 +2139,7 @@ impl MainWindow {
         self.save_state(cx);
         self.leave_editors();
         self.workspace = None;
+        self.clear_todos();
         self.opened_as = None;
         self.rows.clear();
         self.tree = None;
@@ -2527,6 +2544,7 @@ impl Render for MainWindow {
             .map(|d| self.debug_actions(d, cx))
             .map(|d| self.test_actions(d, cx))
             .map(|d| self.bookmark_actions(d, cx))
+            .map(|d| self.todo_actions(d, cx))
             .when(self.workspace.is_some(), |d| {
                 use crate::goto::Kind;
                 d.on_action(cx.listener(|w, _: &GoToFile, window, cx| w.open_go_to(Kind::File, window, cx)))
@@ -3120,6 +3138,7 @@ impl MainWindow {
             Tool::LiveTree => self.live_tree_content(cx).into_any_element(),
             Tool::Hierarchy => self.hierarchy.clone().into_any_element(),
             Tool::Bookmarks => self.bookmarks_content(cx),
+            Tool::Todo => self.todo_content(cx),
             Tool::Profiler => self.profiler_content(cx).into_any_element(),
             Tool::Terminal => {
                 self.ensure_terminal(cx);
@@ -3145,6 +3164,7 @@ impl MainWindow {
             Tool::LiveTree => None,
             Tool::Hierarchy => self.hierarchy.read(cx).title(),
             Tool::Bookmarks => None,
+            Tool::Todo => (!self.todos.is_empty()).then(|| format!("{} items", self.todos.len())),
             Tool::Profiler => self.profile_subtitle(),
             Tool::Terminal | Tool::Commit | Tool::Git => None,
         }
@@ -3252,12 +3272,16 @@ impl MainWindow {
             Tool::LiveTree => self.live_focus.clone(),
             Tool::Hierarchy => self.hierarchy.focus_handle(cx),
             Tool::Bookmarks => self.bookmarks_focus.clone(),
+            Tool::Todo => self.todo_focus.clone(),
             Tool::Profiler => self.live_focus.clone(),
         }
     }
 
     /// Opens or closes a tool window; one opened takes the keys, one closed with them gives them to the editor.
     pub fn toggle_tool(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
+        if tool == Tool::Todo {
+            self.todo_shown(cx);
+        }
         if tool == Tool::Git {
             self.refresh_git_log(cx);
         }

@@ -73,6 +73,7 @@ static FILES: &[(&str, &[u8])] = carried![
     "icons/tw-project.svg",
     "icons/tw-run.svg",
     "icons/tw-terminal.svg",
+    "icons/tw-todo.svg",
     "icons/up.svg",
     "icons/warning.svg",
     "icons/words.svg",

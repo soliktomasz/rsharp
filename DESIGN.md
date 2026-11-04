@@ -319,6 +319,10 @@ Soft rounded rectangles at four radii: 10px for islands, 6px for tabs, toolbar w
   `gutter/bookmark` in bookmark (#F2C55C). The Bookmarks window (LeftBottom, `tw-bookmarks`) lists 24px rows: the
   icon, file:line in text-secondary, then the line's text in the code font.
 
+### TODO Window
+- BottomLeft, `tw-todo`. 24px rows: the file's icon, path:line in text-secondary, then the comment from its TODO or
+  FIXME word in the comment colour; "Looking for TODOs…" while the folder is walked.
+
 ### Code Vision
 - Rider's Code Vision at its "Right" position: each member's usage count ("2 usages", "1 usage", "no usages") three
   spaces after its line's end, in the inlay-hint colour with no chip; a click lists the usages in Find. Settings'

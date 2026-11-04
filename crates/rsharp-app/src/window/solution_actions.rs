@@ -788,6 +788,7 @@ impl MainWindow {
             return;
         }
         self.refresh_git(cx);
+        self.todos_changed(&paths, cx);
         self.package_sources_changed(&paths, cx);
         let solution = self.tree.as_ref().map(|t| t.solution().path.clone());
         let mut closed = Vec::new();

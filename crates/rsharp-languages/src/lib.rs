@@ -312,6 +312,27 @@ fn visit(bodies: &[&str], node: Node, text: &Rope, range: &Range<usize>, out: &m
 const BRACKETS: &[(&str, &str)] = &[("{", "}"), ("(", ")"), ("[", "]")];
 
 /// The bracket at or just before `offset`, and the one it pairs with in the syntax.
+/// Every comment in a tree, in order, as byte ranges: each grammar's comment nodes, whatever it names them
+/// (`comment`, `line_comment`, `block_comment`), never looked inside.
+pub fn comments_in(tree: &Tree) -> Vec<Range<usize>> {
+    let mut found = Vec::new();
+    let mut cursor = tree.walk();
+    'walk: loop {
+        let node = cursor.node();
+        if node.kind().contains("comment") {
+            found.push(node.byte_range());
+        } else if cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                break 'walk;
+            }
+        }
+    }
+    found
+}
+
 pub fn matching_bracket(tree: &Tree, offset: usize) -> Option<(Range<usize>, Range<usize>)> {
     let at = |o: usize| {
         let node = tree.root_node().descendant_for_byte_range(o, o + 1)?;

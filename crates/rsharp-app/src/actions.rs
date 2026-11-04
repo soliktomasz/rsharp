@@ -43,7 +43,7 @@ use crate::window::{
     CloseSolution, CloseTab, FindAction, FloatToolWindow, HideToolWindow, OpenFolder, RestoreDefaultLayout,
     ShowHiddenFiles, ToggleNuGet, ToggleProblems, ToggleSolution, ToggleTerminal,
 };
-use crate::window::{DebugTests, RefreshTests, RerunFailedTests, RunAllTests, RunTests, ToggleUnitTests};
+use crate::window::{DebugTests, RefreshTests, RerunFailedTests, RunAllTests, RunTests, ShowTodo, ToggleUnitTests};
 use crate::window::{NewProject, NewSolution};
 use crate::window::{RecentLocations, ReplaceInFiles, SearchEverywhere};
 use gpui::{Action, Menu, MenuItem};
@@ -114,6 +114,7 @@ pub static ALL: &[IdeAction] = &[
     ide!("Run Window", "View", ["run output", "console", "tool window"], ToggleRun),
     ide!("Debug Window", "View", ["frames", "variables", "debugger", "tool window"], ToggleDebug),
     ide!("Unit Tests", "View", ["unit tests window", "test tree", "tool window"], ToggleUnitTests),
+    ide!("TODO", "View", ["todo window", "fixme", "tool window"], ShowTodo),
     ide!("Terminal", "View", ["shell", "console", "tool window"], ToggleTerminal),
     ide!("Run All Tests", "Run", ["unit tests", "test solution"], RunAllTests),
     ide!("Run Unit Tests", "Run", ["selected tests", "test context"], RunTests),
