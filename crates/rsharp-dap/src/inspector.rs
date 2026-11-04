@@ -41,10 +41,38 @@ pub fn carried() -> Option<PathBuf> {
     Some(PathBuf::from(env!("RSHARP_INSPECTOR"))).filter(|path| path.is_file())
 }
 
-/// Whether a program is an Avalonia app the inspector can serve: Avalonia.Base beside its assembly.
-pub fn inspects(built: &Path) -> bool {
-    built.parent().is_some_and(|folder| folder.join("Avalonia.Base.dll").is_file()) && carried().is_some()
+/// The WPF inspector RSharp's build carries, if it does: only Windows builds do, where WPF runs.
+pub fn carried_wpf() -> Option<PathBuf> {
+    Some(PathBuf::from(env!("RSHARP_INSPECTOR_WPF"))).filter(|path| path.is_file())
 }
+
+/// The UI framework of an app the inspector serves; each has an inspector of its own speaking the same protocol.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Framework {
+    Avalonia,
+    Wpf,
+}
+
+/// Which inspector serves a program: Avalonia.Base beside its assembly, or WPF (its framework named by the runtime
+/// config of a framework-dependent app, or carried beside a self-contained one) where the WPF inspector is carried.
+pub fn framework(built: &Path) -> Option<Framework> {
+    let folder = built.parent()?;
+    if folder.join("Avalonia.Base.dll").is_file() && carried().is_some() {
+        return Some(Framework::Avalonia);
+    }
+    let shared = std::fs::read_to_string(built.with_extension("runtimeconfig.json"))
+        .is_ok_and(|config| config.contains("Microsoft.WindowsDesktop.App"));
+    (carried_wpf().is_some() && (shared || folder.join("PresentationFramework.dll").is_file()))
+        .then_some(Framework::Wpf)
+}
+
+/// Whether a program is an Avalonia app the inspector can serve.
+pub fn inspects(built: &Path) -> bool {
+    framework(built) == Some(Framework::Avalonia)
+}
+
+/// Avalonia's renderer debug overlays, as the protocol names them.
+pub const OVERLAYS: [&str; 4] = ["Fps", "DirtyRects", "LayoutTimeGraph", "RenderTimeGraph"];
 
 /// One launch's inspector: the socket it listens on, the app once connected, and the answers waited for.
 pub struct LiveApp {
@@ -63,13 +91,29 @@ impl LiveApp {
         environment: &BTreeMap<String, String>,
         told: impl Fn(Told) + Send + 'static,
     ) -> std::io::Result<(Self, BTreeMap<String, String>)> {
+        Self::listen_to(Framework::Avalonia, environment, None, &[], told)
+    }
+
+    /// [`listen`](Self::listen) for either framework: a WPF app is told its project's folder, where its XAML is when its
+    /// build's symbols do not say, and Avalonia's windows show the `overlays` named from the launch on.
+    pub fn listen_to(
+        framework: Framework,
+        environment: &BTreeMap<String, String>,
+        project: Option<&Path>,
+        overlays: &[String],
+        told: impl Fn(Told) + Send + 'static,
+    ) -> std::io::Result<(Self, BTreeMap<String, String>)> {
         // Windows has Unix sockets since Windows 10, which the inspector's .NET connects to as it does elsewhere; only
         // Rust's standard library lacks them there.
         #[cfg(unix)]
         use std::os::unix::net::UnixListener;
         #[cfg(windows)]
         use uds_windows::UnixListener;
-        let inspector = carried().ok_or_else(|| std::io::Error::other("RSharp's build carries no inspector"))?;
+        let inspector = match framework {
+            Framework::Avalonia => carried(),
+            Framework::Wpf => carried_wpf(),
+        }
+        .ok_or_else(|| std::io::Error::other("RSharp's build carries no inspector for this app"))?;
         let made = MADE.fetch_add(1, Ordering::Relaxed);
         // A short name: macOS takes no socket path over 104 bytes.
         let socket = std::env::temp_dir().join(format!("rsharp-{}-{made}.sock", std::process::id()));
@@ -126,10 +170,19 @@ impl LiveApp {
             }
             _ => inspector.display().to_string(),
         };
-        let variables = BTreeMap::from([
+        let mut variables = BTreeMap::from([
             ("PASSENGER_INSPECTOR".to_string(), socket.display().to_string()),
             ("DOTNET_STARTUP_HOOKS".to_string(), hooks),
         ]);
+        if framework == Framework::Wpf {
+            // WPF records where in its XAML each object was made, and raises BindingFailed, once this is on as it first loads XAML.
+            variables.insert("ENABLE_XAML_DIAGNOSTICS_SOURCE_INFO".into(), "1".into());
+            if let Some(project) = project {
+                variables.insert("PASSENGER_INSPECTOR_PROJECT".into(), project.display().to_string());
+            }
+        } else if !overlays.is_empty() {
+            variables.insert("PASSENGER_INSPECTOR_OVERLAYS".into(), overlays.join(","));
+        }
         Ok((Self { socket, writer, waiting, next: AtomicI64::new(1) }, variables))
     }
 

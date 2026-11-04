@@ -6,13 +6,14 @@
 
 use super::*;
 use crate::debug_view::Phase;
-use rsharp_dap::inspector::{LiveApp, Told};
+use rsharp_dap::inspector::{Framework, LiveApp, Told};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet};
 
 /// The launch's inspector and what it last said.
 pub(super) struct Live {
     app: Arc<LiveApp>,
+    framework: Framework,
     /// What the window says of the app: waiting for it, its Avalonia, why it cannot be inspected, or that it ended.
     status: String,
     connected: bool,
@@ -20,6 +21,8 @@ pub(super) struct Live {
     open: HashSet<i64>,
     chosen: Option<i64>,
     details: Option<Value>,
+    /// Each failed binding the app told of, once by its id, with how many times it failed (Problems' Bindings tab).
+    pub(super) failures: Vec<Value>,
     asking: Option<Task<()>>,
     /// The XAML file whose binding values are shown, and the read under way.
     valued: Option<Entity<crate::buffer::Buffer>>,
@@ -45,11 +48,14 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) -> BTreeMap<String, String> {
         self.live = None;
-        if !plan.built.as_ref().is_some_and(|built| rsharp_dap::inspector::inspects(built)) {
+        let Some(framework) = plan.built.as_ref().and_then(|built| rsharp_dap::inspector::framework(built)) else {
             return BTreeMap::new();
         };
         let (sender, mut told) = futures::channel::mpsc::unbounded();
-        let listened = LiveApp::listen(&plan.environment, move |said| drop(sender.unbounded_send(said)));
+        let listened =
+            LiveApp::listen_to(framework, &plan.environment, plan.project.parent(), &self.live_overlays, move |said| {
+                drop(sender.unbounded_send(said))
+            });
         let (app, variables) = match listened {
             Ok(listened) => listened,
             Err(why) => {
@@ -66,12 +72,14 @@ impl MainWindow {
         });
         self.live = Some(Live {
             app: Arc::new(app),
+            framework,
             status: format!("Waiting for {} to show its UI…", plan.name),
             connected: false,
             roots: Vec::new(),
             open: HashSet::new(),
             chosen: None,
             details: None,
+            failures: Vec::new(),
             asking: None,
             valued: None,
             reading: None,
@@ -108,6 +116,12 @@ impl MainWindow {
     /// A failed binding, as Passenger shows one: a console line led by its XAML place in a compiler message's shape,
     /// which links to the line, once each time the app says it again.
     fn binding_failed(&mut self, failure: &Value, cx: &mut Context<Self>) {
+        if let Some(live) = &mut self.live {
+            match live.failures.iter_mut().find(|f| f["id"] == failure["id"]) {
+                Some(known) => *known = failure.clone(),
+                None => live.failures.push(failure.clone()),
+            }
+        }
         let text = |key: &str| failure[key].as_str().unwrap_or_default();
         let at = if text("errorPoint").is_empty() || text("errorPoint") == text("path") {
             String::new()
@@ -139,7 +153,7 @@ impl MainWindow {
         let Some(live) = &mut self.live else { return };
         let running = !paused && live.connected && live.chosen.is_some();
         if let Some(old) = live.valued.take().filter(|old| Some(old) != buffer.as_ref()) {
-            old.update(cx, |b, cx| b.set_binding_values(Vec::new(), cx));
+            old.update(cx, |b, cx| b.set_binding_values(Vec::new(), Vec::new(), cx));
         }
         let (Some(buffer), true) = (buffer, paused || running) else {
             live.reading = None;
@@ -186,8 +200,8 @@ impl MainWindow {
                     Ok(values) => values,
                     Err(why) => json!({ "problem": why }),
                 };
-            let shown = shown_values(&bindings, &values);
-            let _ = this.update(cx, |_, cx| buffer.update(cx, |b, cx| b.set_binding_values(shown, cx)));
+            let (shown, cards) = (shown_values(&bindings, &values), binding_cards(&bindings, &values));
+            let _ = this.update(cx, |_, cx| buffer.update(cx, |b, cx| b.set_binding_values(shown, cards, cx)));
         }));
     }
 
@@ -290,6 +304,23 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// Avalonia's renderer debug overlay `name` on every window of the app, or off, and kept for the next launch.
+    fn toggle_overlay(&mut self, name: &'static str, cx: &mut Context<Self>) {
+        match self.live_overlays.iter().position(|o| o == name) {
+            Some(at) => drop(self.live_overlays.remove(at)),
+            None => self.live_overlays.push(name.into()),
+        }
+        // The protocol takes them in Avalonia's own order.
+        self.live_overlays.sort_by_key(|o| rsharp_dap::inspector::OVERLAYS.iter().position(|n| n == o));
+        if let Some(live) = self.live.as_ref().filter(|l| l.connected) {
+            let (app, names) = (live.app.clone(), self.live_overlays.clone());
+            cx.background_executor()
+                .spawn(async move { drop(app.ask("overlays", json!({ "overlays": names }))) })
+                .detach();
+        }
+        cx.notify();
+    }
+
     /// Select Element: the next click in the app chooses what is under it, as Passenger's pick does.
     fn pick_live(&mut self, cx: &mut Context<Self>) {
         let Some(live) = &self.live else { return };
@@ -370,6 +401,20 @@ impl MainWindow {
                     .child("Break on binding errors")
                     .on_click(cx.listener(|w, _: &ClickEvent, _, cx| w.toggle_binding_errors(cx)))
             })
+            .children((live.framework == Framework::Avalonia).then(|| {
+                div().flex().gap(px(2.)).children(rsharp_dap::inspector::OVERLAYS.map(|name| {
+                    let on = self.live_overlays.iter().any(|o| o == name);
+                    div()
+                        .id(name)
+                        .debug_selector(move || format!("live tree: overlay {name}"))
+                        .px(px(6.))
+                        .rounded(px(4.))
+                        .when(on, |d| d.bg(theme::selection()))
+                        .hover(|d| d.bg(theme::button_hover()))
+                        .child(name)
+                        .on_click(cx.listener(move |w, _: &ClickEvent, _, cx| w.toggle_overlay(name, cx)))
+                }))
+            }))
             .child(
                 div()
                     .id("live-refresh")
@@ -529,6 +574,44 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// How many failed bindings Problems' Bindings tab lists.
+    pub(super) fn binding_failure_count(&self) -> usize {
+        self.live.as_ref().map_or(0, |l| l.failures.len())
+    }
+
+    /// Problems' Bindings tab: the bindings that failed in the app, a click opening the XAML that wrote each.
+    pub(super) fn bindings_problems_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let failures = self.live.as_ref().map(|l| l.failures.clone()).unwrap_or_default();
+        if failures.is_empty() {
+            return empty_text("No binding has failed in the app you debug.")
+                .track_focus(&self.problems_focus)
+                .into_any_element();
+        }
+        div()
+            .id("binding-problems")
+            .track_focus(&self.problems_focus)
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .px(px(6.))
+            .children(failures.into_iter().enumerate().map(|(i, failure)| {
+                let (message, place, count) = failure_row(&failure);
+                let spot = failure["place"].clone();
+                self.problem_row(
+                    ("binding", i),
+                    failure["level"] == "Error",
+                    message,
+                    place,
+                    move |w, window, cx| w.open_live_place(&spot, window, cx),
+                    cx,
+                )
+                .child(
+                    div().flex_none().text_color(theme::text_muted()).when(count > 1, |d| d.child(format!("×{count}"))),
+                )
+            }))
+            .into_any_element()
+    }
+
     /// Test access: the tree as drawn, a row a line indented by its depth, and the chosen element's properties.
     pub fn live_tree(&self) -> Option<(Vec<String>, Option<Value>)> {
         let live = self.live.as_ref()?;
@@ -539,6 +622,26 @@ impl MainWindow {
     pub fn live_status(&self) -> Option<String> {
         self.live.as_ref().map(|l| l.status.clone())
     }
+}
+
+/// A failed binding as a Problems row: what it binds and why, where its XAML is, how many times it failed.
+pub(super) fn failure_row(failure: &Value) -> (String, String, u64) {
+    let text = |key: &str| failure[key].as_str().unwrap_or_default();
+    let at = if text("errorPoint").is_empty() || text("errorPoint") == text("path") {
+        String::new()
+    } else {
+        format!(" at {}", text("errorPoint"))
+    };
+    let message = format!("{}.{} to {}{at}: {}", text("control"), text("property"), text("path"), text("message"));
+    let place = match failure["place"]["file"].as_str() {
+        Some(file) => format!(
+            "{}:{}",
+            std::path::Path::new(file).file_name().unwrap_or_default().to_string_lossy(),
+            failure["place"]["line"]
+        ),
+        None => String::new(),
+    };
+    (message, place, failure["count"].as_u64().unwrap_or(1))
 }
 
 /// What a XAML file shows after its lines (Passenger's Shown): each binding's value, or that it failed and where, or of
@@ -586,6 +689,41 @@ fn shown_values(bindings: &[Value], values: &Value) -> Vec<(usize, String)> {
     shown
 }
 
+/// The card over a binding's line: each binding there with its path walked from its source, every step's value, and where
+/// a failed one stopped, as Passenger's hover shows it.
+fn binding_cards(bindings: &[Value], values: &Value) -> Vec<(usize, String)> {
+    let elements = values["elements"].as_array().cloned().unwrap_or_default();
+    let mut cards: Vec<(usize, String)> = Vec::new();
+    for binding in bindings {
+        let (line, column) = (binding["line"].as_i64().unwrap_or(0) + 1, binding["column"].as_i64().unwrap_or(0) + 1);
+        let property = binding["property"].as_str().unwrap_or_default();
+        let Some(bound) = elements
+            .iter()
+            .find(|e| e["line"] == line && e["column"] == column)
+            .and_then(|e| e["bindings"].as_array()?.iter().find(|b| b["property"] == property))
+        else {
+            continue;
+        };
+        let value = |v: &Value| v["text"].as_str().map(|t| format!(" = {t}")).unwrap_or_default();
+        let mut card = format!("{property}{} ← {}", value(&bound["value"]), bound["path"].as_str().unwrap_or_default());
+        for step in bound["steps"].as_array().into_iter().flatten() {
+            let name = step["name"].as_str().unwrap_or_default();
+            let shown = if step["value"].is_null() { " (not reached)".to_string() } else { value(&step["value"]) };
+            card.push_str(&format!("\n  {name}{shown}"));
+        }
+        if let Some(failure) = bound["failure"].as_str() {
+            let at = bound["failedAt"].as_str().map(|s| format!(" at {s}")).unwrap_or_default();
+            card.push_str(&format!("\n  failed{at}: {failure}"));
+        }
+        let at = binding["endLine"].as_u64().unwrap_or(0) as usize;
+        match cards.iter_mut().find(|(l, _)| *l == at) {
+            Some((_, text)) => text.push_str(&format!("\n\n{card}")),
+            None => cards.push((at, card)),
+        }
+    }
+    cards
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -600,6 +738,9 @@ mod tests {
             { "line": 8, "column": 10, "instances": 1, "bindings": [{ "property": "Text", "value": { "text": "\"Hello\"" } }] },
             { "line": 9, "column": 10, "instances": 1, "bindings": [{ "property": "Text", "failure": "Could not find Nmae", "failedAt": "Nmae" }] },
         ] });
+        let cards = super::binding_cards(&bindings, &values);
+        assert_eq!(cards[0], (7, "Text = \"Hello\" ← ".to_string()));
+        assert!(cards[1].1.contains("failed at Nmae"));
         assert_eq!(
             super::shown_values(&bindings, &values),
             [(7, "Text: \"Hello\"".to_string()), (9, "Text: binding failed at Nmae: Could not find Nmae".to_string())]

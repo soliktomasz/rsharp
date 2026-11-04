@@ -103,6 +103,13 @@ fn a_debugged_avalonia_apps_tree_its_elements_xaml_and_its_failed_binding_are_sh
     let said = console(cx);
     assert!(said.contains("MainWindow.axaml(9,") && said.contains("Nmae"), "the binding error's line: {said}");
 
+    // Problems' Bindings tab lists it, led by its XAML place.
+    let listed = main.read_with(cx, |m, cx| m.problems_listed(rsharp_app::window::ProblemsTab::Bindings, cx));
+    assert!(
+        listed.len() == 1 && listed[0].starts_with("MainWindow.axaml:") && listed[0].contains("Nmae"),
+        "Problems' Bindings tab does not list the failed binding: {listed:?}"
+    );
+
     // The window's XAML in the editor and the caption chosen: its binding's value shows after its line, failed.
     let xaml = rsharp_core::paths::canonical(&run.folder.join("MainWindow.axaml"));
     cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
@@ -119,6 +126,13 @@ fn a_debugged_avalonia_apps_tree_its_elements_xaml_and_its_failed_binding_are_sh
         values(cx).iter().any(|(line, text)| *line == 8 && text.starts_with("Text: binding failed")),
         "the caption's failed binding is not after its line: {:?}",
         values(cx)
+    );
+    let cards = main.read_with(cx, |_, cx| {
+        rsharp_app::buffer::find(&xaml, cx).map(|b| b.read(cx).binding_cards.clone()).unwrap_or_default()
+    });
+    assert!(
+        cards.iter().any(|(line, card)| *line == 8 && card.contains("failed at Nmae")),
+        "the failed binding's card does not say where its path stopped: {cards:?}"
     );
     cx.simulate_keystrokes("shift-f5");
     cx.run_until_parked();

@@ -483,6 +483,9 @@ impl CodeEditor {
             .map(|d| d.message.clone())
             .collect();
         let word = word_at(&self.text, at).range();
+        let line = self.text.byte_to_line(at);
+        let cards: Vec<String> =
+            self.buffer.read(cx).binding_cards.iter().filter(|(l, _)| *l == line).map(|(_, c)| c.clone()).collect();
         let own = if self.is_msbuild() { self.msbuild_hover(at, cx) } else { None };
         let xaml = if self.is_xaml() { self.xaml_card(at, cx) } else { None };
         let server = self.server(cx).filter(|_| !self.is_msbuild());
@@ -499,7 +502,7 @@ impl CodeEditor {
                 (None, Some(card)) => card.await,
                 (None, None) => None,
             };
-            let text: Vec<String> = problems.into_iter().chain(own).chain(hover).collect();
+            let text: Vec<String> = problems.into_iter().chain(own).chain(hover).chain(cards).collect();
             let _ = this.update(cx, |e, cx| {
                 if e.version != version || (from_mouse && e.assist.hover_at != Some(at)) {
                     return;

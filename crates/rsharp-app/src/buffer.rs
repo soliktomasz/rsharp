@@ -78,6 +78,8 @@ pub struct Buffer {
     pub inline_values: Option<(usize, String)>,
     /// A debugged Avalonia app's binding values, each after the line its binding ends on.
     pub binding_values: Vec<(usize, String)>,
+    /// What each of those bindings read, its path walked step by step, as the card over its line.
+    pub binding_cards: Vec<(usize, String)>,
     /// The exception a stop is on, named at the line that threw it.
     pub exception: Option<(usize, String)>,
     git_comparing: Option<Task<()>>,
@@ -258,6 +260,7 @@ impl Buffer {
             execution_line: None,
             inline_values: None,
             binding_values: Vec::new(),
+            binding_cards: Vec::new(),
             exception: None,
             git_comparing: None,
             grammar,
@@ -386,6 +389,7 @@ impl Buffer {
         self.execution_line = self.execution_line.map(follow);
         self.inline_values = self.inline_values.take().map(|(line, text)| (follow(line), text));
         self.binding_values.iter_mut().for_each(|(line, _)| *line = follow(*line));
+        self.binding_cards.iter_mut().for_each(|(line, _)| *line = follow(*line));
         self.exception = self.exception.take().map(|(line, text)| (follow(line), text));
         for (server, uri) in self.server.iter().chain(&self.lint) {
             let content: Vec<_> = changes
@@ -437,9 +441,15 @@ impl Buffer {
     }
 
     /// A debugged app's binding values, each after its line; none once nothing reads them.
-    pub fn set_binding_values(&mut self, values: Vec<(usize, String)>, cx: &mut Context<Self>) {
-        if self.binding_values != values {
+    pub fn set_binding_values(
+        &mut self,
+        values: Vec<(usize, String)>,
+        cards: Vec<(usize, String)>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.binding_values != values || self.binding_cards != cards {
             self.binding_values = values;
+            self.binding_cards = cards;
             cx.notify();
         }
     }

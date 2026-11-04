@@ -177,6 +177,8 @@ pub enum ProblemsTab {
     Solution,
     Toolset,
     Build,
+    /// The bindings that failed in the app being debugged.
+    Bindings,
 }
 
 /// A place the caret was: its file, line and UTF-16 column, from 0.
@@ -296,6 +298,8 @@ pub struct MainWindow {
     preview: Option<xaml_preview::Preview>,
     /// The debugged Avalonia app's inspector, for the Live Visual Tree.
     live: Option<live_tree::Live>,
+    /// The Avalonia renderer debug overlays asked for, kept for the next launch as Passenger keeps the last choice.
+    live_overlays: Vec<String>,
     /// A round of evaluations is running; `evaluate_again` asks for one more after it.
     evaluating: bool,
     evaluate_again: bool,
@@ -585,6 +589,7 @@ impl MainWindow {
             web: Default::default(),
             preview: None,
             live: None,
+            live_overlays: Vec::new(),
             evaluating: false,
             evaluate_again: false,
             _evaluate_task: None,
@@ -1034,6 +1039,15 @@ impl MainWindow {
                         problem.code,
                         problem.message
                     )
+                })
+                .collect(),
+            ProblemsTab::Bindings => self
+                .live
+                .iter()
+                .flat_map(|l| &l.failures)
+                .map(|f| {
+                    let (message, place, _) = live_tree::failure_row(f);
+                    format!("{place} {message}")
                 })
                 .collect(),
         }
@@ -2973,6 +2987,7 @@ impl MainWindow {
             ProblemsTab::Solution => self.solution_problems_view(cx).into_any_element(),
             ProblemsTab::Toolset => self.toolset_problems().into_any_element(),
             ProblemsTab::Build => self.build_problems_view(cx).into_any_element(),
+            ProblemsTab::Bindings => self.bindings_problems_view(cx).into_any_element(),
         };
         div()
             .flex_1()
@@ -2988,7 +3003,13 @@ impl MainWindow {
                     .child(tab("file", "File".into(), ProblemsTab::File, cx))
                     .child(tab("solution", titled("Solution", solution_count), ProblemsTab::Solution, cx))
                     .child(tab("build", titled("Build", self.build_problems.len()), ProblemsTab::Build, cx))
-                    .child(tab("toolset", titled("Toolset", self.load_problems.len()), ProblemsTab::Toolset, cx)),
+                    .child(tab("toolset", titled("Toolset", self.load_problems.len()), ProblemsTab::Toolset, cx))
+                    .child(tab(
+                        "bindings",
+                        titled("Bindings", self.binding_failure_count()),
+                        ProblemsTab::Bindings,
+                        cx,
+                    )),
             )
             .child(body)
     }

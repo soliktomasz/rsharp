@@ -501,8 +501,12 @@ a XAML attribute is that attribute's breakpoint; and the XAML file in the editor
 lines, read at a stop by the debugger's evaluation on the app's UI thread and as it runs for the element chosen. The
 MCP server's `app_run`, `app_windows`, `app_tree`, `app_details`, `app_capture`, `app_input` and `app_stop` drive an
 Avalonia app the same way, naming its elements by Passenger's queries (`Button#Save`, `"Save"`, `#Panel/Button[2]`).
-Not yet: a binding value's card with its path walked, WPF apps' Live Visual Tree (Passenger.Inspector.Wpf), the
-Avalonia renderer's debug overlays, Problems' Bindings tab.
+A binding's card (hover over its line) walks its path from the source, each step with its value and where a failed one
+stopped; Problems' Bindings tab lists the bindings that failed, with their counts, each opening its XAML; the Live Visual
+Tree's toolbar turns Avalonia's renderer debug overlays (Fps, DirtyRects, the layout and render time graphs) on and off,
+kept for the next launch; and a WPF app's run gets Passenger.Inspector.Wpf (`rsharp_dap::inspector::framework`, carried
+by Windows builds alone), the same tree, details, picking and binding errors. Not yet: WPF's binding values after lines
+(the protocol's `values` is Avalonia's), and the WPF inspector's own test, which needs a Windows runner.
 - A XAML host: `Passenger.Xaml` behind a thin JSON-lines (or LSP) process, giving completion, diagnostics,
   navigation, formatting, Extract Resource and Style, and create from usage.
 - The previewers: Avalonia.Designer.HostApp, and Passenger's WpfPreview.

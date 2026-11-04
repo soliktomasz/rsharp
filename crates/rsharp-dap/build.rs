@@ -15,6 +15,7 @@ fn main() {
         "Passenger.Dap",
         "Passenger.Core",
         "Passenger.Inspector",
+        "Passenger.Inspector.Wpf",
         "Publicize.targets",
     ] {
         println!("cargo:rerun-if-changed={}", passenger.join(input).display());
@@ -28,6 +29,7 @@ fn main() {
         println!("cargo:warning=Passenger's debug adapter was not built ({why}); RSharp cannot debug");
         println!("cargo:rustc-env=RSHARP_DEBUG_ADAPTER=");
         println!("cargo:rustc-env=RSHARP_INSPECTOR=");
+        println!("cargo:rustc-env=RSHARP_INSPECTOR_WPF=");
     };
     let project = passenger.join("Passenger.DebugAdapter/Passenger.DebugAdapter.csproj");
     if !project.is_file() {
@@ -82,5 +84,27 @@ fn main() {
             println!("cargo:warning=Passenger's inspector was not built; the Live Visual Tree is not available");
             println!("cargo:rustc-env=RSHARP_INSPECTOR=");
         }
+    }
+    // WPF's counterpart, carried on Windows alone, as Passenger carries it, where WPF runs; it needs no assembly of the
+    // app's, WPF being the app's own shared framework, so what is published beside it goes.
+    let wpf = sidecars.join("inspector").join("wpf");
+    let carried = wpf.join("Passenger.Inspector.Wpf.dll");
+    let built = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && rsharp_core::dotnet::command(&dotnet, ["publish", "-c", "Release", "-o"], passenger.parent().unwrap())
+            .arg(&wpf)
+            .arg(passenger.join("Passenger.Inspector.Wpf/Passenger.Inspector.Wpf.csproj"))
+            .args(["-nologo", "-v", "q", "-p:WarningsNotAsErrors=NU1900"])
+            .output()
+            .is_ok_and(|output| output.status.success())
+        && carried.is_file();
+    if built {
+        for entry in std::fs::read_dir(&wpf).into_iter().flatten().flatten() {
+            if !entry.file_name().to_string_lossy().starts_with("Passenger.Inspector.Wpf.") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+        println!("cargo:rustc-env=RSHARP_INSPECTOR_WPF={}", carried.display());
+    } else {
+        println!("cargo:rustc-env=RSHARP_INSPECTOR_WPF=");
     }
 }
