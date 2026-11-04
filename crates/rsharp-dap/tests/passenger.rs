@@ -36,11 +36,24 @@ fn build(name: &str) -> Option<PathBuf> {
     Some(assembly)
 }
 
+/// Builds a debuggee into Cargo's own temp folder, where every test process finds it: a build newer than each of the
+/// debuggee's sources is taken as it is, as nextest runs each test in a process of its own.
 fn build_once(name: &str) -> Option<PathBuf> {
     let dotnet = rsharp_core::programs::dotnet()?;
     let root = debuggees()?;
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-    let output = std::env::temp_dir().join(format!("rsharp-passenger-{}-{stamp}", std::process::id()));
+    let output = Path::new(env!("CARGO_TARGET_TMPDIR")).join("debuggees").join(name);
+    let assembly = output.join(format!("{name}.dll"));
+    let built = std::fs::metadata(&assembly).and_then(|m| m.modified()).ok();
+    let newest_source = std::fs::read_dir(root.join(name))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.path().is_file())
+        .filter_map(|entry| entry.metadata().and_then(|m| m.modified()).ok())
+        .max();
+    if built.is_some() && built >= newest_source {
+        return Some(assembly);
+    }
     let status = std::process::Command::new(&dotnet)
         .arg("build")
         .arg(root.join(name).join(format!("{name}.csproj")))

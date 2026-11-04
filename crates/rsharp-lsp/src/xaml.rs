@@ -196,6 +196,13 @@ impl XamlHost {
         Ok(ended["why"].as_str().map(str::to_string))
     }
 
+    /// The bindings a XAML text writes, as Passenger's XamlBindings reads them: each as the host's JSON (`line` and
+    /// `column` of its element's name from 0, `class` of a root, `property`, `endLine`). Blocks, so call it off the UI
+    /// thread.
+    pub fn bindings(&self, text: &str) -> Result<Vec<Value>, ServerFailed> {
+        Ok(self.ask("bindings", json!({ "text": text }))?.as_array().cloned().unwrap_or_default())
+    }
+
     /// The previewed file's text as typed. Blocks, so call it off the UI thread.
     pub fn preview_update(&self, session: &str, text: &str) -> Result<(), ServerFailed> {
         self.ask("preview_update", json!({ "session": session, "text": text })).map(|_| ())

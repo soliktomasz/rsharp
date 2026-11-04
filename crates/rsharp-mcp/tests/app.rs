@@ -6,8 +6,8 @@ use std::path::Path;
 
 #[test]
 fn an_agent_runs_an_avalonia_app_reads_its_tree_draws_its_window_clicks_and_stops_it() {
-    if rsharp_dap::inspector::carried().is_none() || !cfg!(unix) {
-        eprintln!("skipped: no inspector, or no Unix socket for it");
+    if rsharp_dap::inspector::carried().is_none() {
+        eprintln!("skipped: Passenger's inspector is not built");
         return;
     }
     let Some(dotnet) = rsharp_core::programs::dotnet() else {
@@ -45,6 +45,11 @@ fn an_agent_runs_an_avalonia_app_reads_its_tree_draws_its_window_clicks_and_stop
         call(1, "app_run", json!({})),
         call(2, "app_tree", json!({})),
         call(3, "app_windows", json!({})),
+        call(4, "app_tree", json!({ "filter": "#Panel" })),
+        call(5, "app_details", json!({ "control": "Button#Save" })),
+        call(6, "app_capture", json!({ "control": "\"Save\"" })),
+        call(7, "app_input", json!({ "kind": "click", "control": "Save" })),
+        call(8, "app_details", json!({ "control": "Button" })),
         call(9, "app_stop", json!({})),
     ];
     let input = lines.join("\n") + "\n";
@@ -64,6 +69,18 @@ fn an_agent_runs_an_avalonia_app_reads_its_tree_draws_its_window_clicks_and_stop
         "app_tree lacks the Save button and its text:\n{tree}"
     );
     assert!(text(3).contains("Live Tree App"), "app_windows lacks the window's title: {}", text(3));
+    assert!(
+        text(4).starts_with('@') && text(4).contains("StackPanel#Panel") && !text(4).contains("Window"),
+        "the filter kept more than the panel:\n{}",
+        text(4)
+    );
+    assert!(text(5).contains("MainWindow.axaml:"), "app_details did not say the button's XAML: {}", text(5));
+    let picture = answers.iter().find(|a| a["id"] == 6).unwrap();
+    assert_eq!(picture["result"]["content"][0]["type"], "image", "app_capture drew no picture: {picture}");
+    assert!(text(7).contains("Save"), "the click did not reach the Save button: {}", text(7));
+    let several = answers.iter().find(|a| a["id"] == 8).unwrap();
+    assert_eq!(several["result"]["isError"], true, "two buttons named no one: {several}");
+    assert!(several.to_string().contains("elements match Button"), "it did not list the matches: {several}");
     assert_eq!(text(9), "The app was ended.");
     let _ = std::fs::remove_dir_all(&folder);
 }

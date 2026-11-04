@@ -375,9 +375,7 @@ mod tests {
 
     #[gpui::test]
     fn edits_before_the_preview_starts_are_sent_once_its_session_arrives(cx: &mut gpui::TestAppContext) {
-        let Some(host) = rsharp_lsp::xaml::XamlHost::carried()
-            .map(|h| h.keeping_library_files(store(cx).root().join("MetadataAsSource")))
-        else {
+        let Some(host) = rsharp_lsp::xaml::XamlHost::carried() else {
             eprintln!("skipped: the XAML host was not built");
             return;
         };

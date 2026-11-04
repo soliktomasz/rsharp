@@ -17,7 +17,8 @@ that makes a key cost more than what it changed needs a reason.
 git submodule update --init   # vendor/passenger, Passenger's sidecars, which the build makes with dotnet
 just build                 # cargo build; warnings are errors (.cargo/config.toml)
 just run [PATH] [--file F] [--caret L:C] [--key KEYS] [--type TEXT] [--agent CMD]   # the IDE on a folder, solution or project
-just test [filter]         # every test
+just test [filter]         # every test, under cargo-nextest (cargo install cargo-nextest --locked): every binary's
+                           # tests at once, those that debug a program one at a time (.config/nextest.toml's group)
 just screenshot OUT.png [args]   # the real window captured on macOS (tools/screenshot.sh; WAIT=seconds,
                            # SHOT_WINDOW=Settings for another window by title; a state folder of its own)
 target/debug/rsharp --mcp [FOLDER]   # RSharp as an MCP server on standard input and output (no window)
@@ -195,7 +196,10 @@ terminal and takes focus for a moment.
   and carrying none of it): HostApp's own Main with its loader wrapped through a DispatchProxy (the loader interface is
   internal) so CreateSourceInfo is on, each design window's elements and boxes sent as JSON lines to a port of the
   host's, which makes them the file's elements (`elements` partials): a click in the frame selects one's start tag and
-  the element at the caret is outlined. The session waits on a thread of
+  the element at the caret is outlined. On Windows a WPF file's preview is Passenger's WpfPreview, which the host runs
+  itself (`WpfPreview.cs`) and whose PNG frames come as `png` partials. Go to Declaration into a library (`Library.cs`,
+  ported from Passenger) decompiles its type or downloads a theme's XAML through Source Link into the folder the window
+  gives (`keeping_library_files`, its state's MetadataAsSource/), written read-only. The session waits on a thread of
   its own: a request that never answers would stall the test platform's executor.
 - `crates/rsharp-dap`: the Debug Adapter Protocol client and Passenger's debug adapter it runs. `build.rs`
   publishes Passenger's `Passenger.DebugAdapter` from the same submodule into `target/<profile>/sidecars/debugger`
@@ -211,14 +215,20 @@ terminal and takes focus for a moment.
   source breakpoint carries its line or its column too, which binds one call of a line several share (a lambda's body). What the adapter says unasked (stops, output, exit,
   termination) comes as `Event`s on its own threads; its own request, a program started in the client's terminal,
   is answered when the app gives it a terminal runner (announced as `supportsRunInTerminalRequest`) and refused
-  otherwise, so the adapter goes on rather than waiting.
+  otherwise, so the adapter goes on rather than waiting. `build.rs` also publishes Passenger.Inspector into
+  `sidecars/inspector`, its own assembly alone; `inspector` is RSharp's end of it (a Unix socket of the launch's own,
+  `uds_windows` on Windows, the protocol's JSON lines), which `window/live_tree.rs` gives a debugged Avalonia app: the
+  Live Visual Tree tool window, failed bindings in the Debug console, property and binding-error breakpoints, and the
+  XAML file's binding values after its lines (`Buffer::binding_values`, read at a stop through `evaluate_on_ui_thread`).
 - `crates/rsharp-mcp`: no UI. RSharp as an MCP server (`rsharp --mcp [FOLDER]`, JSON-RPC a line at a time on
   standard input and output), Roslyn on the folder behind its tools: `workspace`, `diagnostics` (a file's, or the
   solution's with solution-wide analysis), `find_symbol`, `outline`, `usages`, `rename` (a type's file renamed with it)
   and `edit` (answers with the file's problems after). A place is a file, line and column from 1, or a symbol's name;
   each tool waits for Roslyn's load, files are written in their own encoding and line separator, and Roslyn is told
   each write (a change names the range it replaces: Roslyn crashes on one that does not). An agent adds it as a
-  stdio server: `claude mcp add rsharp -- /path/to/rsharp --mcp /path/to/folder`.
+  stdio server: `claude mcp add rsharp -- /path/to/rsharp --mcp /path/to/folder`. `app.rs` is the `app_*` tools,
+  which build and run an Avalonia project with the inspector and drive it, and `query.rs` Passenger's AppQuery, how
+  they name its elements.
 - `crates/rsharp-app`: the shell, a library (`lib.rs`, whose `init` the executable and the tests both call) and
   `main.rs`. `window.rs` is a project window as Rider's Islands: the toolbar and status bar on the frame, a stripe
   down each side, the editor and the open tool windows as islands, the gaps between them resizing what they

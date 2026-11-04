@@ -446,7 +446,7 @@ Known limits, taken on purpose:
 - Hot Reload is for a program this window launches (above).
 On macOS every case passes; Windows x64 and Linux are CI's.
 
-### Phase 9: Avalonia and WPF (L) — begun
+### Phase 9: Avalonia and WPF (L) — built
 Begun: the XAML host and its code help. `crates/rsharp-lsp/xaml-host` is Passenger.Xaml behind JSON lines in the shape
 of Passenger.Host's (a ready line, then `check`, `complete`, `symbol` and `changed`, places as LSP's), published into
 `sidecars/xaml`; `rsharp_lsp::xaml::XamlHost` starts it on the first XAML file a window opens. An .axaml, .paml or .xaml
@@ -489,8 +489,20 @@ files, or makes or moves one (a rename with its files, Extract, create from usag
 any of its files, asked first (`global_undo.rs`). Every editor pairs brackets and quotes as Passenger's does: an opener
 gets its closer, a closer typed steps over it, a selection typed over is wrapped, Backspace takes the pair and Enter
 between them puts the closer on a line of its own.
-Not yet: a library's type decompiled or a theme's XAML through Source Link, a colour wheel (the picker takes a colour as
-written), WPF's previewer (Passenger's WpfPreview, Windows only), the inspector and the MCP `app_*` tools.
+A swatch's picker is Passenger's: a square of saturation and brightness, hue and alpha bars, the colour before and after,
+in step with its hex field. Go to Declaration from XAML into a library opens its type decompiled by ILSpy's decompiler,
+and a theme's own XAML downloaded through its PDB's Source Link, read-only, kept in the state's MetadataAsSource/. On
+Windows a WPF file previews in Passenger's WpfPreview, run by the XAML host, its elements clickable as Avalonia's are.
+A debugged Avalonia app gets Passenger's inspector (a startup hook and a socket of the launch's own,
+`rsharp_dap::inspector`): the Live Visual Tree shows its windows' trees, opened down to the app's own elements, and the
+chosen element's properties with their sources and its XAML place; a failed binding is a linked line in the Debug
+console; Break on binding errors and Break When Value Changes are function breakpoints where the inspector calls; F9 on
+a XAML attribute is that attribute's breakpoint; and the XAML file in the editor shows its bindings' values after their
+lines, read at a stop by the debugger's evaluation on the app's UI thread and as it runs for the element chosen. The
+MCP server's `app_run`, `app_windows`, `app_tree`, `app_details`, `app_capture`, `app_input` and `app_stop` drive an
+Avalonia app the same way, naming its elements by Passenger's queries (`Button#Save`, `"Save"`, `#Panel/Button[2]`).
+Not yet: a binding value's card with its path walked, WPF apps' Live Visual Tree (Passenger.Inspector.Wpf), the
+Avalonia renderer's debug overlays, Problems' Bindings tab.
 - A XAML host: `Passenger.Xaml` behind a thin JSON-lines (or LSP) process, giving completion, diagnostics,
   navigation, formatting, Extract Resource and Style, and create from usage.
 - The previewers: Avalonia.Designer.HostApp, and Passenger's WpfPreview.

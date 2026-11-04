@@ -46,7 +46,25 @@ fn an_agent_finds_renames_and_edits_the_code_through_the_tools() {
 
     let names: Vec<&str> =
         answers[1]["result"]["tools"].as_array().unwrap().iter().filter_map(|t| t["name"].as_str()).collect();
-    assert_eq!(names, ["workspace", "diagnostics", "find_symbol", "outline", "usages", "rename", "edit"]);
+    assert_eq!(
+        names,
+        [
+            "workspace",
+            "diagnostics",
+            "find_symbol",
+            "outline",
+            "usages",
+            "rename",
+            "edit",
+            "app_run",
+            "app_windows",
+            "app_tree",
+            "app_details",
+            "app_capture",
+            "app_input",
+            "app_stop"
+        ]
+    );
     assert!(
         text(2).contains("Projects: Demo.csproj") && text(2).contains("Roslyn: loaded"),
         "workspace said {}",

@@ -1,0 +1,14 @@
+# The suite under cargo-nextest (`just test`, CI): every binary's tests at once, each in a process of its own. Tests that
+# debug a program run one at a time, as their binaries' own locks held them in one process: each starts a build, the
+# adapter and a program, and several at once pass their limits waiting for one another.
+
+[test-groups]
+debugger = { max-threads = 1 }
+
+[profile.default]
+fail-fast = false
+slow-timeout = { period = "120s" }
+
+[[profile.default.overrides]]
+filter = 'binary(debugger) | binary(debugger_crash) | binary(debugger_menus) | binary(live_tree) | (package(rsharp-dap) & (binary(passenger) | binary(session)))'
+test-group = 'debugger'

@@ -21,6 +21,9 @@ pub(super) struct Live {
     chosen: Option<i64>,
     details: Option<Value>,
     asking: Option<Task<()>>,
+    /// The XAML file whose binding values are shown, and the read under way.
+    valued: Option<Entity<crate::buffer::Buffer>>,
+    reading: Option<Task<()>>,
     _events: Task<()>,
 }
 
@@ -70,6 +73,8 @@ impl MainWindow {
             chosen: None,
             details: None,
             asking: None,
+            valued: None,
+            reading: None,
             _events: events,
         });
         variables
@@ -91,7 +96,7 @@ impl MainWindow {
                 }
             }
             Told::BindingFailed(failure) => self.binding_failed(&failure, cx),
-            Told::ValuesChanged => {}
+            Told::ValuesChanged => self.refresh_binding_values(cx),
             Told::Ended => {
                 live.connected = false;
                 live.status = "The app has ended".into();
@@ -117,6 +122,73 @@ impl MainWindow {
             None => format!("Binding error: {described}\n"),
         };
         self.debug_console.update(cx, |view, cx| view.append(&[(line, true)], cx));
+    }
+
+    /// The binding values of the XAML file in the editor, after each binding's line, as Passenger's
+    /// BindingValuesController reads them: at a stop through the debugger's evaluation of the inspector's read on the
+    /// app's UI thread, and as the app runs from the inspector itself for the element chosen in the Live Visual Tree,
+    /// which tells an element's instances apart. None otherwise.
+    // shortcut: a binding is placed by its line in the text as typed, not mapped back to the line the running build
+    // has, so a line moved since the build shows nothing; map through the build's text once edits during a session need it.
+    pub(super) fn refresh_binding_values(&mut self, cx: &mut Context<Self>) {
+        let paused = self.debug_phase() == Phase::Paused;
+        let buffer = self
+            .active_editor()
+            .map(|e| e.read(cx).buffer.clone())
+            .filter(|b| b.read(cx).path.extension().is_some_and(|e| e == "axaml"));
+        let Some(live) = &mut self.live else { return };
+        let running = !paused && live.connected && live.chosen.is_some();
+        if let Some(old) = live.valued.take().filter(|old| Some(old) != buffer.as_ref()) {
+            old.update(cx, |b, cx| b.set_binding_values(Vec::new(), cx));
+        }
+        let (Some(buffer), true) = (buffer, paused || running) else {
+            live.reading = None;
+            return;
+        };
+        live.valued = Some(buffer.clone());
+        let Some((host, _)) = buffer.read(cx).xaml.clone() else { return };
+        let (text, path, chosen, app) =
+            (buffer.read(cx).document.text().to_string(), buffer.read(cx).path.clone(), live.chosen, live.app.clone());
+        live.reading = Some(cx.spawn(async move |this, cx| {
+            let bindings =
+                cx.background_executor().spawn(async move { host.bindings(&text) }).await.unwrap_or_default();
+            // Each element once, by where the app's build recorded it (from one), with the properties its bindings set.
+            let mut spots: Vec<Value> = Vec::new();
+            for binding in &bindings {
+                let (line, column) =
+                    (binding["line"].as_i64().unwrap_or(0) + 1, binding["column"].as_i64().unwrap_or(0) + 1);
+                match spots.iter_mut().find(|s| s["line"] == line && s["column"] == column) {
+                    Some(spot) => spot["properties"].as_array_mut().unwrap().push(binding["property"].clone()),
+                    None => spots.push(json!({
+                        "line": line, "column": column, "class": binding["class"], "properties": [binding["property"]],
+                    })),
+                }
+            }
+            if spots.is_empty() {
+                return;
+            }
+            let read = json!({ "file": path, "elements": spots, "chosen": chosen });
+            let asked = this.update(cx, |w, cx| match paused {
+                true => {
+                    let literal = serde_json::to_string(&read.to_string()).unwrap_or_default();
+                    w.evaluate_on_ui_thread(format!("global::Passenger.Inspector.BindingValues.Read({literal})"), cx)
+                }
+                false => {
+                    let read = read.clone();
+                    Some(cx.background_executor().spawn(async move {
+                        app.ask("values", json!({ "xaml": read })).map(|reply| reply["values"].to_string())
+                    }))
+                }
+            });
+            let Ok(Some(asked)) = asked else { return };
+            let values =
+                match asked.await.and_then(|json| serde_json::from_str::<Value>(&json).map_err(|e| e.to_string())) {
+                    Ok(values) => values,
+                    Err(why) => json!({ "problem": why }),
+                };
+            let shown = shown_values(&bindings, &values);
+            let _ = this.update(cx, |_, cx| buffer.update(cx, |b, cx| b.set_binding_values(shown, cx)));
+        }));
     }
 
     /// The app's windows and their trees asked again, the chosen element's details with them; not while it is paused.
@@ -201,6 +273,7 @@ impl MainWindow {
                         Ok(details) => live.details = Some(details["details"].clone()),
                         Err(why) => live.status = why,
                     }
+                    w.refresh_binding_values(cx);
                     cx.notify();
                 }
             });
@@ -465,5 +538,71 @@ impl MainWindow {
 
     pub fn live_status(&self) -> Option<String> {
         self.live.as_ref().map(|l| l.status.clone())
+    }
+}
+
+/// What a XAML file shows after its lines (Passenger's Shown): each binding's value, or that it failed and where, or of
+/// an element made more than once with none chosen how many there are; and why none could be read, after the first.
+fn shown_values(bindings: &[Value], values: &Value) -> Vec<(usize, String)> {
+    const LONGEST: usize = 60;
+    let cut = |text: &str| {
+        if text.chars().count() > LONGEST {
+            format!("{}…", text.chars().take(LONGEST).collect::<String>())
+        } else {
+            text.into()
+        }
+    };
+    let line_of = |binding: &Value| binding["endLine"].as_u64().unwrap_or(0) as usize;
+    let mut shown = Vec::new();
+    if let (Some(problem), Some(first)) = (values["problem"].as_str(), bindings.first()) {
+        shown.push((line_of(first), format!("binding values: {}", cut(problem))));
+    }
+    let elements = values["elements"].as_array().cloned().unwrap_or_default();
+    let mut counted = HashSet::new();
+    for binding in bindings {
+        let (line, column) = (binding["line"].as_i64().unwrap_or(0) + 1, binding["column"].as_i64().unwrap_or(0) + 1);
+        let Some(element) = elements.iter().find(|e| e["line"] == line && e["column"] == column) else { continue };
+        let property = binding["property"].as_str().unwrap_or_default();
+        let bound = element["bindings"].as_array().and_then(|b| b.iter().find(|b| b["property"] == property));
+        match bound {
+            None if element["instances"].as_i64().unwrap_or(0) > 1 && counted.insert((line, column)) => shown.push((
+                line_of(binding),
+                format!("{property}: made {} times, choose one in the Live Visual Tree", element["instances"]),
+            )),
+            None => {}
+            Some(bound) => match (bound["failure"].as_str(), bound["value"]["text"].as_str()) {
+                (Some(failure), _) => {
+                    let at = bound["failedAt"].as_str().map(|s| format!(" at {s}")).unwrap_or_default();
+                    shown.push((line_of(binding), format!("{property}: binding failed{at}: {}", cut(failure))))
+                }
+                (None, Some(text)) => {
+                    let since = if bound["unbound"] == true { " (set since: no binding now)" } else { "" };
+                    shown.push((line_of(binding), format!("{property}: {}{since}", cut(text))))
+                }
+                _ => {}
+            },
+        }
+    }
+    shown
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    #[test]
+    fn binding_values_show_after_their_lines_failed_ones_saying_why() {
+        let bindings = [
+            json!({ "line": 7, "column": 9, "property": "Text", "endLine": 7 }),
+            json!({ "line": 8, "column": 9, "property": "Text", "endLine": 9 }),
+        ];
+        let values = json!({ "elements": [
+            { "line": 8, "column": 10, "instances": 1, "bindings": [{ "property": "Text", "value": { "text": "\"Hello\"" } }] },
+            { "line": 9, "column": 10, "instances": 1, "bindings": [{ "property": "Text", "failure": "Could not find Nmae", "failedAt": "Nmae" }] },
+        ] });
+        assert_eq!(
+            super::shown_values(&bindings, &values),
+            [(7, "Text: \"Hello\"".to_string()), (9, "Text: binding failed at Nmae: Could not find Nmae".to_string())]
+        );
     }
 }

@@ -76,6 +76,8 @@ pub struct Buffer {
     pub execution_line: Option<usize>,
     /// The frame's values, set in at the end of the stopped line as Rider's inline values are.
     pub inline_values: Option<(usize, String)>,
+    /// A debugged Avalonia app's binding values, each after the line its binding ends on.
+    pub binding_values: Vec<(usize, String)>,
     /// The exception a stop is on, named at the line that threw it.
     pub exception: Option<(usize, String)>,
     git_comparing: Option<Task<()>>,
@@ -255,6 +257,7 @@ impl Buffer {
             breakpoints: Vec::new(),
             execution_line: None,
             inline_values: None,
+            binding_values: Vec::new(),
             exception: None,
             git_comparing: None,
             grammar,
@@ -382,6 +385,7 @@ impl Buffer {
         let follow = |line: usize| rsharp_text::map_line(&changes, line);
         self.execution_line = self.execution_line.map(follow);
         self.inline_values = self.inline_values.take().map(|(line, text)| (follow(line), text));
+        self.binding_values.iter_mut().for_each(|(line, _)| *line = follow(*line));
         self.exception = self.exception.take().map(|(line, text)| (follow(line), text));
         for (server, uri) in self.server.iter().chain(&self.lint) {
             let content: Vec<_> = changes
@@ -428,6 +432,14 @@ impl Buffer {
     pub fn set_inline_values(&mut self, values: Option<(usize, String)>, cx: &mut Context<Self>) {
         if self.inline_values != values {
             self.inline_values = values;
+            cx.notify();
+        }
+    }
+
+    /// A debugged app's binding values, each after its line; none once nothing reads them.
+    pub fn set_binding_values(&mut self, values: Vec<(usize, String)>, cx: &mut Context<Self>) {
+        if self.binding_values != values {
+            self.binding_values = values;
             cx.notify();
         }
     }

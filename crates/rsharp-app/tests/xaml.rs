@@ -388,6 +388,31 @@ fn avalonia_xaml_completes_marks_and_goes_to_what_its_project_declares(cx: &mut 
     });
     let caret = main.read_with(cx, |m, cx| m.editor().unwrap().read(cx).caret());
     assert_eq!(caret.line, 4, "Go to Declaration did not land on the Greeting property");
+
+    // On a library's type, its code decompiled from Avalonia's assembly, kept in the window's own state, read-only.
+    main.update_in(cx, |m, window_, cx| m.open_file(&window, Some((6, 7)), window_, cx));
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") { "cmd-b" } else { "f12" });
+    wait(cx, "TextBlock's decompiled code opened", |cx| {
+        main.read_with(cx, |m, cx| {
+            m.editor().is_some_and(|e| e.read(cx).path.to_string_lossy().ends_with("Avalonia.Controls.TextBlock.cs"))
+        })
+    });
+    let (opened, read_only, text) = main.read_with(cx, |m, cx| {
+        let editor = m.editor().unwrap().read(cx);
+        (editor.path.clone(), editor.buffer.read(cx).read_only, editor.text().to_string())
+    });
+    assert!(
+        opened.starts_with(rsharp_core::paths::canonical(&run.state)),
+        "the decompiled code was kept outside the window's state: {}",
+        opened.display()
+    );
+    assert!(read_only, "the library's decompiled code opened editable");
+    let line = main.read_with(cx, |m, cx| m.editor().unwrap().read(cx).caret().line);
+    assert!(
+        text.lines().nth(line).is_some_and(|l| l.contains("class TextBlock")),
+        "Go to Declaration did not land on the class: {:?}",
+        text.lines().nth(line)
+    );
 }
 
 #[gpui::test]
@@ -1994,7 +2019,10 @@ fn colours_show_as_gutter_swatches_and_one_chosen_in_the_picker_is_written_back_
     let square = cx.debug_bounds("colour square").expect("the picker has no square");
     cx.simulate_click(square.bottom_left() + gpui::point(gpui::px(2.), gpui::px(-1.)), gpui::Modifiers::default());
     cx.run_until_parked();
-    assert_eq!(editor.read_with(cx, |e, cx| e.picking_colour(cx)).as_deref(), Some("#000000"), "the square's press");
+    let pressed = editor.read_with(cx, |e, _| e.picker_colour()).unwrap();
+    assert!(pressed[1..].iter().all(|c| *c < 8), "the square's bottom is not black: {pressed:?}");
+    let field = editor.read_with(cx, |e, cx| e.picking_colour(cx)).unwrap_or_default();
+    assert_eq!(rsharp_app::colour_picker::parse(&field), Some(pressed), "the field does not say the colour chosen");
     // A colour typed moves the wheel to it.
     cx.simulate_input("#E2A33F");
     cx.run_until_parked();

@@ -26,6 +26,7 @@ change that brings it in.
 | `serde_json` | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
 | `symbolic-ppdb` | MIT | Sentry (https://github.com/getsentry/symbolic) |
 | `trash` | MIT | Artur Kovacs and contributors |
+| `uds_windows` | MIT | Harald Hoyer and contributors (Windows only) |
 | `tree-sitter` | MIT | Max Brunsfeld |
 | `tree-sitter-c-sharp` | MIT | Max Brunsfeld, Damien Guard and contributors |
 | `tree-sitter-css` | MIT | Max Brunsfeld, Amaan Qureshi |

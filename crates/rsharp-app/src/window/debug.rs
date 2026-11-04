@@ -834,6 +834,47 @@ impl MainWindow {
         self.debug.property_breaks.iter().any(|(_, w)| w == watched)
     }
 
+    /// A C# expression whose answer is a string, evaluated at the stop on the app's UI thread, as Passenger reads binding
+    /// values: the stopped thread first, then the main thread, then the first, past one the inspector says is not its UI
+    /// thread; the string, or why none of them answered. None while the app is not paused.
+    pub(super) fn evaluate_on_ui_thread(&self, expression: String, cx: &App) -> Option<Task<Result<String, String>>> {
+        if self.debug.phase != Phase::Paused {
+            return None;
+        }
+        let session = self.debug.session.clone()?;
+        let stopped = self.debug.thread;
+        Some(cx.background_executor().spawn(async move {
+            let threads = session.threads()?;
+            let mut tried: Vec<i64> = stopped.into_iter().collect();
+            tried.extend(threads.iter().filter(|t| t.name == "Main Thread").map(|t| t.id));
+            tried.extend(threads.first().map(|t| t.id));
+            let mut why = "no thread of the app's could evaluate it".to_string();
+            let mut seen = std::collections::HashSet::new();
+            for thread in tried.into_iter().filter(|t| seen.insert(*t)) {
+                let Some(top) = session.stack_trace(thread).ok().and_then(|frames| frames.into_iter().next()) else {
+                    continue;
+                };
+                match session.evaluate(&expression, top.id) {
+                    Ok(answer) if answer.variables_reference != 0 => {
+                        let items = session.variables(answer.variables_reference)?;
+                        let Some(text) = items.first().and_then(|item| unquoted(&item.value)) else {
+                            why = format!("the app answered {}", answer.result);
+                            continue;
+                        };
+                        if serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|v| v["wrongThread"] == true) {
+                            why = "shown at a stop on the app's UI thread, not this one".into();
+                            continue;
+                        }
+                        return Ok(text);
+                    }
+                    Ok(answer) => why = answer.result,
+                    Err(error) => why = error,
+                }
+            }
+            Err(why)
+        }))
+    }
+
     /// XAML Binding Errors on or off, the session told at once.
     pub(super) fn toggle_binding_errors(&mut self, cx: &mut Context<Self>) {
         self.debug.binding_errors = !self.debug.binding_errors;
@@ -1351,6 +1392,7 @@ impl MainWindow {
                 self.debug.phase = Phase::Running;
                 self.debug.thread = None;
                 self.debug.frames.clear();
+                self.refresh_binding_values(cx);
                 self.clear_execution_line(cx);
                 self.debug_view.update(cx, |view, cx| view.running(cx));
                 self.said = Some("Running…".into());
@@ -1557,6 +1599,7 @@ impl MainWindow {
         if resolve_top {
             self.resolve_debug_frame(0, cx);
         }
+        self.refresh_binding_values(cx);
         cx.notify();
     }
 
@@ -3270,5 +3313,36 @@ mod attribute_tests {
         assert_eq!(super::attribute_at(line, line.find("Brush").unwrap()), Some(line.find("Background").unwrap()));
         assert_eq!(super::attribute_at(line, line.find("Content").unwrap() + 2), Some(line.find("Content").unwrap()));
         assert_eq!(super::attribute_at(line, line.find("Button").unwrap()), None, "the element's name is no attribute");
+    }
+}
+
+/// A C# string as the debugger shows it, quoted and escaped, as its text; none for a value that is no string.
+fn unquoted(shown: &str) -> Option<String> {
+    let inner = shown.strip_prefix('"')?.strip_suffix('"')?;
+    let mut text = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            text.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => text.push('\n'),
+            Some('r') => text.push('\r'),
+            Some('t') => text.push('\t'),
+            Some('0') => text.push('\0'),
+            Some(other) => text.push(other),
+            None => {}
+        }
+    }
+    Some(text)
+}
+
+#[cfg(test)]
+mod unquote_tests {
+    #[test]
+    fn a_strings_shown_value_reads_back_as_its_text() {
+        assert_eq!(super::unquoted(r#""{\"a\":\"x\\y\"}""#).as_deref(), Some(r#"{"a":"x\y"}"#));
+        assert_eq!(super::unquoted("{App.Person}"), None, "an object is no string");
     }
 }

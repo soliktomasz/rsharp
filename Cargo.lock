@@ -4823,6 +4823,7 @@ dependencies = [
  "serde",
  "serde_json",
  "symbolic-ppdb",
+ "uds_windows",
  "windows-sys 0.59.0",
 ]
 

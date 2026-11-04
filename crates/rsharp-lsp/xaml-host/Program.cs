@@ -73,6 +73,7 @@ public static class Program
                 "surround" => Surround(asked),
                 "extract" => Extract(asked),
                 "colours" => ColoursOf(asked),
+                "bindings" => Bindings(asked),
                 "recolour" => Recolour(asked),
                 "preview_update" => Previews.Update(asked),
                 "preview_stop" => Previews.Stop(asked),
@@ -416,6 +417,45 @@ public static class Program
         ["textDocument"] = new JsonObject { ["uri"] = uri },
         ["edits"] = new JsonArray([.. edits.Select(e => (JsonNode)new JsonObject { ["range"] = Range(text, e.Start, e.End), ["newText"] = e.Text })]),
     };
+
+    private static readonly HashSet<string> BindingKinds = new(StringComparer.Ordinal) { "Binding", "CompiledBinding", "ReflectionBinding", "TemplateBinding" };
+
+    /// <summary>The bindings a XAML text writes as markup extensions, as Passenger's XamlBindings reads them: the element
+    /// each is on (where its name starts, from zero), the class a root element names, the property it sets, and the line
+    /// its markup extension ends on, after which its value shows. A style's setter binds on other controls: left out.</summary>
+    private static JsonNode Bindings(JsonNode asked)
+    {
+        string text = asked["text"]!.GetValue<string>();
+        XmlTree tree = XmlTree.Parse(text);
+        JsonArray found = [];
+        foreach (XmlElement element in tree.Elements)
+        {
+            if (element.IsPropertyElement || element.LocalName == "Setter")
+            {
+                continue;
+            }
+            string? root = element == tree.Root ? element.Attribute("x:Class")?.Value : null;
+            JsonObject at = Point(text, element.NameStart);
+            foreach (XmlAttribute attribute in element.Attributes)
+            {
+                if (!attribute.HasValue || attribute.Name == "xmlns" || attribute.Prefix is "x" or "d" or "mc" or "xmlns"
+                    || MarkupExtension.Parse(text, attribute.ValueStart, attribute.ValueEnd) is not { Prefix.Length: 0 } extension
+                    || !BindingKinds.Contains(extension.LocalName))
+                {
+                    continue;
+                }
+                found.Add(new JsonObject
+                {
+                    ["line"] = at["line"]!.DeepClone(),
+                    ["column"] = at["character"]!.DeepClone(),
+                    ["class"] = root,
+                    ["property"] = attribute.Name,
+                    ["endLine"] = Point(text, Math.Max(extension.Start, extension.End - 1))["line"]!.DeepClone(),
+                });
+            }
+        }
+        return found;
+    }
 
     /// <summary>Where the XAML of a class names an element: what the field Avalonia's generator makes for it leads to.</summary>
     private static JsonNode? Element(JsonNode asked)

@@ -59,12 +59,16 @@ static MADE: AtomicUsize = AtomicUsize::new(0);
 impl LiveApp {
     /// Listens for the app, `told` called on the connection's thread with what it says unasked; the variables the launch
     /// sets so the app loads the inspector and connects (after any startup hooks `environment` names already).
-    #[cfg(unix)]
     pub fn listen(
         environment: &BTreeMap<String, String>,
         told: impl Fn(Told) + Send + 'static,
     ) -> std::io::Result<(Self, BTreeMap<String, String>)> {
+        // Windows has Unix sockets since Windows 10, which the inspector's .NET connects to as it does elsewhere; only
+        // Rust's standard library lacks them there.
+        #[cfg(unix)]
         use std::os::unix::net::UnixListener;
+        #[cfg(windows)]
+        use uds_windows::UnixListener;
         let inspector = carried().ok_or_else(|| std::io::Error::other("RSharp's build carries no inspector"))?;
         let made = MADE.fetch_add(1, Ordering::Relaxed);
         // A short name: macOS takes no socket path over 104 bytes.
@@ -127,16 +131,6 @@ impl LiveApp {
             ("DOTNET_STARTUP_HOOKS".to_string(), hooks),
         ]);
         Ok((Self { socket, writer, waiting, next: AtomicI64::new(1) }, variables))
-    }
-
-    // shortcut: no Unix domain socket in Rust's standard library on Windows, so no Live Visual Tree there; listen through
-    // a crate for Windows' AF_UNIX (or a named pipe the inspector also speaks) once Windows users debug Avalonia apps.
-    #[cfg(not(unix))]
-    pub fn listen(
-        _: &BTreeMap<String, String>,
-        _: impl Fn(Told) + Send + 'static,
-    ) -> std::io::Result<(Self, BTreeMap<String, String>)> {
-        Err(std::io::Error::other("the Live Visual Tree is not available on Windows yet"))
     }
 
     /// A request by the protocol's method and its other fields, and its answer; an error says why there is none (the

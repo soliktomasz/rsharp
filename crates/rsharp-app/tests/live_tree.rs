@@ -38,10 +38,6 @@ fn app(name: &str) -> Option<Run> {
         eprintln!("skipped: Passenger's debug adapter or inspector is not built");
         return None;
     }
-    if !cfg!(unix) {
-        eprintln!("skipped: the Live Visual Tree listens on a Unix socket");
-        return None;
-    }
     let debuggee = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/passenger/tests/Debuggees/LiveTreeApp");
     let files: Vec<(String, String)> = ["App.axaml", "App.axaml.cs", "MainWindow.axaml.cs", "Program.cs"]
         .iter()
@@ -106,6 +102,24 @@ fn a_debugged_avalonia_apps_tree_its_elements_xaml_and_its_failed_binding_are_sh
     pump(cx, "the failed binding in the Debug console", |cx| console(cx).contains("binding error"));
     let said = console(cx);
     assert!(said.contains("MainWindow.axaml(9,") && said.contains("Nmae"), "the binding error's line: {said}");
+
+    // The window's XAML in the editor and the caption chosen: its binding's value shows after its line, failed.
+    let xaml = rsharp_core::paths::canonical(&run.folder.join("MainWindow.axaml"));
+    cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
+    main.update_in(cx, |m, window, cx| m.open_file(&xaml, None, window, cx));
+    let caption = cx.debug_bounds("live element TextBlock#Caption").expect("the caption's row");
+    cx.simulate_click(caption.center(), Modifiers::default());
+    let values = |cx: &mut VisualTestContext| {
+        main.read_with(cx, |_, cx| {
+            rsharp_app::buffer::find(&xaml, cx).map(|b| b.read(cx).binding_values.clone()).unwrap_or_default()
+        })
+    };
+    pump(cx, "the caption's binding value after its line", |cx| !values(cx).is_empty());
+    assert!(
+        values(cx).iter().any(|(line, text)| *line == 8 && text.starts_with("Text: binding failed")),
+        "the caption's failed binding is not after its line: {:?}",
+        values(cx)
+    );
     cx.simulate_keystrokes("shift-f5");
     cx.run_until_parked();
 }

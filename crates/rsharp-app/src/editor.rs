@@ -1723,6 +1723,7 @@ impl Element for EditorElement {
                 .filter_map(|(i, c)| Some((c.line, swatch_colour(&c.colour)?, i)))
                 .collect();
             let inline_values = buffer.inline_values.clone();
+            let binding_values = buffer.binding_values.clone();
             let exception = buffer.exception.clone();
             let parsed = buffer.grammar.zip(buffer.tree.as_ref());
             let syntax: Vec<Highlight> = parsed
@@ -1783,6 +1784,11 @@ impl Element for EditorElement {
                     && row.last
                 {
                     hints.push((row.end - row.start, values.as_str()));
+                }
+                if row.last {
+                    for (_, value) in binding_values.iter().filter(|(line, _)| *line == row.line) {
+                        hints.push((row.end - row.start, value.as_str()));
+                    }
                 }
                 lines.push(Shaped::new(&content, runs, &hints, font_size, &code_font, window));
                 let number = (row.first && show_numbers).then(|| {

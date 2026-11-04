@@ -86,6 +86,11 @@ jobs:
           sudo dscacheutil -flushcache
           sudo security authorizationdb write system.privilege.taskport is-developer
 
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
       - name: Tests
-        # Every suite runs even after one fails, so a run shows all that failed, not only the first binary's.
-        run: cargo test --workspace --no-fail-fast
+        # Every binary's tests at once, the debugging ones one at a time (.config/nextest.toml); every test runs even
+        # after one fails, so a run shows all that failed.
+        run: cargo nextest run --workspace --no-fail-fast

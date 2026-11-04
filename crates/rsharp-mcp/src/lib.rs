@@ -4,6 +4,7 @@
 //! A place is a file with a line and column (from 1, as a person counts them), or a symbol's name.
 
 mod app;
+mod query;
 
 use rsharp_core::encodings::{Charset, decode, encode};
 use rsharp_core::paths;
@@ -102,7 +103,7 @@ const INSTRUCTIONS: &str = "RSharp's view of this folder's C#, from the Roslyn l
 see what does not compile, `find_symbol` and `outline` to find your way, `usages` before changing a symbol, `rename` \
 to rename one across every file (a type's file renamed with it), and `edit` to change a file and see its problems at \
 once. Lines and columns count from 1. An Avalonia app is driven with `app_run`, then `app_tree`, `app_details`, \
-`app_capture` and `app_input` by the ids `app_tree` gives, and `app_stop`.";
+`app_capture` and `app_input` naming an element by a query (`Button#Save`, `\"Save\"`, `@12`), and `app_stop`.";
 
 /// Each tool: its name, what it does, and its arguments' schema.
 fn tools() -> Value {

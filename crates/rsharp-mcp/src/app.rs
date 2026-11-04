@@ -20,24 +20,24 @@ pub struct App {
 }
 
 /// The tools' schemas, added to the server's list.
-// shortcut: an element is named by the id app_tree gives it, not Passenger's query (type, #name, .class, "text");
-// add AppQuery's once agents find ids too much to look up.
 pub fn tools() -> Vec<Value> {
-    let element = json!({ "type": "integer", "description": "An element's id, as app_tree lists it" });
+    let element = json!({ "type": "string", "description": "The element: steps joined by /, each an @id from app_tree, or a type, #name, .class and \"text\" in any mix, with [n] for the nth match (Button#Save, \"Save\", #Panel/Button[2])" });
     vec![
         json!({ "name": "app_run", "annotations": { "readOnlyHint": false }, "description": "Builds an Avalonia project and runs it with RSharp's inspector, answering once its UI is up; the app tools then drive it.",
           "inputSchema": { "type": "object", "properties": { "project": { "type": "string", "description": "The project file, absolute or from the folder; the folder's one executable project by default" } } } }),
         json!({ "name": "app_windows", "annotations": { "readOnlyHint": true }, "description": "The running app's windows and popups: id, type, title, size.",
           "inputSchema": { "type": "object", "properties": {} } }),
         json!({ "name": "app_tree", "annotations": { "readOnlyHint": true }, "description": "The running app's visual tree, an element a line, indented: its id, type, #name, .classes, its box in its window, its text and state.",
-          "inputSchema": { "type": "object", "properties": { "properties": { "type": "array", "items": { "type": "string" }, "description": "Avalonia properties to read on each element (Owner.Name when attached)" } } } }),
-        json!({ "name": "app_details", "annotations": { "readOnlyHint": true }, "description": "An element's properties with each value's source, and where its XAML is.",
-          "inputSchema": { "type": "object", "properties": { "element": element }, "required": ["element"] } }),
-        json!({ "name": "app_capture", "annotations": { "readOnlyHint": true }, "description": "A picture the app draws of a window, or of an element's part of it, as a PNG.",
-          "inputSchema": { "type": "object", "properties": { "element": element, "scale": { "type": "number" } }, "required": ["element"] } }),
-        json!({ "name": "app_input", "annotations": { "readOnlyHint": false }, "description": "Input as a person gives it: kind click (at element's centre, or x,y from its top left), type (text, replace), key (keys: [{key, modifiers}]) or scroll (deltaX, deltaY). Answers what it hit and what that shows after.",
           "inputSchema": { "type": "object", "properties": {
-              "kind": { "type": "string", "enum": ["click", "type", "key", "scroll"] }, "element": element,
+              "filter": { "type": "string", "description": "Only what this query finds, with what is inside it (see control)" },
+              "properties": { "type": "array", "items": { "type": "string" }, "description": "Avalonia properties to read on each element (Owner.Name when attached)" } } } }),
+        json!({ "name": "app_details", "annotations": { "readOnlyHint": true }, "description": "An element's properties with each value's source, and where its XAML is.",
+          "inputSchema": { "type": "object", "properties": { "control": element }, "required": ["control"] } }),
+        json!({ "name": "app_capture", "annotations": { "readOnlyHint": true }, "description": "A picture the app draws of a window, or of an element's part of it, as a PNG.",
+          "inputSchema": { "type": "object", "properties": { "control": element, "scale": { "type": "number" } }, "required": ["control"] } }),
+        json!({ "name": "app_input", "annotations": { "readOnlyHint": false }, "description": "Input as a person gives it: kind click (at control's centre, or x,y from its top left), type (text, replace), key (keys: [{key, modifiers}]) or scroll (deltaX, deltaY). Answers what it hit and what that shows after.",
+          "inputSchema": { "type": "object", "properties": {
+              "kind": { "type": "string", "enum": ["click", "type", "key", "scroll"] }, "control": element,
               "x": { "type": "number" }, "y": { "type": "number" }, "button": { "type": "string" }, "count": { "type": "integer" },
               "text": { "type": "string" }, "replace": { "type": "boolean" }, "keys": { "type": "array" },
               "deltaX": { "type": "number" }, "deltaY": { "type": "number" } }, "required": ["kind"] } }),
@@ -155,55 +155,77 @@ impl App {
             .join("\n"))
     }
 
+    /// The app's tree with each element's place, text and state, and the properties asked for.
+    fn tree(&self, properties: Value) -> Result<Value, String> {
+        self.live.ask("tree", json!({ "layout": true, "properties": properties }))
+    }
+
+    /// The id of the one element a tool's `control` query names.
+    fn named(&self, args: &Value, tool: &str) -> Result<i64, String> {
+        let query = args["control"].as_str().ok_or_else(|| format!("{tool} needs control"))?;
+        let tree = self.tree(Value::Null)?;
+        let roots = tree["tree"]["roots"].as_array().cloned().unwrap_or_default();
+        let nodes = crate::query::flatten(&roots);
+        let found = crate::query::one(&nodes, query)?;
+        nodes[found].element["id"].as_i64().ok_or_else(|| "The app named the element no id".into())
+    }
+
     /// A tool's answer as MCP content: text, or an image for a capture.
     pub fn call(&mut self, tool: &str, args: &Value) -> Result<Value, String> {
         let text = |t: String| json!([{ "type": "text", "text": t }]);
         let answer = match tool {
             "app_windows" => text(self.windows()?),
             "app_tree" => {
-                let properties = args["properties"].clone();
-                let tree = self.live.ask("tree", json!({ "layout": true, "properties": properties }))?;
+                let tree = self.tree(args["properties"].clone())?;
+                let roots = tree["tree"]["roots"].as_array().cloned().unwrap_or_default();
+                let nodes = crate::query::flatten(&roots);
+                let shown: Vec<&Value> = match args["filter"].as_str() {
+                    Some(filter) => crate::query::find(&nodes, filter)?.into_iter().map(|n| nodes[n].element).collect(),
+                    None => roots.iter().collect(),
+                };
                 let mut lines = Vec::new();
-                fn walk(nodes: &[Value], depth: usize, lines: &mut Vec<String>) {
-                    for node in nodes {
-                        let name = node["name"].as_str().map(|n| format!("#{n}")).unwrap_or_default();
-                        let classes: String = node["classes"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(Value::as_str)
-                            .map(|c| format!(".{c}"))
-                            .collect();
-                        let b = &node["bounds"];
-                        let bounds = if b.is_object() {
-                            format!(" [{},{} {}x{}]", b["x"], b["y"], b["width"], b["height"])
-                        } else {
-                            String::new()
-                        };
-                        let shows = node["text"].as_str().map(|t| format!(" \"{t}\"")).unwrap_or_default();
-                        let state = [("disabled", "disabled"), ("focused", "focused"), ("outOfView", "out of view")]
-                            .iter()
-                            .filter(|(key, _)| node[*key] == true)
-                            .map(|(_, word)| format!(" {word}"))
-                            .collect::<String>();
-                        let values = node["values"]
-                            .as_object()
-                            .map(|v| format!(" {}", Value::Object(v.clone())))
-                            .unwrap_or_default();
-                        lines.push(format!(
-                            "{}{} {}{name}{classes}{bounds}{shows}{state}{values}",
-                            "  ".repeat(depth),
-                            node["id"],
-                            node["type"].as_str().unwrap_or_default()
-                        ));
-                        walk(node["children"].as_array().map_or(&[][..], |c| c), depth + 1, lines);
+                fn walk(node: &Value, depth: usize, lines: &mut Vec<String>) {
+                    let name = node["name"].as_str().map(|n| format!("#{n}")).unwrap_or_default();
+                    let classes: String = node["classes"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .map(|c| format!(".{c}"))
+                        .collect();
+                    let b = &node["bounds"];
+                    let bounds = if b.is_object() {
+                        format!(" [{},{} {}x{}]", b["x"], b["y"], b["width"], b["height"])
+                    } else {
+                        String::new()
+                    };
+                    let shows = node["text"].as_str().map(|t| format!(" \"{t}\"")).unwrap_or_default();
+                    let state = [("disabled", "disabled"), ("focused", "focused"), ("outOfView", "out of view")]
+                        .iter()
+                        .filter(|(key, _)| node[*key] == true)
+                        .map(|(_, word)| format!(" {word}"))
+                        .collect::<String>();
+                    let values = node["values"]
+                        .as_object()
+                        .map(|v| format!(" {}", Value::Object(v.clone())))
+                        .unwrap_or_default();
+                    lines.push(format!(
+                        "{}@{} {}{name}{classes}{bounds}{shows}{state}{values}",
+                        "  ".repeat(depth),
+                        node["id"],
+                        node["type"].as_str().unwrap_or_default()
+                    ));
+                    for child in node["children"].as_array().into_iter().flatten() {
+                        walk(child, depth + 1, lines);
                     }
                 }
-                walk(tree["tree"]["roots"].as_array().map_or(&[][..], |r| r), 0, &mut lines);
+                for node in shown {
+                    walk(node, 0, &mut lines);
+                }
                 text(lines.join("\n"))
             }
             "app_details" => {
-                let element = args["element"].as_i64().ok_or("app_details needs element")?;
+                let element = self.named(args, "app_details")?;
                 let details = self.live.ask("details", json!({ "element": element }))?;
                 let d = &details["details"];
                 let source = d["source"]["file"]
@@ -226,7 +248,7 @@ impl App {
                 text(format!("{} at {source}\n{}", d["fullType"].as_str().unwrap_or_default(), properties.join("\n")))
             }
             "app_capture" => {
-                let element = args["element"].as_i64().ok_or("app_capture needs element")?;
+                let element = self.named(args, "app_capture")?;
                 let picture = self.live.ask("capture", json!({ "element": element, "scale": args["scale"] }))?;
                 // The protocol's PNG is a byte array, which System.Text.Json writes in base64.
                 let png = picture["picture"]["png"].as_str().ok_or("The app drew nothing")?;
@@ -234,8 +256,10 @@ impl App {
             }
             "app_input" => {
                 let mut input = args.clone();
-                input.as_object_mut().map(|o| o.remove("element"));
-                input["element"] = args["element"].clone();
+                // Keys and typing go to whatever has the focus when no control is named.
+                let element = if args["control"].is_string() { Some(self.named(args, "app_input")?) } else { None };
+                input.as_object_mut().map(|o| o.remove("control"));
+                input["element"] = json!(element);
                 let done = self.live.ask("input", json!({ "input": input }))?;
                 let d = &done["done"];
                 text(format!(

@@ -6,8 +6,10 @@ build:
 run *args:
     cargo run --bin rsharp -- {{args}}
 
+# Every test, under cargo-nextest (cargo install cargo-nextest --locked): every binary's tests at once, the debugging
+# ones one at a time (.config/nextest.toml).
 test filter="":
-    cargo test --workspace {{filter}}
+    cargo nextest run --workspace {{filter}}
 
 release:
     cargo build --release
