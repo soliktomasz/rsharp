@@ -254,9 +254,50 @@ impl CodeEditor {
         }));
     }
 
+    /// Refactor This in XAML, as Passenger lists it: Rename on an element's name, then Extract Resource and Extract
+    /// Style where the host finds what they would take at the caret; each runs as its own action does.
+    pub(super) fn xaml_refactorings(&mut self, cx: &mut Context<Self>) {
+        let Some((host, project)) = self.buffer.read(cx).xaml.clone() else { return };
+        let (path, text, head) = (self.path.clone(), self.text.to_string(), self.primary().head);
+        let at = language::point(&self.text, head);
+        let found = cx.background_executor().spawn(async move {
+            let mut offered = Vec::new();
+            if let Ok(Some(symbol)) = host.symbol(&project, &path, &text, at)
+                && symbol.named.is_some()
+            {
+                offered.push(("Rename…".to_string(), "rename"));
+            }
+            for extract in [crate::xaml_dialog::Extract::Resource, crate::xaml_dialog::Extract::Style] {
+                let found = host.extract(&project, &path, &text, at, extract.kind(), serde_json::json!({}));
+                if found.is_ok_and(|f| !f["why"].is_string()) {
+                    offered.push((format!("{}…", extract.title()), extract.kind()));
+                }
+            }
+            offered
+        });
+        self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
+            let actions: Vec<rsharp_lsp::CodeAction> = found
+                .await
+                .into_iter()
+                .map(|(title, kind)| rsharp_lsp::CodeAction {
+                    title,
+                    quick_fix: false,
+                    raw: serde_json::json!({ "xamlRefactoring": kind }),
+                    lint: false,
+                })
+                .collect();
+            let _ = this.update(cx, |e, cx| {
+                if actions.is_empty() {
+                    cx.emit(Said("No refactorings here".into()));
+                } else if e.primary().head == head {
+                    e.show(Popup::Actions { actions, selected: 0 }, head, cx);
+                }
+            });
+        }));
+    }
+
     /// Extract Resource or Extract Style: what is at the caret asked of the host, then its dialog over the window, or
     /// why there is nothing to extract.
-    // shortcut: no Refactor This list (Rider's Ctrl+T) offers them; add one once a second XAML refactoring needs it.
     pub(super) fn xaml_extract(&mut self, extract: crate::xaml_dialog::Extract, cx: &mut Context<Self>) {
         if !self.is_xaml() {
             cx.emit(Said(format!("{} is for XAML files", extract.title())));
@@ -286,7 +327,6 @@ impl CodeEditor {
 
     /// The colour picker over a swatch, its colour written as XAML writes one (`#RRGGBB`, its alpha first when not
     /// opaque), selected to type over.
-    // shortcut: a field taking a colour as written, not Rider's colour wheel; draw one once a field is too little.
     pub(super) fn pick_colour(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(colour) = self.buffer.read(cx).colours.get(index).cloned() else { return };
         let Some(write) = &colour.write else {
@@ -317,16 +357,43 @@ impl CodeEditor {
             field.select_all(cx);
             field
         });
+        // A colour typed moves the square and the bars to it; a name is the host's to read once chosen.
+        cx.subscribe(&field, |e, field, _: &crate::field::Changed, cx| {
+            let typed = field.read(cx).text().to_string();
+            if let Some(Popup::Colour { pick, .. }) = &mut e.assist.popup
+                && pick.take_typed(&typed)
+            {
+                cx.notify();
+            }
+        })
+        .detach();
+        let pick = crate::colour_picker::Pick::new(crate::colour_picker::parse(&colour.colour).unwrap_or([255; 4]));
         // After the click that opened it, which gives the editor the keys as it ends.
         let focus = field.focus_handle(cx);
         window.defer(cx, move |window, _| window.focus(&focus));
         let line = self.text.line_to_byte(colour.line.min(self.text.len_lines().saturating_sub(1)));
-        self.show(Popup::Colour { field, colour, before }, line, cx);
+        self.show(Popup::Colour { field, colour, before, pick }, line, cx);
+    }
+
+    /// A press or drag in the picker: the colour at the pointer in the area it was pressed on, written in the field.
+    pub(super) fn drag_colour(&mut self, at: gpui::Point<gpui::Pixels>, pressed: bool, cx: &mut Context<Self>) {
+        let Some(Popup::Colour { field, pick, .. }) = &mut self.assist.popup else { return };
+        if pressed {
+            pick.dragging = pick.area_at(at);
+        }
+        let Some(area) = pick.dragging else { return };
+        pick.choose(area, at);
+        let (field, hex) = (field.clone(), pick.hex());
+        field.update(cx, |f, cx| {
+            f.set_text(&hex, cx);
+            f.select_all(cx);
+        });
+        cx.notify();
     }
 
     /// Enter in the picker: the colour typed written back where the swatch's colour is written, as it was written.
     pub(super) fn finish_colour(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(Popup::Colour { field, colour, before }) = self.assist.popup.take() else { return };
+        let Some(Popup::Colour { field, colour, before, .. }) = self.assist.popup.take() else { return };
         window.focus(&self.focus);
         let typed = field.read(cx).text().trim().to_string();
         let buffer = self.buffer.read(cx);
@@ -398,6 +465,14 @@ impl CodeEditor {
         Some(bounds.center())
     }
 
+    /// Test access: the picker's colour as `#AARRGGBB` while it is open.
+    pub fn picker_colour(&self) -> Option<[u8; 4]> {
+        match &self.assist.popup {
+            Some(Popup::Colour { pick, .. }) => Some(pick.argb()),
+            _ => None,
+        }
+    }
+
     /// Test access: the colour typed in the picker while it is open.
     pub fn picking_colour(&self, cx: &App) -> Option<String> {
         match &self.assist.popup {
@@ -406,17 +481,26 @@ impl CodeEditor {
         }
     }
 
-    /// Go to Declaration in a XAML file: a type's or member's C#, a resource's definition, a named element, a file.
+    /// Go to Declaration in a XAML file: a type's or member's C#, a resource's definition, a named element, a file; a
+    /// library's type decompiled and a theme's own XAML through its Source Link, each opened read-only.
     pub(super) fn xaml_declaration(&mut self, cx: &mut Context<Self>) {
         let Some((host, project)) = self.buffer.read(cx).xaml.clone() else { return };
         let (path, text) = (self.path.clone(), self.text.to_string());
         let at = language::point(&self.text, self.primary().head);
         let found = cx.background_executor().spawn(async move { host.symbol(&project, &path, &text, at) });
         self.assist.popup_task = Some(cx.spawn(async move |this, cx| {
-            let to = found.await.ok().flatten().map(|s| s.targets).unwrap_or_default();
-            let _ = this.update(cx, |_, cx| match to.is_empty() {
-                true => cx.emit(Said("Cannot find declaration to go to".into())),
-                false => cx.emit(Navigate { title: "Declaration".into(), to, list: false }),
+            let found = found.await.ok().flatten();
+            let said = found.as_ref().and_then(|s| s.said.clone());
+            let to = found.map(|s| s.targets).unwrap_or_default();
+            let _ = this.update(cx, |_, cx| {
+                if to.is_empty() {
+                    cx.emit(Said(said.unwrap_or_else(|| "Cannot find declaration to go to".into())));
+                } else {
+                    cx.emit(Navigate { title: "Declaration".into(), to, list: false });
+                    if let Some(said) = said {
+                        cx.emit(Said(said));
+                    }
+                }
             });
         }));
     }

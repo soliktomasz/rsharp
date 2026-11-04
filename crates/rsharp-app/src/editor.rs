@@ -88,6 +88,7 @@ actions!(
         ParameterInfo,
         QuickDocumentation,
         ShowContextActions,
+        RefactorThis,
         Rename,
         Reformat,
         FixEslintProblems,
@@ -496,7 +497,7 @@ impl CodeEditor {
         self.edited(after, &changes, cx);
     }
 
-    fn undo(&mut self, redo: bool, cx: &mut Context<Self>) {
+    fn undo(&mut self, redo: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.console.is_some() {
             return;
         }
@@ -506,6 +507,37 @@ impl CodeEditor {
             cx.emit(ReadOnlyEdit);
             return;
         }
+        // A change made across files is taken back whole, asked first, as Rider's global undo is.
+        let text = self.text.to_string();
+        if let Some(files) = crate::global_undo::offered(&self.path, &text, redo, cx) {
+            let verb = if redo { "Redo" } else { "Undo" };
+            cx.spawn_in(window, async move |this, cx| {
+                let asked = this.update_in(cx, |_, window, cx| {
+                    window.prompt(
+                        gpui::PromptLevel::Info,
+                        &format!("{verb} the change to {files} files?"),
+                        Some("It was made across files, which take it back together."),
+                        &[&format!("{verb} All"), "This File Only", "Cancel"],
+                        cx,
+                    )
+                });
+                let Ok(answer) = asked else { return };
+                let _ = match answer.await {
+                    Ok(0) => this.update(cx, |_, cx| match crate::global_undo::run(redo, cx) {
+                        Ok(done) | Err(done) => cx.emit(Said(done)),
+                    }),
+                    Ok(1) => this.update(cx, |e, cx| e.undo_file(redo, cx)),
+                    _ => Ok(()),
+                };
+            })
+            .detach();
+            return;
+        }
+        self.undo_file(redo, cx);
+    }
+
+    /// Undo or Redo of this file's own last step.
+    fn undo_file(&mut self, redo: bool, cx: &mut Context<Self>) {
         let me = cx.entity_id();
         if let Some((after, changes)) = self.buffer.update(cx, |b, cx| b.undo(redo, me, cx)) {
             self.edited(after, &changes, cx);
@@ -1270,15 +1302,13 @@ moves! {
     PageDown => |e, cx| { let p = e.page(); e.vertical(p, false, cx) };
     SelectAll => |e, cx| { let len = e.text.len_bytes(); e.set_selections(vec![Selection { anchor: 0, head: len }]); cx.notify() };
     Backspace => |e, cx| {
-        let plan = if e.is_xaml() { backspace_quotes(&e.text, e.carets.as_slice()) } else { backspace(&e.text, e.carets.as_slice()) };
+        let plan = backspace_pairs(&e.text, e.carets.as_slice());
         e.apply(plan, cx);
         e.backspaced(cx)
     };
     Delete => |e, cx| { let plan = delete(&e.text, e.carets.as_slice()); e.apply(plan, cx) };
     Newline => |e, cx| { if e.popup_choose(cx) { return } if e.console_input { cx.emit(ConsoleInput("\n".into())); return } let indent = e.buffer.read(cx).indent; let plan = newline(&e.text, e.carets.as_slice(), &indent); e.apply(plan, cx) };
     Tab => |e, cx| { if e.popup_choose(cx) || e.next_template_stop(cx) || e.expand_template(cx) { return } let indent = e.buffer.read(cx).indent; let plan = tab(&e.text, e.carets.as_slice(), &indent); e.apply(plan, cx) };
-    Undo => |e, cx| e.undo(false, cx);
-    Redo => |e, cx| e.undo(true, cx);
     Copy => |e, cx| { let text = e.selected_text(); if !text.is_empty() { cx.write_to_clipboard(ClipboardItem::new_string(text)) } };
     Cut => |e, cx| {
         let text = e.selected_text();
@@ -1330,7 +1360,8 @@ moves! {
     Complete => |e, cx| e.request_completion(None, true, cx);
     ParameterInfo => |e, cx| e.request_signature(false, cx);
     QuickDocumentation => |e, cx| { let head = e.primary().head; e.request_hover(head, false, cx) };
-    ShowContextActions => |e, cx| e.request_actions(cx);
+    ShowContextActions => |e, cx| e.request_actions(false, cx);
+    RefactorThis => |e, cx| if e.is_xaml() { e.xaml_refactorings(cx) } else { e.request_actions(true, cx) };
     Reformat => |e, cx| e.reformat(cx);
     FixEslintProblems => |e, cx| e.fix_lint_problems(cx);
     GoToDeclaration => |e, cx| e.go_to("textDocument/definition", "Declaration", cx);
@@ -1375,7 +1406,10 @@ impl Focusable for CodeEditor {
 }
 
 impl Render for CodeEditor {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if std::mem::take(&mut self.assist.rename_next) {
+            self.start_rename(window, cx);
+        }
         if self.console.is_none() {
             self.refresh_assist(cx);
         }
@@ -1414,6 +1448,8 @@ impl Render for CodeEditor {
         bind_moves(element, cx)
             .on_action(cx.listener(Self::escape))
             .on_action(cx.listener(|e, _: &Rename, window, cx| e.start_rename(window, cx)))
+            .on_action(cx.listener(|e, _: &Undo, window, cx| e.undo(false, window, cx)))
+            .on_action(cx.listener(|e, _: &Redo, window, cx| e.undo(true, window, cx)))
             .on_action(cx.listener(|e, _: &SafeDelete, window, cx| e.safe_delete(window, cx)))
             .child(EditorElement { editor: cx.entity() })
             .children(popup)
@@ -1481,10 +1517,9 @@ impl EntityInputHandler for CodeEditor {
                 }
             }
             None => {
-                let plan = match text {
-                    "\"" | "'" if self.is_xaml() => {
-                        type_quote(&self.text, self.carets.as_slice(), text.as_bytes()[0] as char)
-                    }
+                let mut chars = text.chars();
+                let plan = match (chars.next(), chars.next()) {
+                    (Some(c), None) => type_char(&self.text, self.carets.as_slice(), c),
                     _ => EditPlan { kind: EditKind::Typing, ..insert(&self.text, self.carets.as_slice(), text) },
                 };
                 self.apply(plan, cx);

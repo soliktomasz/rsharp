@@ -86,8 +86,9 @@ Microsoft.Build.Locator (MIT, .NET Foundation); the extension is compiled agains
 Krafs.Publicizer (MIT, Krafs), which carries nothing into the output. RSharp's own XAML host
 (`crates/rsharp-lsp/xaml-host/`, published by the same build.rs) is built on Passenger.Xaml and Passenger.Text,
 unchanged, and carries them with Microsoft.CodeAnalysis.CSharp (MIT, .NET Foundation), Passenger.Xaml's C# parser,
-and Avalonia.Remote.Protocol (MIT, AvaloniaUI OÜ), which the XAML Preview speaks to the project's own Avalonia
-previewer.
+Avalonia.Remote.Protocol (MIT, AvaloniaUI OÜ), which the XAML Preview speaks to the project's own Avalonia
+previewer, and ICSharpCode.Decompiler (MIT, AlphaSierraPapa for the SharpDevelop Team), ILSpy's decompiler, which Go to
+Declaration uses for a library's type.
 
 ### Inside `sidecars/web/`
 
@@ -130,7 +131,8 @@ The project-template family rules, pack metadata and template-creation behavior 
 `crates/rsharp-core/src/templates/` are ported from Passenger's `src/Passenger.App/Templates/`, and the NuGet
 sources, feeds and window in `crates/rsharp-core/src/nuget/` and `crates/rsharp-app/src/nuget_view.rs` from its
 `src/Passenger.App/Packages/` and `ToolWindows/NuGetView.cs`, and the MSBuild code help in `crates/rsharp-core/src/msbuild/`
-from its `src/Passenger.App/MSBuild/` (MIT, Copyright (c) 2026 Ted L,
+from its `src/Passenger.App/MSBuild/`, and the XAML host's `Library.cs` from its `src/Passenger.App/Xaml/LibrarySources.cs`,
+`SourceLink.cs` and `CSharp/CodeAssist.Xaml.cs`' theme search (MIT, Copyright (c) 2026 Ted L,
 https://github.com/Zaneris/passenger).
 
 ## Run, not carried

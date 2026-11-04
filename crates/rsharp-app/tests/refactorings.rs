@@ -111,6 +111,17 @@ fn optimize_usings_encapsulate_field_and_safe_delete_change_the_code_as_roslyn_s
     cx.simulate_keystrokes(key("cmd-delete", "alt-delete"));
     assert!(wait_for(cx, |cx| !text(&main, cx).contains("Unused")), "Safe Delete kept the method nothing uses");
 
+    // Refactor This lists only the refactorings of the selection, none of the context actions beside them.
+    let editor = main.read_with(cx, |m, _| m.editor().unwrap());
+    let body = text(&main, cx).find("price + count").unwrap();
+    editor.update(cx, |e, cx| e.select_range(body..body + "price + count + Used()".len(), cx));
+    cx.simulate_keystrokes(key("ctrl-t", "ctrl-shift-r"));
+    let listed = wait_for(cx, |cx| editor.read_with(cx, |e, _| e.actions_shown()).is_some());
+    let offered = editor.read_with(cx, |e, _| e.actions_shown()).unwrap_or_default();
+    assert!(listed && offered.iter().any(|t| t == "Extract method"), "Refactor This listed {offered:?}");
+    assert!(!offered.iter().any(|t| t.starts_with("Suppress")), "Refactor This listed a context action: {offered:?}");
+    cx.simulate_keystrokes("escape");
+
     // Encapsulate Field makes the field a property and uses it.
     let field = line(cx, "private int count;");
     main.update_in(cx, |main, window, cx| main.open_file(&run.folder.join("Shop.cs"), Some((field, 17)), window, cx));

@@ -17,10 +17,13 @@ fn main() {
         println!("cargo:rerun-if-changed={}", passenger.join(input).display());
     }
     println!("cargo:rerun-if-changed={}", passenger.join("Passenger.Xaml").display());
+    println!("cargo:rerun-if-changed={}", passenger.join("Passenger.WpfPreview").display());
     println!("cargo:rerun-if-changed={}", passenger.join("Passenger.Text").display());
     for input in [
         "Program.cs",
         "Preview.cs",
+        "Library.cs",
+        "WpfPreview.cs",
         "RSharp.XamlHost.csproj",
         "packages.lock.json",
         "preview/Program.cs",
@@ -86,6 +89,13 @@ fn main() {
         &["publish", "-c", "Release", "-o", xaml_out.to_str().unwrap()],
         &manifest.join("xaml-host/RSharp.XamlHost.csproj"),
     );
+    // WPF's previewer, which draws only on Windows and is carried only there, as Passenger carries it.
+    if cfg!(windows) {
+        run(
+            &["publish", "-c", "Release", "-o", xaml_out.join("wpfpreview").to_str().unwrap()],
+            &passenger.join("Passenger.WpfPreview/Passenger.WpfPreview.csproj"),
+        );
+    }
     // The previewer's entry, which the host names to the HostApp's dotnet (Preview.cs's Entry).
     run(
         &["publish", "-c", "Release", "-o", xaml_out.join("preview").to_str().unwrap()],

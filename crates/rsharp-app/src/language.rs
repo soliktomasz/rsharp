@@ -55,6 +55,8 @@ pub fn ask(server: &LanguageServer, method: &'static str, params: Value, cx: &Ap
 // with the edits for Undo; make it follow an open file's tab once Rename moves files.
 pub fn apply_workspace_edit(edit: &WorkspaceEdit, server: Option<&LanguageServer>, cx: &mut App) -> Result<(), String> {
     let mut written: Vec<(PathBuf, u8)> = Vec::new();
+    // What a later Undo takes back whole, when the change reaches several files.
+    let mut command = crate::global_undo::Command::default();
     for path in &edit.created {
         if !path.exists() {
             if let Some(folder) = path.parent() {
@@ -62,6 +64,7 @@ pub fn apply_workspace_edit(edit: &WorkspaceEdit, server: Option<&LanguageServer
             }
             rsharp_core::files::write(path, b"").map_err(|e| format!("{} could not be made: {e}", name(path)))?;
             written.push((path.clone(), 1));
+            command.created.push(path.clone());
         }
     }
     for (path, text_edits) in &edit.files {
@@ -71,26 +74,22 @@ pub fn apply_workspace_edit(edit: &WorkspaceEdit, server: Option<&LanguageServer
             Some(buffer) => buffer,
             None => buffer::open(path.clone(), cx).map_err(|e| format!("{} could not be read: {e}", name(path)))?,
         };
+        let before = buffer.read(cx).document.text().to_string();
         buffer.update(cx, |b, cx| {
             let made = edits(b.document.text(), text_edits);
             b.apply_edits(made, cx);
             if shown { Ok(()) } else { b.save(cx).map_err(|e| format!("{} could not be written: {e}", name(path))) }
         })?;
+        let after = buffer.read(cx).document.text().to_string();
+        command.files.push(crate::global_undo::FileChange { path: path.clone(), before, after, saved: !shown });
         if !shown {
             written.push((path.clone(), 2));
         }
     }
-    for (from, to) in &edit.moves {
-        if buffer::find(from, cx).is_some() {
-            return Err(format!("{} is open, so it was not renamed to {}", name(from), name(to)));
-        }
-        if to.exists() {
-            return Err(format!("{} was not renamed: {} is there already", name(from), name(to)));
-        }
-        std::fs::rename(from, to).map_err(|e| format!("{} could not be renamed: {e}", name(from)))?;
-        written.push((from.clone(), 3));
-        written.push((to.clone(), 1));
-    }
+    // An open file moves with its buffer; the server is told and its projects loaded again by move_files.
+    move_files(&edit.moves, server, cx)?;
+    command.moves.extend(edit.moves.iter().cloned());
+    crate::global_undo::record(command, cx);
     // A file made or renamed is in no design-time build the server has: its project is loaded again.
     let new_files: Vec<PathBuf> = written.iter().filter(|(_, kind)| *kind == 1).map(|(path, _)| path.clone()).collect();
     if let Some(server) = server.filter(|_| !new_files.is_empty()) {

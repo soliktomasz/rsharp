@@ -84,36 +84,59 @@ pub fn backspace(text: &Rope, selections: &[Selection]) -> EditPlan {
     EditPlan { kind: EditKind::DeleteBackward, ..plan }
 }
 
-/// A quote typed in markup, as Passenger types one: in front of the same quote it steps over it; where no word and no
-/// quote touches the caret it comes with its closing quote, the caret between them; anything else goes in as typed.
-pub fn type_quote(text: &Rope, selections: &[Selection], quote: char) -> EditPlan {
+/// The brackets the editor pairs, each opener with its closer, as Passenger's editor pairs them.
+const PAIRS: [(char, char); 3] = [('(', ')'), ('[', ']'), ('{', '}')];
+
+/// A character typed with the editor's help, as Passenger types one: a bracket or quote typed over a selection wraps
+/// it, still selected; a closer or quote typed in front of the same one steps over it; an opener before a space, a
+/// closer, `;` or `,` comes with its closer, and a quote no word or quote touches with its own, the caret between them.
+/// Anything else goes in as typed.
+pub fn type_char(text: &Rope, selections: &[Selection], c: char) -> EditPlan {
     let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    let closer = PAIRS.iter().find(|(open, _)| *open == c).map(|(_, close)| *close);
+    let quote = matches!(c, '"' | '\'');
+    let closes = PAIRS.iter().any(|(_, close)| *close == c);
     let mut plan = plan_back(selections, |s| {
         let before = (s.start() > 0).then(|| text.byte_slice(previous_char(text, s.start())..s.start()).chars().next());
         let after = (s.end() < text.len_bytes()).then(|| text.byte_slice(s.end()..).chars().next());
         let (before, after) = (before.flatten(), after.flatten());
-        let edit = |range: Range<usize>, typed: String| Edit { range, text: typed };
-        Some(if s.is_empty() && after == Some(quote) {
-            (edit(s.head..s.head + quote.len_utf8(), quote.to_string()), 0)
-        } else if s.is_empty() && !word(before) && !word(after) && before != Some(quote) {
-            (edit(s.range(), format!("{quote}{quote}")), quote.len_utf8())
-        } else {
-            (edit(s.range(), quote.to_string()), 0)
+        let typed = |range: Range<usize>, typed: String| Edit { range, text: typed };
+        Some(match closer.or(quote.then_some(c)) {
+            Some(close) if !s.is_empty() => {
+                let inner = text.byte_slice(s.range()).to_string();
+                let length = inner.len();
+                (typed(s.range(), format!("{c}{inner}{close}")), close.len_utf8(), length)
+            }
+            _ if s.is_empty() && (closes || quote) && after == Some(c) => {
+                (typed(s.head..s.head + c.len_utf8(), c.to_string()), 0, 0)
+            }
+            Some(close)
+                if closer.is_some()
+                    && after.is_none_or(|a| {
+                        a.is_whitespace() || PAIRS.iter().any(|(_, p)| *p == a) || a == ';' || a == ','
+                    }) =>
+            {
+                (typed(s.range(), format!("{c}{close}")), close.len_utf8(), 0)
+            }
+            _ if quote && !word(before) && !word(after) && before != Some(c) => {
+                (typed(s.range(), format!("{c}{c}")), c.len_utf8(), 0)
+            }
+            _ => (typed(s.range(), c.to_string()), 0, 0),
         })
     });
-    // Keep the shifted carets, but stepping over an existing quote must not change the text or undo history.
+    // Stepping over a closer leaves the text, and so the undo history and the saved state, as they were.
     plan.edits.retain(|edit| text.byte_slice(edit.range.clone()) != edit.text.as_str());
     EditPlan { kind: EditKind::Typing, ..plan }
 }
 
-/// Backspace in markup: between a pair of quotes, both go, as the pair came in together.
-pub fn backspace_quotes(text: &Rope, selections: &[Selection]) -> EditPlan {
+/// Backspace with the editor's help: between an opener and its closer, or a pair of quotes, both go, as they came in
+/// together.
+pub fn backspace_pairs(text: &Rope, selections: &[Selection]) -> EditPlan {
     let paired = |s: &Selection| {
-        s.is_empty()
-            && s.head > 0
-            && s.head < text.len_bytes()
-            && matches!(text.byte(s.head - 1), b'"' | b'\'')
-            && text.byte(s.head - 1) == text.byte(s.head)
+        s.is_empty() && s.head > 0 && s.head < text.len_bytes() && {
+            let (before, after) = (text.byte(s.head - 1) as char, text.byte(s.head) as char);
+            PAIRS.contains(&(before, after)) || (matches!(before, '"' | '\'') && before == after)
+        }
     };
     if !selections.iter().any(paired) {
         return backspace(text, selections);
@@ -150,15 +173,28 @@ pub fn insert_each(selections: &[Selection], pieces: &[&str]) -> EditPlan {
 
 /// Enter: a new line at the line's indent, one deeper after an opening brace.
 pub fn newline(text: &Rope, selections: &[Selection], unit: &Indent) -> EditPlan {
-    plan(selections, |s| {
+    plan_back(selections, |s| {
         let line = text.byte_to_line(s.start());
-        let mut indent = line_indent(text, line);
+        let indent = line_indent(text, line);
         let line_start = text.line_to_byte(line);
         let before = text.byte_slice(line_start..s.start()).to_string();
-        if before.trim_end().ends_with('{') {
-            indent.push_str(&unit.unit());
+        let opener = before.trim_end().chars().last();
+        let deeper = if opener == Some('{') { format!("{indent}{}", unit.unit()) } else { indent.clone() };
+        // Between an opener and its closer, as a typed opener leaves them, the closer goes to a line of its own.
+        let line_end = text.line_to_byte(line + 1).min(text.len_bytes());
+        let rest = text.byte_slice(s.end()..line_end).to_string();
+        let next = rest.trim_start_matches([' ', '\t']).chars().next();
+        if let Some(pair) = PAIRS.iter().find(|(open, close)| opener == Some(*open) && next == Some(*close)) {
+            let deeper = if pair.0 == '{' { deeper } else { format!("{indent}{}", unit.unit()) };
+            let spaces = rest.len() - rest.trim_start_matches([' ', '\t']).len();
+            let closing = format!("\n{indent}");
+            return Some((
+                Edit { range: s.start()..s.end() + spaces, text: format!("\n{deeper}{closing}") },
+                closing.len(),
+                0,
+            ));
         }
-        Some(Edit { range: s.range(), text: format!("\n{indent}") })
+        Some((Edit { range: s.range(), text: format!("\n{deeper}") }, 0, 0))
     })
 }
 
@@ -177,11 +213,11 @@ pub fn tab(text: &Rope, selections: &[Selection], unit: &Indent) -> EditPlan {
 /// The plan of one edit (or none) per caret, the carets after each edit's text. Carets whose edits would touch
 /// are kept apart by the order of their starts.
 fn plan(selections: &[Selection], mut edit: impl FnMut(&Selection) -> Option<Edit>) -> EditPlan {
-    plan_back(selections, |s| edit(s).map(|e| (e, 0)))
+    plan_back(selections, |s| edit(s).map(|e| (e, 0, 0)))
 }
 
-/// [`plan`], each edit's caret that many bytes back from the end of its text.
-fn plan_back(selections: &[Selection], mut edit: impl FnMut(&Selection) -> Option<(Edit, usize)>) -> EditPlan {
+/// [`plan`], each edit's caret that many bytes back from the end of its text, selecting so many bytes before it.
+fn plan_back(selections: &[Selection], mut edit: impl FnMut(&Selection) -> Option<(Edit, usize, usize)>) -> EditPlan {
     let mut ordered: Vec<&Selection> = selections.iter().collect();
     ordered.sort_by_key(|s| s.start());
     let primary = selections.last();
@@ -191,10 +227,10 @@ fn plan_back(selections: &[Selection], mut edit: impl FnMut(&Selection) -> Optio
     let mut shift: isize = 0;
     for selection in ordered {
         match edit(selection) {
-            Some((e, back)) if edits.last().is_none_or(|last| last.range.end <= e.range.start) => {
+            Some((e, back, selected)) if edits.last().is_none_or(|last| last.range.end <= e.range.start) => {
                 let caret = (e.range.start as isize + shift) as usize + e.text.len() - back;
                 shift += e.text.len() as isize - e.range.len() as isize;
-                carets.push(Selection::caret(caret));
+                carets.push(Selection { anchor: caret - selected, head: caret });
                 edits.push(e);
             }
             _ => carets.push(Selection::caret((selection.head as isize + shift) as usize)),

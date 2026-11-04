@@ -19,7 +19,8 @@ impl MainWindow {
             return;
         }
         if self.xaml.is_none() {
-            self.xaml = rsharp_lsp::xaml::XamlHost::carried();
+            self.xaml = rsharp_lsp::xaml::XamlHost::carried()
+                .map(|h| h.keeping_library_files(store(cx).root().join("MetadataAsSource")));
             // The C# files open already get their colours from it too.
             for open in self.workspace_buffers(cx) {
                 if open.read(cx).path.extension().is_some_and(|e| e == "cs") {
@@ -56,8 +57,6 @@ impl MainWindow {
 
     /// Find Usages or Rename of an element's name: where its XAML names it, and where its code-behind uses the field
     /// made for it, which Roslyn's references give from a mention whose definition is that generated field.
-    // shortcut: a rename's files are each one undo step, not one command undone whole as Passenger's is; make them one
-    // with global undo, as C#'s renames need too.
     pub(super) fn code_behind(&mut self, asked: &editor::CodeBehind, window: &mut Window, cx: &mut Context<Self>) {
         let named = asked.named.clone();
         if let Some(name) = asked.rename.as_deref().filter(|n| !is_identifier(n)) {
@@ -124,7 +123,8 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         if self.xaml.is_none() && cx.global::<crate::state::Ide>().servers {
-            self.xaml = rsharp_lsp::xaml::XamlHost::carried();
+            self.xaml = rsharp_lsp::xaml::XamlHost::carried()
+                .map(|h| h.keeping_library_files(store(cx).root().join("MetadataAsSource")));
         }
         let Some(host) = self.xaml.clone() else { return };
         let project = self.msbuild_project(from);

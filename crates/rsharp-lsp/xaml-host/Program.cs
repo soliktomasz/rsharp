@@ -61,11 +61,12 @@ public static class Program
         try
         {
             // A preview lasts until it is stopped, its frames sent as it goes: awaited, it holds no thread meanwhile.
-            JsonNode? result = request?["method"]?.GetValue<string>() == "preview" ? await Previews.Run(id, asked) : request?["method"]?.GetValue<string>() switch
+            // So does Go to Declaration into a theme, which may download its XAML.
+            string? method = request?["method"]?.GetValue<string>();
+            JsonNode? result = method == "preview" ? await Previews.Run(id, asked) : method == "symbol" ? await Symbol(asked) : method switch
             {
                 "check" => Check(asked),
                 "complete" => Complete(asked),
-                "symbol" => Symbol(asked),
                 "element" => Element(asked),
                 "fixes" => Fixes(asked),
                 "format" => Format(asked),
@@ -77,7 +78,7 @@ public static class Program
                 "preview_stop" => Previews.Stop(asked),
                 "changed" => Changed(asked),
                 "closed" => Closed(asked),
-                var method => throw new InvalidOperationException($"the XAML host has no method {method}"),
+                var other => throw new InvalidOperationException($"the XAML host has no method {other}"),
             };
             Write(new JsonObject { ["id"] = id, ["result"] = result });
         }
@@ -155,18 +156,31 @@ public static class Program
         return new JsonObject { ["start"] = Point(file.Text, list.Start), ["wordCharacters"] = list.WordCharacters, ["items"] = items };
     }
 
-    private static JsonNode? Symbol(JsonNode asked)
+    private static async Task<JsonNode?> Symbol(JsonNode asked)
     {
         if (Read(asked) is not { File: var file } || XamlNavigation.At(file, Offset(file.Text, asked)) is not { } symbol)
         {
             return null;
         }
         JsonArray targets = [];
+        string? said = null;
         foreach (XamlTarget target in symbol.Targets)
         {
-            // shortcut: a library's type (no source place) is not decompiled, nor a theme's XAML fetched through Source
-            // Link; add Passenger's LibrarySources and SourceLink once Go to Declaration into Avalonia itself is wanted.
-            (string Path, JsonNode Point)? place = target switch
+            // Into a library: a theme's own XAML through its Source Link, a type with no source decompiled.
+            (string Path, int Line, int Column)? library = null;
+            if (target.Kind == XamlTargetKind.Theme)
+            {
+                ((string, int, int)? themed, string why) = await Library.ThemeAsync(target, file);
+                (library, said) = (themed, why);
+            }
+            else if (target is { Place: null, Path: null, Type: { } type })
+            {
+                library = Library.Decompile(type, target.Member);
+                said = library is null ? $"{type.FullName} could not be decompiled from {type.Origin.AssemblyName}" : said;
+            }
+            (string Path, JsonNode Point)? place = library is { } lib
+                ? (lib.Path, new JsonObject { ["line"] = lib.Line, ["character"] = lib.Column })
+                : target switch
             {
                 { Place: { } at } => (at.Path, new JsonObject { ["line"] = at.Line, ["character"] = at.Column }),
                 { Resource: { } resource } => (resource.Path, Point(TextOf(resource.Path, file), resource.KeyRange.Start)),
@@ -186,6 +200,7 @@ public static class Program
             ["name"] = symbol.Name,
             ["description"] = XamlNavigation.Describe(file, symbol),
             ["targets"] = targets,
+            ["said"] = said,
         };
         // An element's name: where the file names it, and the class's C# files, where its code-behind field is used.
         if (symbol.Named is { } named)
@@ -466,7 +481,7 @@ public static class Program
     }
 
     /// <summary>Another file's text as the editor has it, else as it is on disk.</summary>
-    private static string TextOf(string path, XamlFile? file) =>
+    internal static string TextOf(string path, XamlFile? file) =>
         path == file?.Path ? file.Text : Texts.TryGetValue(path, out string? open) ? open : File.Exists(path) ? File.ReadAllText(path) : string.Empty;
 
     private static int Offset(string text, JsonNode asked)

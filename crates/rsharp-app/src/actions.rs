@@ -16,7 +16,7 @@ use crate::editor::{
 };
 use crate::editor::{
     Complete, FindUsages, FixEslintProblems, GoToDeclaration, GoToImplementation, GoToTypeDeclaration, ParameterInfo,
-    QuickDocumentation, Reformat, Rename, ShowContextActions,
+    QuickDocumentation, RefactorThis, Reformat, Rename, ShowContextActions,
 };
 use crate::editor::{
     CompleteStatement, EncapsulateField, ExtractMethod, Inline, IntroduceField, IntroduceParameter, IntroduceVariable,
@@ -64,6 +64,7 @@ pub static ALL: &[IdeAction] = &[
     ide!("Commit", "Git", ["commit changes", "version control"], crate::window::ToggleCommit),
     ide!("Git", "View", ["log", "branches", "version control"], crate::window::ToggleGit),
     ide!("XAML Preview", "View", ["avalonia preview", "designer", "previewer"], crate::window::XamlPreview),
+    ide!("Live Visual Tree", "View", ["inspector", "visual tree", "avalonia tree"], crate::window::LiveVisualTree),
     ide!("Refresh Git", "Git", ["status", "changes"], crate::window::GitRefresh),
     ide!("Push", "Git", ["push commits"], crate::window::GitPush),
     ide!("Update Project", "Git", ["pull", "update git"], crate::window::GitUpdate),
@@ -188,6 +189,7 @@ pub static ALL: &[IdeAction] = &[
     ide!("Move…", "Refactor", ["move type", "move to file", "move to namespace"], MoveType),
     ide!("Pull Members Up…", "Refactor", ["move to base class"], PullMembersUp),
     ide!("Push Members Down…", "Refactor", ["move to derived classes"], PushMembersDown),
+    ide!("Refactor This…", "Refactor", ["refactorings", "refactor menu"], RefactorThis),
     ide!("Extract Resource…", "Refactor", ["xaml resource", "static resource"], ExtractResource),
     ide!("Extract Style…", "Refactor", ["xaml style", "setters"], ExtractStyle),
     ide!("Introduce Variable…", "Refactor", ["extract variable", "introduce local"], IntroduceVariable),

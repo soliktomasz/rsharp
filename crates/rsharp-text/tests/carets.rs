@@ -133,22 +133,53 @@ fn the_word_at_the_caret_finds_whole_words_and_a_part_of_one_finds_every_copy() 
     assert_eq!(part.len(), 3, "a selection of part of a word did not find every copy");
 }
 
-/// What a XAML file shows after typing, a quote at a time as the editor types one there, the caret as `|`.
+/// What a file shows after typing, a character at a time as the editor types one (`\u{8}` Backspace, `\n` Enter), the
+/// caret as `|` and a selection from `[` to `|` written as `«…|`.
 fn typed_in_markup(start: &str, keys: &str) -> String {
     let at = start.find('|').unwrap();
-    let mut document = Document::new(&start.replace('|', ""));
-    document.set_selections(vec![Selection::caret(at)]);
+    let anchor = start.find('«').map_or(at, |from| from);
+    let plain = start.replace(['|', '«'], "");
+    let head = if anchor < at { at - '«'.len_utf8() } else { at };
+    let mut document = Document::new(&plain);
+    document.set_selections(vec![Selection { anchor, head }]);
     for c in keys.chars() {
         let plan = match c {
-            '"' | '\'' => type_quote(document.text(), document.selections(), c),
-            '\u{8}' => backspace_quotes(document.text(), document.selections()),
-            _ => EditPlan { kind: EditKind::Typing, ..insert(document.text(), document.selections(), &c.to_string()) },
+            '\u{8}' => backspace_pairs(document.text(), document.selections()),
+            '\n' => newline(document.text(), document.selections(), &Indent::default()),
+            _ => type_char(document.text(), document.selections(), c),
         };
         document.apply(plan);
     }
+    let selection = document.selections()[0];
     let mut text = document.text().to_string();
-    text.insert(document.selections()[0].head, '|');
+    text.insert(selection.head, '|');
+    if selection.anchor != selection.head {
+        text.insert(selection.anchor, '«');
+    }
     text
+}
+
+#[test]
+fn a_bracket_typed_comes_with_its_closer_which_typed_steps_over_and_backspace_takes_both() {
+    assert_eq!(typed_in_markup("Call|;", "("), "Call(|);", "an opener before ';' came without its closer");
+    assert_eq!(typed_in_markup("Call|;", "(1)"), "Call(1)|;", "the closer typed went in beside the one there");
+    assert_eq!(typed_in_markup("Call|;", "(\u{8}"), "Call|;", "Backspace left half of the pair");
+    assert_eq!(typed_in_markup("|value", "("), "(|value", "an opener before a word came with a closer");
+    assert_eq!(
+        typed_in_markup("x = «value|;", "("),
+        "x = («value|);",
+        "a bracket typed over a selection did not wrap it"
+    );
+    assert_eq!(
+        typed_in_markup("x = «value|;", "\""),
+        "x = \"«value|\";",
+        "a quote typed over a selection did not wrap it"
+    );
+    assert_eq!(
+        typed_in_markup("    void Run() |", "{\n"),
+        "    void Run() {\n        |\n    }",
+        "Enter between braces typed did not put the closer on a line of its own"
+    );
 }
 
 #[test]
@@ -184,7 +215,7 @@ fn stepping_over_a_quote_keeps_the_file_saved_and_preserves_redo() {
     document.undo();
     document.mark_saved();
     document.set_selections(vec![Selection::caret(17)]);
-    let changes = document.apply(type_quote(document.text(), document.selections(), '"'));
+    let changes = document.apply(type_char(document.text(), document.selections(), '"'));
     assert!(changes.is_empty(), "stepping over a quote published a text change");
     assert!(!document.is_modified(), "stepping over a quote marked the saved file modified");
     assert_eq!(document.selections(), &[Selection::caret(18)]);
@@ -196,7 +227,7 @@ fn stepping_over_a_quote_keeps_the_file_saved_and_preserves_redo() {
 fn quotes_at_several_carets_only_edit_where_a_quote_is_inserted() {
     let mut document = Document::new("=\n\"\n=");
     document.set_selections(vec![Selection::caret(1), Selection::caret(2), Selection::caret(5)]);
-    let changes = document.apply(type_quote(document.text(), document.selections(), '"'));
+    let changes = document.apply(type_char(document.text(), document.selections(), '"'));
     assert_eq!(changes.len(), 2, "the caret stepping over a quote published an extra edit");
     assert_eq!(document.text().to_string(), "=\"\"\n\"\n=\"\"");
     assert_eq!(document.selections(), &[Selection::caret(2), Selection::caret(5), Selection::caret(8)]);

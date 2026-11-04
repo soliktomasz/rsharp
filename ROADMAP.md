@@ -483,10 +483,14 @@ XAML comes with its closer, steps over it and goes with it on Backspace; a resto
 reaches the XAML host while a file is open; Settings' Code Style: XAML is what Reformat Code lays out by under the
 .editorconfig, whose values keep their letter case (XAML Styler's rule groups).
 `tests/xaml.rs` holds XamlTests', XamlEditingTests' and WpfXamlTests' cases on restored apps, the preview's included.
-Not yet: a library's type decompiled or a theme's XAML through Source Link, a rename undone whole across its files, a
-colour wheel (the picker takes a colour as written), Refactor This's list, a change across files undone whole
-(Extract, create from usage), WPF's previewer (Passenger's WpfPreview, Windows only), brackets paired in every language
-as Passenger's editor pairs them, the inspector and the MCP `app_*` tools.
+Refactor This (Ctrl+T, Ctrl+Shift+R in Visual Studio's keymap) lists Roslyn's refactorings at the selection in C#, and in
+XAML Rename on an element's name and Extract Resource and Extract Style where they apply. A change that edits several
+files, or makes or moves one (a rename with its files, Extract, create from usage), is undone and redone whole from
+any of its files, asked first (`global_undo.rs`). Every editor pairs brackets and quotes as Passenger's does: an opener
+gets its closer, a closer typed steps over it, a selection typed over is wrapped, Backspace takes the pair and Enter
+between them puts the closer on a line of its own.
+Not yet: a library's type decompiled or a theme's XAML through Source Link, a colour wheel (the picker takes a colour as
+written), WPF's previewer (Passenger's WpfPreview, Windows only), the inspector and the MCP `app_*` tools.
 - A XAML host: `Passenger.Xaml` behind a thin JSON-lines (or LSP) process, giving completion, diagnostics,
   navigation, formatting, Extract Resource and Style, and create from usage.
 - The previewers: Avalonia.Designer.HostApp, and Passenger's WpfPreview.

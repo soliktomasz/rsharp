@@ -18,9 +18,9 @@ namespace RSharp.XamlHost;
 /// click in the frame chooses and the caret outlines, which Passenger's previewer gives for WPF alone.</summary>
 internal static class Previews
 {
-    private static readonly ConcurrentDictionary<string, Session> Sessions = new(StringComparer.Ordinal);
+    internal static readonly ConcurrentDictionary<string, Session> Sessions = new(StringComparer.Ordinal);
 
-    private sealed class Session(int request, string output, string projectPath)
+    internal sealed class Session(int request, string output, string projectPath)
     {
         public int Request { get; } = request;
         public string Output { get; } = output;
@@ -32,6 +32,9 @@ internal static class Previews
         public string Loaded { get; set; } = string.Empty;
 
         public TcpListener? Elements { get; set; }
+
+        /// <summary>What a previewer of its own does with the text as typed (WPF's); null for Avalonia's HostApp.</summary>
+        public Action? Updated { get; set; }
         public IAvaloniaRemoteTransportConnection? Connection { get; set; }
         public IDisposable? Listening { get; set; }
         public TaskCompletionSource Ended { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -68,13 +71,16 @@ internal static class Previews
             return new JsonObject { ["why"] = "Its project is neither Avalonia's nor WPF's" };
         }
         ProjectInputs inputs = builder.Current.Inputs;
+        if (builder.Dialect is Passenger.Xaml.Dialects.WpfDialect)
+        {
+            // WPF draws with Windows' own graphics, which no other system has.
+            return OperatingSystem.IsWindows()
+                ? await WpfPreviews.Run(request, asked, builder, path)
+                : new JsonObject { ["why"] = "WPF XAML previews only on Windows, where WPF draws" };
+        }
         if (builder.Dialect is not Passenger.Xaml.Dialects.AvaloniaDialect)
         {
-            // shortcut: no WPF previewer on Windows either; carry Passenger's WpfPreview there once WPF's previews are wanted.
-            return new JsonObject
-            {
-                ["why"] = OperatingSystem.IsWindows() ? "RSharp previews Avalonia's XAML; WPF's preview is not in it yet" : "WPF XAML previews only on Windows, where WPF draws",
-            };
+            return new JsonObject { ["why"] = $"{builder.Dialect.Name} XAML has no preview" };
         }
         if (Output(inputs) is not { } output)
         {
@@ -131,7 +137,14 @@ internal static class Previews
         if (Sessions.TryGetValue(asked["session"]!.GetValue<string>(), out Session? session))
         {
             session.Text = asked["text"]!.GetValue<string>();
-            Send(session);
+            if (session.Updated is { } updated)
+            {
+                updated();
+            }
+            else
+            {
+                Send(session);
+            }
         }
         return true;
     }
@@ -197,7 +210,7 @@ internal static class Previews
         }
     }
 
-    private static void Partial(Session session, JsonObject partial) =>
+    internal static void Partial(Session session, JsonObject partial) =>
         Program.Write(new JsonObject { ["id"] = session.Request, ["partial"] = partial });
 
     /// <summary>The entry's lines, one per layout of a design window, each passed on as the file's elements, until the
@@ -224,7 +237,7 @@ internal static class Previews
     /// element either way.</summary>
     /// <para>shortcut: places are read in the text last sent, so elements that come while a later text is on its way are
     /// off until its own come; carry a version through the entry if typing shows it.</para>
-    private static JsonArray ElementsOf(Session session, JsonArray drawn)
+    internal static JsonArray ElementsOf(Session session, JsonArray drawn)
     {
         string text = session.Loaded;
         XmlTree tree = XmlTree.Parse(text);
@@ -278,9 +291,9 @@ internal static class Previews
         return result.Error.Split('\n')[0].Trim();
     }
 
-    /// <summary>The project's newest build output that can run: its assembly with its runtime configuration and
-    /// dependencies beside it, under its bin/ or an artifacts folder above it (Passenger's XamlPreview.Output).</summary>
-    private static string? Output(ProjectInputs inputs)
+    /// <summary>The project's newest build output that can run: its assembly with its dependencies beside it, and its
+    /// runtime configuration when <paramref name="configured"/> (a WPF class library has none), under its bin/ or an artifacts folder above it (Passenger's XamlPreview.Output).</summary>
+    internal static string? Output(ProjectInputs inputs, bool configured = true)
     {
         string name = inputs.AssemblyName + ".dll";
         List<string> found = [];
@@ -299,7 +312,7 @@ internal static class Previews
                 break;
             }
         }
-        return found.Where(f => File.Exists(Path.ChangeExtension(f, ".runtimeconfig.json")) && File.Exists(Path.ChangeExtension(f, ".deps.json"))
+        return found.Where(f => (!configured || File.Exists(Path.ChangeExtension(f, ".runtimeconfig.json"))) && File.Exists(Path.ChangeExtension(f, ".deps.json"))
                 && !f.Contains($"{Path.DirectorySeparatorChar}ref{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
             .OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault();
     }
@@ -321,7 +334,7 @@ internal static class Previews
             .FirstOrDefault(File.Exists);
     }
 
-    private static Version? Framework(string? moniker) =>
+    internal static Version? Framework(string? moniker) =>
         moniker is not null && moniker.StartsWith("net", StringComparison.Ordinal) && Version.TryParse(moniker[3..].Split('-')[0], out Version? version) && version.Major >= 5
             ? version
             : null;

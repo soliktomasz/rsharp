@@ -50,10 +50,11 @@ pub enum Tool {
     Git,
     /// An Avalonia XAML file drawn by Avalonia's own previewer.
     XamlPreview,
+    LiveTree,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 12] = [
+    pub const ALL: [Tool; 13] = [
         Tool::Solution,
         Tool::Problems,
         Tool::Find,
@@ -66,6 +67,7 @@ impl Tool {
         Tool::Commit,
         Tool::Git,
         Tool::XamlPreview,
+        Tool::LiveTree,
     ];
 
     pub fn title(self) -> &'static str {
@@ -82,6 +84,7 @@ impl Tool {
             Tool::Commit => "Commit",
             Tool::Git => "Git",
             Tool::XamlPreview => "XAML Preview",
+            Tool::LiveTree => "Live Visual Tree",
         }
     }
 
@@ -99,6 +102,7 @@ impl Tool {
             Tool::Commit => "check",
             Tool::Git => "branch",
             Tool::XamlPreview => "file-xml",
+            Tool::LiveTree => "framework",
         }
     }
 
@@ -117,6 +121,7 @@ impl Tool {
             Tool::Commit => Place::LeftTop,
             Tool::Git => Place::BottomLeft,
             Tool::XamlPreview => Place::RightTop,
+            Tool::LiveTree => Place::RightBottom,
         }
     }
 }
