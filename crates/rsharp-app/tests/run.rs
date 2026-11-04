@@ -849,3 +849,31 @@ fn leaving_the_folder_ends_the_program() {
     assert!(!main.read_with(cx, |main, _| main.is_running()), "the program runs after its folder was closed");
     assert_eq!(main.read_with(cx, |main, cx| main.run_output(cx)), "", "the closed folder's console went with it");
 }
+
+#[test]
+fn profile_runs_the_program_under_the_profiler_and_shows_where_its_time_went() {
+    if !rsharp_lsp::profiler::available() {
+        eprintln!("skipped: RSharp's build carries no profiler host");
+        return;
+    }
+    let run = Run::new("run-profile", &[]);
+    app(
+        &run,
+        "var end = System.Diagnostics.Stopwatch.StartNew();\nlong n = 0;\nwhile (end.ElapsedMilliseconds < 2000) { n = Spin(n); }\nSystem.Console.WriteLine(\"spun \" + (n > 0));\nstatic long Spin(long n) { for (int i = 0; i < 100000; i++) { n += i; } return n; }\n",
+    );
+    if !offline(&run) {
+        return;
+    }
+    let mut cx = TestAppContext::single();
+    let (main, cx) = open(&run, &mut cx);
+    cx.dispatch_action(rsharp_app::window::ProfileProgram);
+    let outcome = finished(&main, cx);
+    assert_eq!(outcome.status, RunStatus::Exited(0), "{}\n{}", outcome.message, output(&main, cx));
+    assert!(output(&main, cx).contains("spun True"), "the profiled program's output is in the Run console");
+    wait(cx, "the snapshot", |cx| main.read_with(cx, |m, _| !m.profile_hot_spots().is_empty()));
+    let spots = main.read_with(cx, |m, _| m.profile_hot_spots());
+    assert!(
+        spots.iter().any(|s| s.contains("Spin")),
+        "the method the program spent its time in is not a hot spot: {spots:?}"
+    );
+}

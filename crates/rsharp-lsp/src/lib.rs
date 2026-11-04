@@ -4,6 +4,7 @@
 
 pub mod extension;
 mod host;
+pub mod profiler;
 mod protocol;
 pub mod razor;
 mod roslyn;

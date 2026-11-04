@@ -79,6 +79,8 @@ actions!(
         CleanSelected,
         Stop,
         RunProgram,
+        ProfileProgram,
+        AttachProfiler,
         DebugProgram,
         ResumeDebug,
         PauseDebug,
@@ -142,6 +144,7 @@ mod live_tree;
 mod msbuild;
 mod new_project;
 mod nuget;
+mod profiler;
 mod run;
 mod solution_actions;
 mod terminal;
@@ -300,6 +303,15 @@ pub struct MainWindow {
     live: Option<live_tree::Live>,
     /// The Avalonia renderer debug overlays asked for, kept for the next launch as Passenger keeps the last choice.
     live_overlays: Vec<String>,
+    /// Run's launch is a Profile: the program starts under the profiler.
+    profiling: bool,
+    /// The last run's snapshot, shown in the Profiler.
+    profile: Option<profiler::Profile>,
+    /// The profiler host of the run under way, which Stop and Get Memory Snapshot ask.
+    profiler: Option<rsharp_lsp::profiler::Profiler>,
+    /// The Attach to Process dialog is for the profiler, not the debugger.
+    attach_for_profile: bool,
+    profile_task: Option<Task<()>>,
     /// A round of evaluations is running; `evaluate_again` asks for one more after it.
     evaluating: bool,
     evaluate_again: bool,
@@ -590,6 +602,11 @@ impl MainWindow {
             preview: None,
             live: None,
             live_overlays: Vec::new(),
+            profiling: false,
+            profile: None,
+            profiler: None,
+            attach_for_profile: false,
+            profile_task: None,
             evaluating: false,
             evaluate_again: false,
             _evaluate_task: None,
@@ -2740,6 +2757,7 @@ impl MainWindow {
             Tool::Git => self.git.log.clone().into_any_element(),
             Tool::XamlPreview => self.preview_content(cx).into_any_element(),
             Tool::LiveTree => self.live_tree_content(cx).into_any_element(),
+            Tool::Profiler => self.profiler_content(cx).into_any_element(),
             Tool::Terminal => {
                 self.ensure_terminal(cx);
                 self.terminal.clone().into_any_element()
@@ -2762,6 +2780,7 @@ impl MainWindow {
             Tool::UnitTests => None,
             Tool::XamlPreview => self.preview_subtitle(),
             Tool::LiveTree => None,
+            Tool::Profiler => self.profile_subtitle(),
             Tool::Terminal | Tool::Commit | Tool::Git => None,
         }
     }
@@ -2866,6 +2885,7 @@ impl MainWindow {
             Tool::Git => self.git.log.focus_handle(cx),
             Tool::XamlPreview => self.preview_focus.clone(),
             Tool::LiveTree => self.live_focus.clone(),
+            Tool::Profiler => self.live_focus.clone(),
         }
     }
 

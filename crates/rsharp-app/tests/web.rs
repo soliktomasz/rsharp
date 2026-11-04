@@ -149,7 +149,15 @@ fn a_web_server_that_ends_is_started_again_and_marks_the_file_once_more(cx: &mut
     };
     assert!(wait_for(cx, |cx| !problems(cx).is_empty()), "the first server never marked the file");
 
-    let servers = descendants_running("typescript-language-server");
+    // The process table can lag a server the window already talks to, as a test sharing the machine's load shows.
+    let mut servers = descendants_running("typescript-language-server");
+    for _ in 0..50 {
+        if !servers.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        servers = descendants_running("typescript-language-server");
+    }
     assert!(!servers.is_empty(), "no typescript-language-server runs under the test");
     for pid in servers {
         let _ = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status();

@@ -2680,7 +2680,11 @@ impl MainWindow {
         cx.subscribe_in(&dialog, window, |m, _, ended: &crate::attach_dialog::Ended, window, cx| match ended {
             crate::attach_dialog::Ended::Chosen(process) => {
                 m.attach_dialog = None;
-                m.attach_to(process.clone(), cx);
+                if std::mem::take(&mut m.attach_for_profile) {
+                    m.attach_profiler(process.clone(), cx);
+                } else {
+                    m.attach_to(process.clone(), cx);
+                }
             }
             crate::attach_dialog::Ended::Refresh => {
                 m.attach_dialog = None;
@@ -2688,6 +2692,7 @@ impl MainWindow {
             }
             crate::attach_dialog::Ended::Dismissed => {
                 m.attach_dialog = None;
+                m.attach_for_profile = false;
                 m.focus_editor(window, cx);
             }
         })
@@ -2846,6 +2851,7 @@ impl MainWindow {
                 .on_action(cx.listener(|m, _: &ShowBreakpoints, window, cx| m.open_breakpoints(window, cx)))
                 .on_action(cx.listener(|m, _: &EditBreakpoint, window, cx| m.edit_breakpoint(window, cx)))
                 .on_action(cx.listener(|m, _: &AttachToProcess, _, cx| m.open_attach_dialog(cx)))
+                .on_action(cx.listener(|m, _: &AttachProfiler, _, cx| m.open_attach_profiler(cx)))
                 .on_action(cx.listener(|m, _: &ReattachToProcess, _, cx| m.reattach(cx)))
                 .when(self.debug.attached.is_some(), |d| {
                     d.on_action(cx.listener(|m, _: &DetachDebug, _, cx| m.detach_debug(cx)))

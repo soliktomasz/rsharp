@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Passenger.Profiler in a process of its own, speaking JSON lines as the XAML host does: RSharp starts a program under
+       it (or attaches), and the run's snapshot comes back as JSON (src/rsharp-lsp/src/profiler.rs is the other side). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>RSharp.ProfilerHost</RootNamespace>
+    <RollForward>LatestMajor</RollForward>
+    <UseAppHost>false</UseAppHost>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../../vendor/passenger/src/Passenger.Profiler/Passenger.Profiler.csproj" />
+  </ItemGroup>
+</Project>

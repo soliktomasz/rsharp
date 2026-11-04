@@ -40,6 +40,10 @@ pub(super) enum Event {
     /// The program could not be started.
     Unstarted(String),
     Ended(Option<i32>),
+    /// The profiled run's snapshot, as the profiler host wrote it.
+    Profiled(Box<serde_json::Value>),
+    /// The profiler host is running the program: what Stop and Get Memory Snapshot ask.
+    ProfilerReady(rsharp_lsp::profiler::Profiler),
 }
 
 impl MainWindow {
@@ -214,7 +218,7 @@ impl MainWindow {
         let folder = rsharp_core::run::configuration::project_folder(&configuration.project);
         // Settings' Hot Reload runs the project's own program under dotnet watch; a configuration running another
         // program has nothing for watch to watch, as Rider and Passenger agree.
-        self.run_watching = settings(cx).hot_reload && configuration.program.is_none();
+        self.run_watching = settings(cx).hot_reload && configuration.program.is_none() && !self.profiling;
         self.run_generation += 1;
         let generation = self.run_generation;
         let cancel = Arc::new(AtomicBool::new(false));
@@ -287,6 +291,14 @@ impl MainWindow {
         match event {
             Event::WatchState(verdict) => {
                 self.said = Some(verdict.said().into());
+            }
+            Event::ProfilerReady(profiler) => {
+                let name = self.run_plan.as_ref().map(|p| p.name.clone()).unwrap_or_default();
+                self.profiler_ready(profiler, name, cx);
+            }
+            Event::Profiled(snapshot) => {
+                let name = self.run_plan.as_ref().map(|p| p.name.clone()).unwrap_or_default();
+                self.show_profile(*snapshot, name, cx);
             }
             Event::Output(text, error) => {
                 // An event carries the lines that arrived together: what watch said last is what stands, so a change it
@@ -427,6 +439,11 @@ impl MainWindow {
         };
         self.said = Some(running.clone().into());
         self.run_outcome = Some(RunOutcome { status: RunStatus::Running, message: running });
+        if self.profiling {
+            let cancel = cancel.clone();
+            self.start_profile(&plan, cancel, sender.clone(), cx);
+            return;
+        }
         if plan.use_terminal {
             let mut pty = rsharp_terminal::CommandBuilder::new(command.get_program());
             pty.args(command.get_args());
@@ -573,6 +590,8 @@ impl MainWindow {
             cancel.store(true, Ordering::Release);
         }
         self.run_after_build = None;
+        self.profiling = false;
+        self.profiler = None;
         self.said = Some(outcome.message.clone().into());
         self.run_console.update(cx, |view, cx| {
             view.running = false;
@@ -763,6 +782,9 @@ impl MainWindow {
                 .when(self.chosen_run_configuration().is_some() && !self.is_running(), |d| {
                     d.on_action(cx.listener(|m, _: &RunProgram, _, cx| m.run(cx)))
                 })
+                .when(self.chosen_run_configuration().is_some() && !self.is_running(), |d| {
+                    d.on_action(cx.listener(|m, _: &ProfileProgram, _, cx| m.profile(cx)))
+                })
                 .when(self.chosen_run_configuration().is_some(), |d| {
                     d.on_action(cx.listener(|m, _: &RerunProgram, _, cx| m.rerun(cx)))
                 })
@@ -892,7 +914,7 @@ fn shown_command(command: &std::process::Command) -> String {
         .join(" ")
 }
 
-fn send(sender: &mut mpsc::Sender<Event>, mut event: Event, cancel: &AtomicBool) -> bool {
+pub(super) fn send(sender: &mut mpsc::Sender<Event>, mut event: Event, cancel: &AtomicBool) -> bool {
     loop {
         let terminal = is_terminal(&event);
         match sender.try_send(event) {

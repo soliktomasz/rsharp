@@ -25,11 +25,11 @@ use crate::editor::{
 use crate::find_bar::{Find, FindNext, FindPrevious, Replace};
 use crate::keymap::{OpenSettings, Quit};
 use crate::window::{
-    ApplyHotReloadChanges, AttachToProcess, BuildSelected, BuildSolution, CleanSelected, CleanSolution, DebugProgram,
-    DetachDebug, EditBreakpoint, EditRunConfigurations, EvaluateExpression, MuteBreakpoints, PauseDebug,
-    ReattachToProcess, RebuildSelected, RebuildSolution, RerunProgram, ResumeDebug, RunProgram, SetNextStatement,
-    ShowBreakpoints, SmartStepInto, StepInto, StepOut, StepOver, Stop, StopDebug, ToggleBreakpoint, ToggleBuild,
-    ToggleDebug, ToggleRun,
+    ApplyHotReloadChanges, AttachProfiler, AttachToProcess, BuildSelected, BuildSolution, CleanSelected, CleanSolution,
+    DebugProgram, DetachDebug, EditBreakpoint, EditRunConfigurations, EvaluateExpression, MuteBreakpoints, PauseDebug,
+    ProfileProgram, ReattachToProcess, RebuildSelected, RebuildSolution, RerunProgram, ResumeDebug, RunProgram,
+    SetNextStatement, ShowBreakpoints, SmartStepInto, StepInto, StepOut, StepOver, Stop, StopDebug, ToggleBreakpoint,
+    ToggleBuild, ToggleDebug, ToggleRun,
 };
 use crate::window::{Back, FindInFiles, Forward, GoToFile, GoToSymbol, GoToType, LastEditLocation, RecentFiles};
 use crate::window::{
@@ -85,6 +85,8 @@ pub static ALL: &[IdeAction] = &[
     ide!("Clean Selected Projects", "Build", ["clean project"], CleanSelected),
     ide!("Build", "View", ["build output", "console", "tool window"], ToggleBuild),
     ide!("Run", "Run", ["run program", "start", "execute"], RunProgram),
+    ide!("Profile", "Run", ["profile program", "profiler", "cpu", "sampling"], ProfileProgram),
+    ide!("Attach Profiler to Running Program…", "Run", ["attach profiler", "profile process"], AttachProfiler),
     ide!("Debug", "Run", ["debug program", "start debugging", "f5"], DebugProgram),
     ide!("Attach to Process…", "Run", ["attach", "process", "debugger"], AttachToProcess),
     ide!("Reattach to Process", "Run", ["attach", "reattach", "debugger"], ReattachToProcess),

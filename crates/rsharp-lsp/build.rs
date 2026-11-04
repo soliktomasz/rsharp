@@ -32,6 +32,10 @@ fn main() {
     ] {
         println!("cargo:rerun-if-changed={}", manifest.join("xaml-host").join(input).display());
     }
+    for input in ["Program.cs", "RSharp.ProfilerHost.csproj", "packages.lock.json"] {
+        println!("cargo:rerun-if-changed={}", manifest.join("profiler-host").join(input).display());
+    }
+    println!("cargo:rerun-if-changed={}", passenger.join("Passenger.Profiler").display());
     for input in ["Directory.Packages.props", "Directory.Build.props", "Directory.Build.targets", "global.json"] {
         println!("cargo:rerun-if-changed={}", passenger.join("..").join(input).display());
     }
@@ -88,6 +92,11 @@ fn main() {
     run(
         &["publish", "-c", "Release", "-o", xaml_out.to_str().unwrap()],
         &manifest.join("xaml-host/RSharp.XamlHost.csproj"),
+    );
+    // The profiler's host: Passenger.Profiler behind JSON lines, which the window starts a run through.
+    run(
+        &["publish", "-c", "Release", "-o", sidecars.join("profiler").to_str().unwrap()],
+        &manifest.join("profiler-host/RSharp.ProfilerHost.csproj"),
     );
     // WPF's previewer, which draws only on Windows and is carried only there, as Passenger carries it.
     if cfg!(windows) {

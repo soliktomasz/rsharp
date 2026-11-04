@@ -551,7 +551,18 @@ when its server starts).
 Passenger: `Web/`, `Passenger.Languages/TextMate`; issues #189, #190.
 Done when: a Blazor app's .razor, .ts and .css files have completion, diagnostics and formatting.
 
-### Phase 11: Profiler (M)
+### Phase 11: Profiler (M) — built
+`crates/rsharp-lsp/profiler-host` is Passenger.Profiler behind JSON lines in the XAML host's shape (published into
+`sidecars/profiler`; `rsharp_lsp::profiler::Profiler` is its client): `start` and `attach` begin a run, `run` streams the
+program's output and answers with its snapshot when it ends, `stop` takes the snapshot with the program left running,
+`memory` and `compare` read the heap and two heaps compared. Run > Profile starts the chosen configuration through Run's
+own launch (build first, output in the Run console, Stop ends it), an Avalonia app with Passenger's inspector in it so its
+frames reach the trace; Run > Attach Profiler to Running Program uses the debugger's Attach to Process dialog and leaves
+the program running when Stop is pressed. The Profiler tool window shows the snapshot as Hot Spots, the Call Tree, the
+Flame Graph (boxes by share of the run, a click names one), Frames (an Avalonia app's slowest frames, their median and
+slowest 5%) and Memory (Get Memory Snapshot while the program runs, the types by size and retained size, and the last
+two compared as new, dead and survived). Not yet: the timeline of threads over time, Frames' layout table by control
+type, a memory snapshot's retention paths, the call tree's source links, and the 0.05% cut of the call tree is fixed.
 - A profiler host: `Passenger.Profiler` behind a process that records, and writes call trees, hot spots, UI
   frames and heap graphs as JSON.
 - RSharp draws the flame graph, Frames, Memory and comparisons, and supports Attach Profiler.

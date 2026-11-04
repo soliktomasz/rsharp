@@ -51,10 +51,12 @@ pub enum Tool {
     /// An Avalonia XAML file drawn by Avalonia's own previewer.
     XamlPreview,
     LiveTree,
+    /// A run's snapshot: hot spots, the call tree and the flame graph.
+    Profiler,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 13] = [
+    pub const ALL: [Tool; 14] = [
         Tool::Solution,
         Tool::Problems,
         Tool::Find,
@@ -68,6 +70,7 @@ impl Tool {
         Tool::Git,
         Tool::XamlPreview,
         Tool::LiveTree,
+        Tool::Profiler,
     ];
 
     pub fn title(self) -> &'static str {
@@ -85,6 +88,7 @@ impl Tool {
             Tool::Git => "Git",
             Tool::XamlPreview => "XAML Preview",
             Tool::LiveTree => "Live Visual Tree",
+            Tool::Profiler => "Profiler",
         }
     }
 
@@ -103,6 +107,7 @@ impl Tool {
             Tool::Git => "branch",
             Tool::XamlPreview => "file-xml",
             Tool::LiveTree => "framework",
+            Tool::Profiler => "run",
         }
     }
 
@@ -122,6 +127,7 @@ impl Tool {
             Tool::Git => Place::BottomLeft,
             Tool::XamlPreview => Place::RightTop,
             Tool::LiveTree => Place::RightBottom,
+            Tool::Profiler => Place::BottomLeft,
         }
     }
 }

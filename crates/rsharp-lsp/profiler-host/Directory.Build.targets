@@ -1,0 +1,3 @@
+<Project>
+  <Import Project="../../../vendor/passenger/Directory.Build.targets" />
+</Project>

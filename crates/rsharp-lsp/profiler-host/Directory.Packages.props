@@ -1,0 +1,4 @@
+<Project>
+  <!-- The package versions Passenger pins, the profiler's among them. -->
+  <Import Project="../../../vendor/passenger/Directory.Packages.props" />
+</Project>

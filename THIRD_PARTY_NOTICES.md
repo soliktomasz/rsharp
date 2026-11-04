@@ -89,7 +89,10 @@ Krafs.Publicizer (MIT, Krafs), which carries nothing into the output. RSharp's o
 unchanged, and carries them with Microsoft.CodeAnalysis.CSharp (MIT, .NET Foundation), Passenger.Xaml's C# parser,
 Avalonia.Remote.Protocol (MIT, AvaloniaUI OÜ), which the XAML Preview speaks to the project's own Avalonia
 previewer, and ICSharpCode.Decompiler (MIT, AlphaSierraPapa for the SharpDevelop Team), ILSpy's decompiler, which Go to
-Declaration uses for a library's type.
+Declaration uses for a library's type. The profiler host (`crates/rsharp-lsp/profiler-host/`, published into
+`sidecars/profiler/`) is Passenger.Profiler behind JSON lines, unchanged, and carries Microsoft.Diagnostics.NETCore.Client,
+Microsoft.Diagnostics.Tracing.TraceEvent and Microsoft.Diagnostics.Runtime (ClrMD), each MIT, Microsoft, which start
+a program at a diagnostic port, read its EventPipe trace and read its heap.
 
 ### Inside `sidecars/web/`
 
