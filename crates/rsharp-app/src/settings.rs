@@ -9,6 +9,8 @@ use std::ops::RangeInclusive;
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AppSettings {
+    /// Appearance & Behavior | Appearance | Design: Rider's Islands or Zed's flat panes.
+    pub design: crate::theme::Design,
     /// Appearance & Behavior | System Settings | Reopen projects on startup.
     pub reopen_projects_on_startup: bool,
     /// Editor | General | Appearance | Show line numbers.
@@ -166,6 +168,7 @@ pub enum BuildResults {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
+            design: crate::theme::Design::Islands,
             reopen_projects_on_startup: true,
             show_line_numbers: true,
             show_whitespace: false,
@@ -268,12 +271,18 @@ pub fn package(cx: &gpui::App, file: &std::path::Path, name: &str) -> Option<std
 pub fn apply(new: AppSettings, cx: &mut gpui::App) {
     let new = new.clamped();
     store(cx).write(&new);
+    let redesigned = new.design != crate::theme::design();
     follow(&new);
     cx.set_global(Settings(new));
+    // Tokens are read while painting, so every window, not only those observing Settings, draws in the new design.
+    if redesigned {
+        cx.refresh_windows();
+    }
 }
 
 /// What the non-UI crates read of the settings, told them as they come into force.
 pub fn follow(settings: &AppSettings) {
+    crate::theme::set_design(settings.design);
     if let Ok(mut named) = rsharp_lsp::web::ESLINT_PACKAGE.lock() {
         *named = settings.eslint_package.trim().to_string();
     }

@@ -70,6 +70,7 @@ actions!(
         RollbackLines,
         RunAllTests,
         RunTests,
+        DebugTests,
         RerunFailedTests,
         RefreshTests,
         BuildSolution,
@@ -165,10 +166,6 @@ pub use run::{RunOutcome, RunStatus};
 
 use solution_actions::{NameFor, SolutionMenu};
 
-const TOOLBAR_HEIGHT: f32 = 40.;
-const STRIPE_WIDTH: f32 = 40.;
-const GAP: f32 = 6.;
-const ISLAND_RADIUS: f32 = 10.;
 const ROW_HEIGHT: f32 = 24.;
 
 /// What the window says about Roslyn in the status bar.
@@ -2062,13 +2059,13 @@ impl MainWindow {
                 );
             }
         }
-        div().absolute().top(px(TOOLBAR_HEIGHT - 2.)).left(px(8.)).child(
+        div().absolute().top(px(theme::layout::toolbar_height() - 2.)).left(px(8.)).child(
             div()
                 .id("main-menu-dropdown")
                 .debug_selector(|| "main menu dropdown".into())
                 .w(px(300.))
                 // Every menu as one list is taller than most windows; it scrolls within the window instead.
-                .max_h(window.viewport_size().height - px(TOOLBAR_HEIGHT + GAP))
+                .max_h(window.viewport_size().height - px(theme::layout::toolbar_height() + theme::layout::gap()))
                 .overflow_y_scroll()
                 .py(px(6.))
                 .rounded(px(8.))
@@ -2435,8 +2432,8 @@ impl Render for MainWindow {
                     .flex_col()
                     .flex_1()
                     .min_h_0()
-                    .px(px(GAP))
-                    .gap(px(GAP))
+                    .px(px(theme::layout::gap()))
+                    .gap(px(theme::layout::gap()))
                     .child(self.welcome(cx))
                     .when(self.dock.is_open(Tool::Terminal), |d| {
                         d.child(div().h(px(self.dock.bottom_height)).child(self.tool_island(
@@ -2458,34 +2455,34 @@ impl Render for MainWindow {
             .children(self.tab_menu.map(|at| self.tab_menu_view(at, window, cx)))
             .children(self.status_menu.map(|kind| self.status_menu_view(kind, cx)))
             .children(self.refactoring.clone().map(|dialog| {
-                div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(dialog)
+                div().absolute().top(px(theme::layout::toolbar_height() + 60.)).left_0().right_0().flex().justify_center().child(dialog)
             }))
             .children(self.extracting.clone().map(|dialog| {
-                div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(dialog)
+                div().absolute().top(px(theme::layout::toolbar_height() + 60.)).left_0().right_0().flex().justify_center().child(dialog)
             }))
             .children(self.run_dialog.clone().map(|dialog| {
-                div().absolute().top(px(TOOLBAR_HEIGHT + 40.)).left_0().right_0().flex().justify_center().child(dialog)
+                div().absolute().top(px(theme::layout::toolbar_height() + 40.)).left_0().right_0().flex().justify_center().child(dialog)
             }))
             .children(self.breakpoint_popup.clone().map(|(popup, _, _)| {
-                div().absolute().top(px(TOOLBAR_HEIGHT + 80.)).left_0().right_0().flex().justify_center().child(popup)
+                div().absolute().top(px(theme::layout::toolbar_height() + 80.)).left_0().right_0().flex().justify_center().child(popup)
             }))
             .children(self.breakpoints_dialog.clone().map(|dialog| {
-                div().absolute().top(px(TOOLBAR_HEIGHT + 20.)).left_0().right_0().flex().justify_center().child(dialog)
+                div().absolute().top(px(theme::layout::toolbar_height() + 20.)).left_0().right_0().flex().justify_center().child(dialog)
             }))
             .children(self.attach_dialog.clone().map(|dialog| {
-                div().absolute().top(px(TOOLBAR_HEIGHT + 20.)).left_0().right_0().flex().justify_center().child(dialog)
+                div().absolute().top(px(theme::layout::toolbar_height() + 20.)).left_0().right_0().flex().justify_center().child(dialog)
             }))
             .children(self.evaluate_dialog.clone().map(|dialog| {
-                div().absolute().top(px(TOOLBAR_HEIGHT + 80.)).left_0().right_0().flex().justify_center().child(dialog)
+                div().absolute().top(px(theme::layout::toolbar_height() + 80.)).left_0().right_0().flex().justify_center().child(dialog)
             }))
             .children(self.step_dialog.clone().map(|dialog| {
-                div().absolute().top(px(TOOLBAR_HEIGHT + 80.)).left_0().right_0().flex().justify_center().child(dialog)
+                div().absolute().top(px(theme::layout::toolbar_height() + 80.)).left_0().right_0().flex().justify_center().child(dialog)
             }))
             .children(self.choice_dialog.clone().map(|dialog| {
-                div().absolute().top(px(TOOLBAR_HEIGHT + 80.)).left_0().right_0().flex().justify_center().child(dialog)
+                div().absolute().top(px(theme::layout::toolbar_height() + 80.)).left_0().right_0().flex().justify_center().child(dialog)
             }))
             .children(self.go_to.clone().map(|popup| {
-                div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(
+                div().absolute().top(px(theme::layout::toolbar_height() + 60.)).left_0().right_0().flex().justify_center().child(
                     div()
                         .on_mouse_down_out(cx.listener(|w, _, window, cx| {
                             if w.go_to.take().is_some() {
@@ -2499,7 +2496,7 @@ impl Render for MainWindow {
             .children(self.reference_dialog.as_ref().map(|(dialog, _)| {
                 div()
                     .absolute()
-                    .top(px(TOOLBAR_HEIGHT + 60.))
+                    .top(px(theme::layout::toolbar_height() + 60.))
                     .left_0()
                     .right_0()
                     .flex()
@@ -2509,7 +2506,7 @@ impl Render for MainWindow {
             .children(self.name_popup.as_ref().map(|(popup, _)| {
                 div()
                     .absolute()
-                    .top(px(TOOLBAR_HEIGHT + 60.))
+                    .top(px(theme::layout::toolbar_height() + 60.))
                     .left_0()
                     .right_0()
                     .flex()
@@ -2517,7 +2514,7 @@ impl Render for MainWindow {
                     .child(popup.clone())
             }))
             .children(self.find_action.clone().map(|popup| {
-                div().absolute().top(px(TOOLBAR_HEIGHT + 60.)).left_0().right_0().flex().justify_center().child(
+                div().absolute().top(px(theme::layout::toolbar_height() + 60.)).left_0().right_0().flex().justify_center().child(
                     div()
                         .on_mouse_down_out(cx.listener(|w, _, window, cx| {
                             if let Some(popup) = w.find_action.take() {
@@ -2539,7 +2536,7 @@ impl MainWindow {
         let drawn = self.drawn.replace(true);
         div()
             .id("toolbar")
-            .h(px(TOOLBAR_HEIGHT))
+            .h(px(theme::layout::toolbar_height()))
             .flex_none()
             .flex()
             .items_center()
@@ -2642,7 +2639,7 @@ impl MainWindow {
         let column = |places: [Place; 2], this: &Self, window: &mut Window, cx: &mut Context<Self>| {
             let open: Vec<Tool> = places.iter().filter_map(|p| dock.open_in(*p)).collect();
             (!open.is_empty()).then(|| {
-                div().h_full().flex().flex_col().gap(px(GAP)).children(
+                div().h_full().flex().flex_col().gap(px(theme::layout::gap())).children(
                     open.into_iter()
                         .map(|t| this.tool_island(t, window, cx).flex_1().min_h_0().into_any_element())
                         .collect::<Vec<_>>(),
@@ -2656,7 +2653,7 @@ impl MainWindow {
         let bottom = (!bottom.is_empty()).then(|| {
             // The band is the height a person dragged it to, so a tool's content stays inside it: the island takes
             // the band's height and its window scrolls what does not fit, instead of drawing past the status bar.
-            div().h(px(dock.bottom_height)).flex_none().flex().gap(px(GAP)).pb(px(GAP)).children(
+            div().h(px(dock.bottom_height)).flex_none().flex().gap(px(theme::layout::gap())).pb(px(theme::layout::gap())).children(
                 bottom
                     .into_iter()
                     .map(|t| self.tool_island(t, window, cx).h_full().min_h_0().flex_1().min_w_0().into_any_element())
@@ -2671,16 +2668,16 @@ impl MainWindow {
             .on_drag_move(cx.listener(|w, event: &gpui::DragMoveEvent<Resize>, _, cx| {
                 let (bounds, at) = (event.bounds, event.event.position);
                 match event.drag(cx) {
-                    Resize::Left => w.dock.left_width = f32::from(at.x - bounds.left()) - STRIPE_WIDTH - GAP / 2.,
-                    Resize::Right => w.dock.right_width = f32::from(bounds.right() - at.x) - STRIPE_WIDTH - GAP / 2.,
-                    Resize::Bottom => w.dock.bottom_height = f32::from(bounds.bottom() - at.y) - GAP / 2.,
+                    Resize::Left => w.dock.left_width = f32::from(at.x - bounds.left()) - theme::layout::stripe_width() - theme::layout::gap() / 2.,
+                    Resize::Right => w.dock.right_width = f32::from(bounds.right() - at.x) - theme::layout::stripe_width() - theme::layout::gap() / 2.,
+                    Resize::Bottom => w.dock.bottom_height = f32::from(bounds.bottom() - at.y) - theme::layout::gap() / 2.,
                 }
                 w.dock = w.dock.clone().clamped();
                 w.save_state(cx);
                 cx.notify();
             }))
             .child(self.stripe(Place::LEFT_STRIPE, cx))
-            .children(left.map(|l| l.w(px(dock.left_width)).flex_none().pb(px(GAP))))
+            .children(left.map(|l| l.w(px(dock.left_width)).flex_none().pb(px(theme::layout::gap()))))
             .child(if self.has_left() { splitter(Resize::Left).into_any_element() } else { div().into_any_element() })
             .child(
                 div()
@@ -2692,7 +2689,7 @@ impl MainWindow {
                         self.editor_island(cx)
                             .flex_1()
                             .min_h_0()
-                            .when(bottom.is_none(), |d| d.mb(px(GAP)))
+                            .when(bottom.is_none(), |d| d.mb(px(theme::layout::gap())))
                             .debug_selector(|| "editor island".into())
                             // A window's button dropped outside the stripes floats it there, as IntelliJ's does.
                             .on_drop(
@@ -2702,7 +2699,7 @@ impl MainWindow {
                     .children(bottom.map(|b| div().flex().flex_col().child(splitter(Resize::Bottom)).child(b))),
             )
             .child(if self.has_right() { splitter(Resize::Right).into_any_element() } else { div().into_any_element() })
-            .children(right.map(|r| r.w(px(dock.right_width)).flex_none().pb(px(GAP))))
+            .children(right.map(|r| r.w(px(dock.right_width)).flex_none().pb(px(theme::layout::gap()))))
             .child(self.stripe(Place::RIGHT_STRIPE, cx))
     }
 
@@ -2742,14 +2739,14 @@ impl MainWindow {
         };
         let split_used = self.dock.in_place(places[1]).next().is_some();
         div()
-            .w(px(STRIPE_WIDTH))
+            .w(px(theme::layout::stripe_width()))
             .flex_none()
             .flex()
             .flex_col()
             .items_center()
             .px(px(4.))
             .pt(px(2.))
-            .pb(px(GAP))
+            .pb(px(theme::layout::gap()))
             .child(group(places[0], self, cx))
             .when(split_used, |d| d.child(div().w(px(20.)).h(px(1.)).my(px(4.)).bg(theme::separator())))
             .child(group(places[1], self, cx))
@@ -2768,7 +2765,7 @@ impl MainWindow {
             .flex()
             .items_center()
             .justify_center()
-            .when(open, |d| d.bg(theme::accent()))
+            .when(open, |d| d.bg(theme::toggled()))
             .when(!open, |d| d.hover(|d| d.bg(theme::button_hover())).active(|d| d.bg(theme::button_pressed())))
             .child(icon(tool.icon(), 20.))
             .on_click(cx.listener(move |w, _: &ClickEvent, window, cx| w.toggle_tool(tool, window, cx)))
@@ -4077,7 +4074,7 @@ fn count(n: usize, what: &str) -> String {
 }
 
 fn island() -> gpui::Div {
-    div().flex().flex_col().overflow_hidden().rounded(px(ISLAND_RADIUS)).bg(theme::island())
+    div().flex().flex_col().overflow_hidden().rounded(px(theme::layout::island_radius())).bg(theme::island())
 }
 
 /// A tool window's empty state: what it would show, and how to get it.
@@ -4121,8 +4118,8 @@ fn splitter(edge: Resize) -> impl IntoElement {
             )
         })
         .flex_none()
-        .when(horizontal, |d| d.h(px(GAP)).w_full().cursor_row_resize())
-        .when(!horizontal, |d| d.w(px(GAP)).h_full().cursor_col_resize())
+        .when(horizontal, |d| d.h(px(theme::layout::gap())).w_full().cursor_row_resize())
+        .when(!horizontal, |d| d.w(px(theme::layout::gap())).h_full().cursor_col_resize())
         .on_drag(edge, |edge, _, _, cx| cx.new(|_| *edge))
 }
 

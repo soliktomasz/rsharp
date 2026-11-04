@@ -40,9 +40,9 @@ use crate::window::{
     CloseSolution, CloseTab, FindAction, FloatToolWindow, HideToolWindow, OpenFolder, RestoreDefaultLayout,
     ShowHiddenFiles, ToggleNuGet, ToggleProblems, ToggleSolution, ToggleTerminal,
 };
+use crate::window::{DebugTests, RefreshTests, RerunFailedTests, RunAllTests, RunTests, ToggleUnitTests};
 use crate::window::{NewProject, NewSolution};
 use crate::window::{RecentLocations, ReplaceInFiles, SearchEverywhere};
-use crate::window::{RefreshTests, RerunFailedTests, RunAllTests, RunTests, ToggleUnitTests};
 use gpui::{Action, Menu, MenuItem};
 
 pub struct IdeAction {
@@ -114,6 +114,7 @@ pub static ALL: &[IdeAction] = &[
     ide!("Terminal", "View", ["shell", "console", "tool window"], ToggleTerminal),
     ide!("Run All Tests", "Run", ["unit tests", "test solution"], RunAllTests),
     ide!("Run Unit Tests", "Run", ["selected tests", "test context"], RunTests),
+    ide!("Debug Unit Tests", "Run", ["debug selected tests", "debug test", "test context"], DebugTests),
     ide!("Rerun Failed Tests", "Run", ["failed unit tests"], RerunFailedTests),
     ide!("Refresh Tests", "Run", ["test discovery", "find tests"], RefreshTests),
     ide!("New Solution…", "File", ["create solution"], NewSolution),

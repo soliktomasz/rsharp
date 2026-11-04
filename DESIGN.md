@@ -289,7 +289,7 @@ Soft rounded rectangles at four radii: 10px for islands, 6px for tabs, toolbar w
   Add Function Breakpoint, Add Exception Breakpoint, Remove and Done in a 56px footer.
 
 ### Unit Tests Window
-- A 32px toolbar: Run All (icon and label), then 28px icon buttons with tooltips — Run Selected, Rerun Failed, Stop |
+- A 32px toolbar: Run All (icon and label), then 28px icon buttons with tooltips — Run Selected, Debug Selected, Rerun Failed, Stop |
   Expand All, Collapse All — dimmed to 35% while they cannot act. At its right, one chip per outcome (Failed, Passed,
   Skipped, Not Run, and Running only during a run): the expui test icon and its count, 24px, 4px radius. A chip is a
   filter: pressed it takes tab-selected with its border, and pressed chips together show only their outcomes; a chip

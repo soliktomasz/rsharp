@@ -21,6 +21,7 @@ use std::rc::Rc;
 pub enum TestAction {
     RunAll,
     RunSelected,
+    DebugSelected,
     RunFailed,
     Stop,
     Navigate { path: PathBuf, line: usize },
@@ -297,6 +298,14 @@ impl TestView {
                 "run",
                 idle && !self.selected_tests().is_empty(),
                 || TestAction::RunSelected,
+                cx,
+            ))
+            .child(self.command(
+                "debug selected",
+                "Debug Selected Tests",
+                "debug",
+                idle && !self.selected_tests().is_empty(),
+                || TestAction::DebugSelected,
                 cx,
             ))
             .child(self.command(

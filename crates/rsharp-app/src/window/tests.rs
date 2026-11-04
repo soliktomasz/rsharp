@@ -5,7 +5,7 @@ use crate::test_finder::{TestFinder, holds_tests};
 use crate::test_view::{TestAction, TestView};
 use futures::{FutureExt, SinkExt};
 use rsharp_core::project::EvaluatedProject;
-use rsharp_core::testing::{RunSummary, TestEvent, TestItem, TestRunners, TestState, resolve_assemblies};
+use rsharp_core::testing::{DebugTarget, RunSummary, TestEvent, TestItem, TestRunners, TestState, resolve_assemblies};
 use rsharp_languages::testing::FileTests;
 use std::collections::HashMap;
 use std::sync::{
@@ -33,6 +33,8 @@ pub(super) struct Tests {
     generation: u64,
     task: Option<Task<()>>,
     after_build: Option<Scope>,
+    /// The run in flight runs under the debugger (Debug Selected Tests).
+    debugging: bool,
 }
 
 impl Tests {
@@ -49,6 +51,7 @@ impl Tests {
             generation: 0,
             task: None,
             after_build: None,
+            debugging: false,
         }
     }
 }
@@ -57,6 +60,8 @@ enum Event {
     Runner(TestEvent),
     Started(Vec<TestItem>),
     Ended(Result<RunSummary, String>),
+    /// A debugged run's test host for the debugger; the runner waits for the answer.
+    Debug(DebugTarget, futures::channel::oneshot::Sender<Result<u32, String>>),
 }
 
 enum Scope {
@@ -251,6 +256,7 @@ impl MainWindow {
         match action {
             TestAction::RunAll => self.run_tests(None, cx),
             TestAction::RunSelected => self.run_tests(Some(self.tests.view.read(cx).selected_tests()), cx),
+            TestAction::DebugSelected => self.debug_tests(self.tests.view.read(cx).selected_tests(), cx),
             TestAction::RunFailed => self.run_tests(Some(self.tests.view.read(cx).failed_tests()), cx),
             TestAction::Stop => self.stop_tests(cx),
             TestAction::Navigate { path, line } => self.open_file(path, Some((line.saturating_sub(1), 0)), window, cx),
@@ -267,11 +273,22 @@ impl MainWindow {
         self.start_tests(chosen.map(Scope::Tests).unwrap_or(Scope::All), cx);
     }
 
+    /// Debug Selected Tests: the tests run with their host under the debugger, as Rider's Debug does.
+    pub fn debug_tests(&mut self, chosen: Vec<TestItem>, cx: &mut Context<Self>) {
+        self.start_tests_as(Scope::Tests(chosen), true, cx);
+    }
+
     fn start_tests(&mut self, chosen: Scope, cx: &mut Context<Self>) {
+        self.start_tests_as(chosen, false, cx);
+    }
+
+    fn start_tests_as(&mut self, chosen: Scope, debug: bool, cx: &mut Context<Self>) {
         if self.is_testing() {
             return;
         }
-        let refusal = if self.is_building() {
+        let refusal = if debug && self.is_debugging() {
+            Some("Tests could not be debugged: a debugging session is already running")
+        } else if self.is_building() {
             Some("Tests did not start: another build is running")
         } else if self.workspace.is_none() {
             Some("No workspace is open")
@@ -301,6 +318,7 @@ impl MainWindow {
         self.tests.cancel = Some(Arc::new(AtomicBool::new(false)));
         self.tests.generation += 1;
         self.tests.after_build = Some(chosen);
+        self.tests.debugging = debug;
         self.dock.show(Tool::UnitTests);
         self.save_state(cx);
         self.tests.view.update(cx, |view, cx| view.set_running(true, cx));
@@ -346,6 +364,7 @@ impl MainWindow {
             .cloned()
             .collect();
         let generation = self.tests.generation;
+        let debug = self.tests.debugging;
         let paths: Vec<_> = projects.iter().map(|p| p.path.clone()).collect();
         self.tests.view.update(cx, |view, cx| view.clear_discovered_in(&paths, cx));
         self.test_status("Discovering tests…".into(), cx);
@@ -372,8 +391,20 @@ impl MainWindow {
                     return Err("No runnable tests found for this selection".into());
                 }
                 let _ = futures::executor::block_on(sender.send(Event::Started(selected.clone())));
-                runners.run(&selected, &cancel, &mut |event| {
-                    let _ = futures::executor::block_on(sender.send(Event::Runner(event)));
+                let mut told = sender.clone();
+                let mut events = |event| {
+                    let _ = futures::executor::block_on(told.send(Event::Runner(event)));
+                };
+                if !debug {
+                    return runners.run(&selected, &cancel, &mut events);
+                }
+                let mut asking = sender.clone();
+                runners.run_debugged(&selected, &cancel, &mut events, &mut |target| {
+                    let (reply, answer) = futures::channel::oneshot::channel();
+                    futures::executor::block_on(asking.send(Event::Debug(target, reply)))
+                        .map_err(|_| "The window closed before the tests ran".to_string())?;
+                    futures::executor::block_on(answer)
+                        .unwrap_or_else(|_| Err("Debugging stopped before the tests ran".into()))
                 })
             })();
             let _ = futures::executor::block_on(sender.send(Event::Ended(result)));
@@ -407,6 +438,7 @@ impl MainWindow {
                                 m.test_status(format!("Running {} tests…", tests.len()), cx);
                             }
                             Event::Ended(result) => m.finish_tests(result, cx),
+                            Event::Debug(target, reply) => m.debug_test_host(target, reply, cx),
                         }
                     }
                     true
@@ -425,6 +457,7 @@ impl MainWindow {
     }
 
     fn finish_tests(&mut self, result: Result<RunSummary, String>, cx: &mut Context<Self>) {
+        self.tests.debugging = false;
         let stopped = self.tests.cancel.take().is_some_and(|c| c.load(Ordering::Acquire));
         let message = if stopped {
             "Tests stopped".into()
@@ -456,6 +489,11 @@ impl MainWindow {
         self.test_status(message, cx);
     }
 
+    /// A test run is in flight under the debugger.
+    pub(super) fn tests_debugged(&self) -> bool {
+        self.tests.debugging && self.is_testing()
+    }
+
     pub(super) fn cancel_tests(&self) {
         if let Some(cancel) = &self.tests.cancel {
             cancel.store(true, Ordering::Release);
@@ -465,6 +503,10 @@ impl MainWindow {
     pub(super) fn stop_tests(&mut self, cx: &mut Context<Self>) {
         if !self.is_testing() {
             return;
+        }
+        // A debugged run's host is the debug session's program: ending the session ends it.
+        if self.tests.debugging {
+            self.stop_debug(cx);
         }
         self.cancel_tests();
         if self.tests.after_build.is_some() {
@@ -487,18 +529,17 @@ impl MainWindow {
         self.tests.view.update(cx, |view, cx| view.clear(cx));
     }
 
-    fn run_tests_in_context(&mut self, window: &Window, cx: &mut Context<Self>) {
+    /// Run (or Debug) Unit Tests: what the focus is on, Unit Tests' selection, the Solution view's projects or the
+    /// editor's test at the caret, as Rider's ctrl-u r and ctrl-u d choose.
+    fn run_tests_in_context(&mut self, debug: bool, window: &Window, cx: &mut Context<Self>) {
         let selected = self.tests.view.read(cx).selected_tests();
         if self.tests.view.focus_handle(cx).contains_focused(window, cx) {
-            self.run_tests(Some(selected), cx);
+            self.start_tests_as(Scope::Tests(selected), debug, cx);
             return;
         }
         if self.explorer_focus.contains_focused(window, cx) {
-            if let Some(projects) = self.selected_build_targets() {
-                self.start_tests(Scope::Projects(projects), cx);
-            } else {
-                self.run_tests(None, cx);
-            }
+            let scope = self.selected_build_targets().map_or(Scope::All, Scope::Projects);
+            self.start_tests_as(scope, debug, cx);
             return;
         }
         let context = self.active_editor().and_then(|e| {
@@ -526,9 +567,9 @@ impl MainWindow {
                         .map_or_else(|| name.starts_with(&format!("{owner}.")), |m| name == format!("{owner}.{m}"))
                 })
                 .collect();
-            self.run_tests(Some(chosen), cx);
+            self.start_tests_as(Scope::Tests(chosen), debug, cx);
         } else {
-            self.run_tests(None, cx);
+            self.start_tests_as(Scope::All, debug, cx);
         }
     }
 
@@ -538,7 +579,8 @@ impl MainWindow {
                 .on_action(cx.listener(|m, _: &RefreshTests, _, cx| m.refresh_tests(cx)))
                 .when(!self.is_testing() && !self.is_building() && self.tests.available, |d| {
                     d.on_action(cx.listener(|m, _: &RunAllTests, _, cx| m.run_tests(None, cx)))
-                        .on_action(cx.listener(|m, _: &RunTests, w, cx| m.run_tests_in_context(w, cx)))
+                        .on_action(cx.listener(|m, _: &RunTests, w, cx| m.run_tests_in_context(false, w, cx)))
+                        .on_action(cx.listener(|m, _: &DebugTests, w, cx| m.run_tests_in_context(true, w, cx)))
                         .when(!self.tests.view.read(cx).failed_tests().is_empty(), |d| {
                             d.on_action(cx.listener(|m, _: &RerunFailedTests, _, cx| {
                                 m.run_tests(Some(m.tests.view.read(cx).failed_tests()), cx)

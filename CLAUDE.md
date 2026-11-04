@@ -131,7 +131,11 @@ terminal and takes focus for a moment.
   clients for Microsoft.Testing.Platform and VSTest. `rsharp-app::test_finder` caches closed files by stamp and
   overlays shared-buffer syntax reads; typed updates use cached listings without disk walks. `test_view` owns
   Rider's Group By, filters, merged source/runner tree and results; `window/tests.rs` saves and builds first,
-  crosses worker events to the UI, and cancels hosts on Stop or workspace close. Grouping/filter choices live in
+  crosses worker events to the UI, and cancels hosts on Stop or workspace close. Debug Selected Tests (`ctrl-u d`) runs
+  through `TestRunners::run_debugged`: an MTP app is launched under the debugger as `dotnet exec <app> --server …`, a
+  VSTest run goes through its custom host and the debugger attaches to the .NET testhost VSTest starts (Passenger's
+  `DebugLauncher`); `window/debug.rs`' `debug_test_host` answers the runner once the session runs, and Stop in either
+  window ends both. Grouping/filter choices live in
   the folder's `unitTests.json`.
 - `crates/rsharp-terminal`: no UI. `Screen` is `alacritty_terminal`'s emulator with RSharp's bounds: 10,000 lines of
   scrollback, the visible cells, cursor, modes, title and selection, and answers to a program's queries (cursor

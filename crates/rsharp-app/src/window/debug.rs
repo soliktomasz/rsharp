@@ -47,6 +47,9 @@ pub(super) struct DebugState {
     attached: Option<rsharp_core::debug::DotnetProcess>,
     /// The program attached to last in this folder, which Reattach asks for.
     recent_attached: Option<rsharp_core::debug::DotnetProcess>,
+    /// Debug Selected Tests' runner, waiting for the session to run its test host.
+    /// With the process attached to, which an attach's session may not report.
+    tests: Option<(futures::channel::oneshot::Sender<Result<u32, String>>, Option<u32>)>,
     /// The Terminal tab the program runs in, when the configuration starts it there.
     terminal: Option<usize>,
     /// Waits for that tab's program to start, to answer the adapter with its process.
@@ -213,6 +216,7 @@ impl DebugState {
             never_restart: false,
             attached: None,
             recent_attached: None,
+            tests: None,
             terminal: None,
             terminal_wait: None,
             pending: Vec::new(),
@@ -255,6 +259,11 @@ impl MainWindow {
     }
 
     /// The frames of the thread stopped at, innermost first.
+    /// The process the debugger started or attached to, once it has said.
+    pub fn debugged_process(&self) -> Option<u32> {
+        self.debug.session.as_ref().and_then(|session| session.process_id())
+    }
+
     pub fn debug_frames(&self) -> &[rsharp_dap::protocol::Frame] {
         &self.debug.frames
     }
@@ -389,6 +398,10 @@ impl MainWindow {
             Event::Starting(starting) => self.debug.starting = Some(starting),
             Event::Started(session) => {
                 self.debug.starting = None;
+                if let Some((reply, attaching)) = self.debug.tests.take() {
+                    let pid = session.process_id().or(attaching);
+                    let _ = reply.send(pid.ok_or_else(|| "The debugger did not say which process it started".into()));
+                }
                 let verified = session.verified();
                 self.debug.session = Some(session);
                 // The adapter answers the breakpoints it was sent, in their order: the lines that were sent say where
@@ -428,6 +441,9 @@ impl MainWindow {
                 cx.notify();
             }
             Event::Failed(why) => {
+                if let Some((reply, _)) = self.debug.tests.take() {
+                    let _ = reply.send(Err(why.clone()));
+                }
                 let name = self.debug_name();
                 self.refuse_debug(&format!("Could not debug {name}: {why}"), cx)
             }
@@ -507,7 +523,7 @@ impl MainWindow {
             .as_ref()
             .map(|plan| plan.name.clone())
             .or_else(|| self.debug.attached.as_ref().map(|process| process.program()))
-            .unwrap_or_default()
+            .unwrap_or_else(|| "tests".into())
     }
 
     /// The plan is worked out: its project builds first when it says so, and the session starts after it.
@@ -951,6 +967,63 @@ impl MainWindow {
             self.refuse_debug("The debugger is not available: Passenger's debug adapter was not built", cx);
             return;
         };
+        self.debug.attached = Some(process.clone());
+        self.debug.recent_attached = Some(process.clone());
+        self.save_debug_sessions(cx);
+        self.debug.tests = None;
+        self.open_session(adapter, Start::Attach { process_id: process.id, just_my_code: true }, cx);
+        self.said = Some(format!("Attaching to {}…", process.program()).into());
+        cx.notify();
+    }
+
+    /// Debug Selected Tests: the test host a runner hands over, started or attached to under the debugger. `reply`
+    /// answers the runner once the session runs (the debugged process's id) or could not start.
+    pub(super) fn debug_test_host(
+        &mut self,
+        target: rsharp_core::testing::DebugTarget,
+        reply: futures::channel::oneshot::Sender<Result<u32, String>>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.is_debugging() {
+            let _ = reply.send(Err("A debugging session is already running".into()));
+            return;
+        }
+        let Some(adapter) = rsharp_dap::adapter() else {
+            let why = "The debugger is not available: Passenger's debug adapter was not built";
+            let _ = reply.send(Err(why.into()));
+            self.refuse_debug(why, cx);
+            return;
+        };
+        // The test host is the run's, not the person's: Stop ends it, as it ends a launched program.
+        self.debug.attached = None;
+        let attaching = match &target {
+            rsharp_core::testing::DebugTarget::Attach { process_id } => Some(*process_id),
+            rsharp_core::testing::DebugTarget::Launch { .. } => None,
+        };
+        self.debug.tests = Some((reply, attaching));
+        let start = match target {
+            rsharp_core::testing::DebugTarget::Launch { program, arguments, working_directory, environment } => {
+                Start::Launch(rsharp_dap::Launch {
+                    program,
+                    arguments,
+                    working_directory,
+                    environment,
+                    stop_at_entry: false,
+                    hot_reload: false,
+                    just_my_code: true,
+                })
+            }
+            rsharp_core::testing::DebugTarget::Attach { process_id } => {
+                Start::Attach { process_id, just_my_code: true }
+            }
+        };
+        self.open_session(adapter, start, cx);
+        self.said = Some("Debugging tests…".into());
+        cx.notify();
+    }
+
+    /// A session that needs no plan (an attach, a test host): the Debug window opened on it and the adapter started.
+    fn open_session(&mut self, adapter: PathBuf, start: Start, cx: &mut Context<Self>) {
         self.debug.generation += 1;
         let generation = self.debug.generation;
         self.debug.phase = Phase::Starting;
@@ -960,21 +1033,19 @@ impl MainWindow {
         self.debug.thread = None;
         self.debug.pending.clear();
         self.debug.verification.clear();
-        // An attached program was not built by this window's edits: Hot Reload applies to one it launched.
+        // A program this window did not just build: Hot Reload applies to one it launched from a plan.
         self.end_hot_reload();
         self.debug.after_apply = None;
         self.debug.never_restart = false;
         self.choice_dialog = None;
-        self.debug.attached = Some(process.clone());
-        self.debug.recent_attached = Some(process.clone());
-        self.save_debug_sessions(cx);
         let folder = self
             .workspace
             .as_ref()
             .map(|workspace| workspace.folder.clone())
             .unwrap_or_else(rsharp_core::programs::home);
+        let title = self.debug_name();
         self.debug_console.update(cx, |view, cx| view.start(folder.clone(), cx));
-        self.debug_view.update(cx, |view, cx| view.starting(&process.program(), cx));
+        self.debug_view.update(cx, |view, cx| view.starting(&title, cx));
         if !self.dock.is_open(Tool::Debug) {
             self.dock.show(Tool::Debug);
             self.save_state(cx);
@@ -983,14 +1054,13 @@ impl MainWindow {
         let functions = self.session_function_breakpoints();
         let exceptions = self.enabled_exceptions();
         let symbols = store(cx).root().join("cache").join("symbols");
-        let id = process.id;
         let (sender, receiver) = mpsc::unbounded();
         std::thread::spawn(move || {
             let reports = sender.clone();
             let watching = sender.clone();
             let result = Session::start_watched(
                 &adapter,
-                Start::Attach { process_id: id, just_my_code: true },
+                start,
                 &symbols,
                 breakpoints,
                 functions,
@@ -1011,8 +1081,6 @@ impl MainWindow {
             let _ = sender.unbounded_send(event);
         });
         self.watch_session(receiver, generation, cx);
-        self.said = Some(format!("Attaching to {}…", process.program()).into());
-        cx.notify();
     }
 
     /// Each open C# file's text as the launch's save left it: what Roslyn needs as a file's original once an edit makes
@@ -1926,6 +1994,10 @@ impl MainWindow {
     pub(super) fn stop_debug(&mut self, cx: &mut Context<Self>) {
         if !self.is_debugging() {
             return;
+        }
+        // A debugged test run ends with its host: it is stopped, not failed.
+        if self.tests_debugged() {
+            self.cancel_tests();
         }
         // A session still waiting for its program's runtime: the adapter is told to end it, and the program with it.
         if let Some(starting) = self.debug.starting.take().filter(|_| self.debug.session.is_none()) {

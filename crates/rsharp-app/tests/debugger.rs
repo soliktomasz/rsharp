@@ -3597,3 +3597,128 @@ fn a_watch_reads_the_chosen_frame_and_is_asked_again_at_each_stop() {
     assert!(watched(&main, cx, "42"), "the watch kept an earlier stop's value: {:?}", watches(&main, cx));
     cx.simulate_keystrokes("shift-f5");
 }
+
+/// An xUnit v3 project the window sees as a test project, restored from the package cache alone (no feeds): `Adds`
+/// stops at line 6, counted from 0.
+fn debugged_tests(name: &str) -> Option<(Run, PathBuf)> {
+    let cached = std::env::var_os("NUGET_PACKAGES").map(PathBuf::from).or_else(|| {
+        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+            .map(|home| PathBuf::from(home).join(".nuget/packages"))
+    });
+    if !cached.is_some_and(|root| root.join("xunit.v3/3.2.2").is_dir()) {
+        eprintln!("skipped: xunit.v3 3.2.2 is not cached for the offline debugged test");
+        return None;
+    }
+    if rsharp_dap::adapter().is_none() {
+        eprintln!("skipped: Passenger's debug adapter is not built");
+        return None;
+    }
+    let run = Run::new(name, &[]);
+    write(&run.folder, "Shop.slnx", "<Solution><Project Path=\"Tests/Tests.csproj\" /></Solution>");
+    write(
+        &run.folder,
+        "Tests/Tests.csproj",
+        "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework><OutputType>Exe</OutputType><IsTestProject>true</IsTestProject><NuGetAudit>false</NuGetAudit></PropertyGroup><ItemGroup><PackageReference Include=\"xunit.v3\" Version=\"3.2.2\" /></ItemGroup></Project>",
+    );
+    write(
+        &run.folder,
+        "Tests/Orders.cs",
+        "using Xunit;\nnamespace Shop;\npublic class Orders\n{\n    [Fact] public void Adds()\n    {\n        int total = 2 + 2;\n        Assert.Equal(4, total);\n    }\n}\n",
+    );
+    let dotnet = rsharp_core::programs::dotnet()?;
+    let mut sdks = String::new();
+    let _ = rsharp_core::build::run(
+        rsharp_core::dotnet::command(&dotnet, ["--list-sdks"], &run.folder),
+        &std::sync::atomic::AtomicBool::new(false),
+        |text, _| sdks.push_str(text),
+    );
+    let Some(sdk) = sdks.lines().filter_map(|line| line.split_whitespace().next()).find(|s| s.starts_with("10.0.1"))
+    else {
+        eprintln!("skipped: SDK 10.0.1xx is not installed");
+        return None;
+    };
+    write(&run.folder, "global.json", &format!(r#"{{"sdk":{{"version":"{sdk}","rollForward":"disable"}}}}"#));
+    write(&run.folder, "nuget.config", "<configuration><packageSources><clear /></packageSources></configuration>");
+    let source = rsharp_core::paths::canonical(&run.folder.join("Tests/Orders.cs"));
+    Some((run, source))
+}
+
+/// The test's window, its project marked a test project, the caret on `Adds`' assertion with a breakpoint there, and
+/// `Adds` chosen in Unit Tests.
+fn debug_adds<'a>(
+    run: &Run,
+    source: &Path,
+    cx: &'a mut TestAppContext,
+) -> (Entity<MainWindow>, &'a mut VisualTestContext) {
+    let (main, cx) = open(run, cx);
+    main.update(cx, |main, cx| {
+        main.set_evaluated(
+            rsharp_core::project::EvaluatedProject {
+                path: run.folder.join("Tests/Tests.csproj"),
+                is_test_project: true,
+                ..Default::default()
+            },
+            cx,
+        )
+    });
+    main.update_in(cx, |main, window, cx| main.open_file(source, Some((7, 0)), window, cx));
+    cx.run_until_parked();
+    cx.simulate_keystrokes("f9");
+    main.update_in(cx, |main, window, cx| main.toggle_tool(rsharp_app::dock::Tool::UnitTests, window, cx));
+    let view = main.read_with(cx, |main, _| main.test_view().clone());
+    assert!(
+        pump(cx, |cx| view.read_with(cx, |v, _| v.rows().iter().any(|r| r.label == "Adds"))),
+        "Unit Tests never listed the test from its source"
+    );
+    let key = view.read_with(cx, |v, _| v.rows().iter().find(|r| r.label == "Adds").unwrap().key.clone());
+    view.update(cx, |v, cx| v.select(Some(key), cx));
+    click(cx, "tests debug selected");
+    (main, cx)
+}
+
+#[test]
+fn a_debugged_test_stops_at_its_breakpoint() {
+    let _alone = alone();
+    let Some((run, source)) = debugged_tests("debugger-test-stop") else { return };
+    let mut cx = TestAppContext::single();
+    let (main, cx) = debug_adds(&run, &source, &mut cx);
+    let paused = pump(cx, |cx| main.read_with(cx, |main, _| main.debug_phase() == Phase::Paused));
+    let status = main.read_with(cx, |main, cx| main.test_view().read(cx).status().to_string());
+    assert!(paused, "the debugged test never reached its breakpoint: {status}");
+    let frames = main.read_with(cx, |main, _| main.debug_frames().to_vec());
+    assert_eq!(frames[0].path().as_deref(), Some(source.as_path()), "the stop is not in the test's file");
+    assert_eq!(frames[0].line, 7, "the stop is not at the test's breakpoint");
+    assert!(main.read_with(cx, |main, _| main.is_testing()), "the run ended while its test was stopped");
+
+    click(cx, "debug: Resume");
+    let ended = pump(cx, |cx| main.read_with(cx, |main, _| !main.is_testing() && !main.is_debugging()));
+    let status = main.read_with(cx, |main, cx| main.test_view().read(cx).status().to_string());
+    assert!(ended, "the debugged run never finished: {status}");
+    assert!(status.starts_with("1 passed"), "the debugged test's result did not reach Unit Tests: {status}");
+}
+
+#[test]
+fn debugging_a_test_then_stop_leaves_no_test_app() {
+    let _alone = alone();
+    let Some((run, source)) = debugged_tests("debugger-test-stop-ends") else { return };
+    let mut cx = TestAppContext::single();
+    let (main, cx) = debug_adds(&run, &source, &mut cx);
+    assert!(
+        pump(cx, |cx| main.read_with(cx, |main, _| main.debug_phase() == Phase::Paused)),
+        "the debugged test never reached its breakpoint"
+    );
+    let pid = main.read_with(cx, |main, _| main.debugged_process()).expect("the debugger named no test app");
+    // The Debug window has taken Unit Tests' place: its Stop is the one a person presses.
+    click(cx, "debug: Stop");
+    let ended = pump(cx, |cx| main.read_with(cx, |main, _| !main.is_testing() && !main.is_debugging()));
+    let (testing, debugging, status) = main.read_with(cx, |main, cx| {
+        (main.is_testing(), main.is_debugging(), main.test_view().read(cx).status().to_string())
+    });
+    assert!(ended, "Stop left the run (testing {testing}, \"{status}\") or its debugging ({debugging}) going");
+    assert_eq!(status, "Tests stopped", "Stopping the debugger did not say the tests were stopped");
+    #[cfg(unix)]
+    {
+        let gone = pump(cx, |_| unsafe { libc::kill(pid as i32, 0) } != 0);
+        assert!(gone, "the debugged test app {pid} outlived Stop");
+    }
+}

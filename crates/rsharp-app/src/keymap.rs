@@ -97,6 +97,9 @@ pub fn bind(cx: &mut App) {
         KeyBinding::new(if mac { "cmd-8" } else { "alt-8" }, ToggleUnitTests, None),
         KeyBinding::new("ctrl-u r", RunTests, None),
         KeyBinding::new("ctrl-u ctrl-r", RunTests, None),
+        // Rider's Debug Unit Tests, on both keymaps beside Run's.
+        KeyBinding::new("ctrl-u d", DebugTests, None),
+        KeyBinding::new("ctrl-u ctrl-d", DebugTests, None),
         KeyBinding::new("ctrl-u f", RerunFailedTests, None),
         KeyBinding::new("ctrl-u ctrl-f", RerunFailedTests, None),
         KeyBinding::new("alt-f10", ApplyHotReloadChanges, None),

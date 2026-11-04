@@ -135,6 +135,16 @@ struct Page {
 static PAGES: &[Page] = &[
     Page {
         group: "Appearance & Behavior",
+        name: "Appearance",
+        options: &[Opt::Choice {
+            label: "Design",
+            names: theme::Design::NAMES,
+            get: |s| place(&theme::Design::ALL, &s.design),
+            set: |s, i| s.design = theme::Design::ALL[i],
+        }],
+    },
+    Page {
+        group: "Appearance & Behavior",
         name: "System Settings",
         options: &[Opt::Check {
             label: "Reopen projects on startup",
