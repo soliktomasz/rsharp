@@ -3,8 +3,11 @@
 //! does: its problems, its symbols, an outline, usages, a rename across files, and an edit checked as it lands. No UI.
 //! A place is a file with a line and column (from 1, as a person counts them), or a symbol's name.
 
+mod agents;
 mod app;
 mod query;
+
+pub use agents::{AgentSocket, Ide, attach, socket_folder};
 
 use rsharp_core::encodings::{Charset, decode, encode};
 use rsharp_core::paths;
@@ -58,18 +61,9 @@ pub fn serve(folder: &Path, input: impl BufRead, mut output: impl Write) -> io::
         // A notification (initialized, cancelled) needs no answer.
         let Some(id) = message.get("id").cloned() else { continue };
         let answer = match message["method"].as_str().unwrap_or_default() {
-            "initialize" => Ok(json!({
-                "protocolVersion": message["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"),
-                "capabilities": { "tools": {} },
-                "serverInfo": { "name": "rsharp", "version": env!("CARGO_PKG_VERSION") },
-                "instructions": INSTRUCTIONS,
-            })),
+            "initialize" => Ok(initialize(&message["params"])),
             "ping" => Ok(json!({})),
-            "tools/list" => {
-                let mut all = tools().as_array().cloned().unwrap_or_default();
-                all.extend(app::tools());
-                Ok(json!({ "tools": all }))
-            }
+            "tools/list" => Ok(json!({ "tools": all_tools() })),
             "tools/call" => {
                 let params = &message["params"];
                 let name = params["name"].as_str().unwrap_or_default();
@@ -92,6 +86,42 @@ pub fn serve(folder: &Path, input: impl BufRead, mut output: impl Write) -> io::
         write(&mut output, &reply)?;
     }
     Ok(())
+}
+
+fn initialize(params: &Value) -> Value {
+    json!({
+        "protocolVersion": params["protocolVersion"].as_str().unwrap_or("2025-06-18"),
+        "capabilities": { "tools": {} },
+        "serverInfo": { "name": "rsharp", "version": env!("CARGO_PKG_VERSION") },
+        "instructions": INSTRUCTIONS,
+    })
+}
+
+/// Every tool an agent is told of: the folder's code tools, the app tools, and the window's own.
+fn all_tools() -> Vec<Value> {
+    let mut all = tools().as_array().cloned().unwrap_or_default();
+    all.extend(app::tools());
+    all.extend(window_tools().as_array().cloned().unwrap_or_default());
+    all
+}
+
+/// A tool's refusal as MCP carries one.
+fn failed(why: &str) -> Value {
+    json!({ "content": [{ "type": "text", "text": why }], "isError": true })
+}
+
+/// What only a window answers: the editors the person has open.
+fn window_tools() -> Value {
+    json!([
+        { "name": "open_file", "annotations": { "readOnlyHint": false, "destructiveHint": false },
+          "description": "Opens a file in the window's editor, at a line and column (from 1) when given.",
+          "inputSchema": { "type": "object", "properties": {
+              "file": { "type": "string" }, "line": { "type": "integer" }, "column": { "type": "integer" } },
+            "required": ["file"] } },
+        { "name": "save_all", "annotations": { "readOnlyHint": false, "destructiveHint": false },
+          "description": "Saves every file open in the window that has unsaved changes.",
+          "inputSchema": { "type": "object", "properties": {} } },
+    ])
 }
 
 fn write(output: &mut impl Write, message: &Value) -> io::Result<()> {

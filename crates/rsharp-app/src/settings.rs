@@ -47,6 +47,9 @@ pub struct AppSettings {
     /// Languages & Frameworks | JavaScript | Prettier | Manual configuration: the prettier package's folder, or empty
     /// for the project's own.
     pub prettier_package: String,
+    /// MCP Server | Enable MCP Server: an agent that joins this window by `rsharp --mcp-attach` may work in it. Off, its
+    /// calls are refused saying so.
+    pub agents_enabled: bool,
     /// Languages & Frameworks | Schemas and DTDs | Remote JSON Schemas: a JSON file's own `$schema` on the web is
     /// downloaded to check and complete it; those carried never are.
     pub download_json_schemas: bool,
@@ -173,6 +176,7 @@ impl Default for AppSettings {
             eslint_fix_on_save: false,
             prettier_on_save: false,
             node_interpreter: String::new(),
+            agents_enabled: false,
             eslint_package: String::new(),
             prettier_package: String::new(),
             download_json_schemas: true,

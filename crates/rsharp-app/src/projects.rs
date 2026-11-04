@@ -42,7 +42,13 @@ pub fn new_window(cx: &mut App) -> WindowHandle<MainWindow> {
             window_min_size: Some(size(px(640.), px(400.))),
             ..Default::default()
         },
-        |window, cx| cx.new(|cx| MainWindow::new(window, cx)),
+        |window, cx| {
+            cx.new(|cx| {
+                let mut main = MainWindow::new(window, cx);
+                main.open_agent_socket(cx);
+                main
+            })
+        },
     )
     .expect("a project window opens")
 }

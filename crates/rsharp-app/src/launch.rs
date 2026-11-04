@@ -14,6 +14,11 @@ pub struct LaunchOptions {
     pub bench: bool,
     /// Serve MCP on standard input and output over this folder instead of opening a window (`rsharp-mcp`).
     pub mcp: Option<PathBuf>,
+    /// Serve MCP on standard input and output for an agent's whole session, its calls passed to the window that has this
+    /// folder (`rsharp_mcp::attach`).
+    pub attach: Option<PathBuf>,
+    /// No window of this process listens for agents.
+    pub no_mcp: bool,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -43,6 +48,8 @@ impl LaunchOptions {
                 "--key" => options.steps.push(Step::Key(args.next().ok_or("--key needs keys, such as cmd-shift-a")?)),
                 "--bench" => options.bench = true,
                 "--mcp" => options.mcp = Some(PathBuf::new()),
+                "--mcp-attach" => options.attach = Some(PathBuf::new()),
+                "--no-mcp" => options.no_mcp = true,
                 "--type" => options.steps.push(Step::Type(args.next().ok_or("--type needs text")?)),
                 "--agent" => {
                     let text = args.next().ok_or("--agent needs a program and arguments")?;
@@ -81,6 +88,18 @@ impl LaunchOptions {
             }
             options.mcp = Some(folder);
         }
+        if options.attach.is_some() {
+            let folder = match options.path.take() {
+                Some(folder) => folder,
+                None => std::env::current_dir().map_err(|e| format!("--mcp-attach has no folder: {e}"))?,
+            };
+            if options.mcp.is_some() || options.file.is_some() || !options.steps.is_empty() || options.bench {
+                return Err(
+                    "--mcp-attach opens no window, so it takes no --mcp, --file, --key, --type or --bench".into()
+                );
+            }
+            options.attach = Some(folder);
+        }
         if options.caret.is_some() && options.file.is_none() {
             return Err("--caret needs --file".into());
         }
@@ -107,6 +126,8 @@ mod tests {
                 steps: vec![],
                 bench: false,
                 mcp: None,
+                attach: None,
+                no_mcp: false,
             })
         );
         assert!(parse(&["--caret", "12:5"]).is_err(), "a caret with no file");
@@ -119,6 +140,14 @@ mod tests {
             [Step::Key("cmd-,".into()), Step::Type("font".into())],
             "steps were not kept in the order given"
         );
+    }
+
+    #[test]
+    fn mcp_attach_takes_the_folder_it_joins_and_no_window_options() {
+        let attach = parse(&["--mcp-attach", "."]).unwrap();
+        assert_eq!(attach.attach, Some(".".into()));
+        assert!(parse(&["--mcp-attach", ".", "--bench"]).is_err());
+        assert!(parse(&["--no-mcp"]).unwrap().no_mcp);
     }
 
     #[test]

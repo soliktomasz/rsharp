@@ -43,6 +43,14 @@ fn main() {
         }
         return;
     }
+    if let Some(folder) = &options.attach {
+        if let Err(error) = rsharp_mcp::attach(folder, std::io::stdin().lock(), std::io::stdout().lock()) {
+            eprintln!("rsharp: MCP: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    rsharp_app::agents::refuse(options.no_mcp);
     if let Some(path) = options.path.as_ref().filter(|p| !p.exists()) {
         eprintln!("rsharp: {} does not exist", path.display());
         std::process::exit(2);

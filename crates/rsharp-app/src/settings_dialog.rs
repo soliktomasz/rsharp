@@ -190,6 +190,15 @@ static PAGES: &[Page] = &[
         ],
     },
     Page {
+        group: "Tools",
+        name: "MCP Server",
+        options: &[Opt::Check {
+            label: "Enable MCP Server (agents started with `rsharp --mcp-attach FOLDER` may work in this window)",
+            get: |s| s.agents_enabled,
+            set: |s, value| s.agents_enabled = value,
+        }],
+    },
+    Page {
         group: "Languages & Frameworks",
         name: "Node.js",
         options: &[Opt::Text {

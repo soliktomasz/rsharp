@@ -135,6 +135,7 @@ actions!(
     ]
 );
 
+pub mod agent;
 mod build;
 mod debug;
 mod file_moves;
@@ -305,6 +306,7 @@ pub struct MainWindow {
     live_overlays: Vec<String>,
     /// Run's launch is a Profile: the program starts under the profiler.
     profiling: bool,
+    agents: agent::Agents,
     /// The last run's snapshot, shown in the Profiler.
     profile: Option<profiler::Profile>,
     /// The profiler host of the run under way, which Stop and Get Memory Snapshot ask.
@@ -603,6 +605,7 @@ impl MainWindow {
             live: None,
             live_overlays: Vec::new(),
             profiling: false,
+            agents: Default::default(),
             profile: None,
             profiler: None,
             attach_for_profile: false,
@@ -654,6 +657,7 @@ impl MainWindow {
             cx.global::<crate::state::Ide>().servers.then(|| rsharp_lsp::SharedHost::carried(&folder)).flatten();
         self.load_breakpoints(&folder, cx);
         self.workspace = Some(workspace);
+        self.describe_agents();
         self.open_git(cx);
         let test_state = store.read_for::<crate::test_view::UnitTestsState>(&folder);
         self.tests.view.update(cx, |view, cx| view.restore(test_state, cx));

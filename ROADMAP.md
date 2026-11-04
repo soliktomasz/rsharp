@@ -570,7 +570,16 @@ type, a memory snapshot's retention paths, the call tree's source links, and the
 Passenger: `Passenger.Profiler`, `Profiling/`; issues #139, #199.
 Done when: a CPU and a memory snapshot of the same app match what Passenger shows.
 
-### Phase 12: Agents in full (M)
+### Phase 12: Agents in full (M) — begun
+Begun: the way in. Each window listens on a socket of its own (`rsharp_mcp::AgentSocket`, in the user's own temp folder,
+`RSHARP_AGENTS` for a test's) with its folder written beside it; `rsharp --mcp-attach [FOLDER]` (`rsharp_mcp::attach`) is the
+agent's MCP server for its session, answering initialize and tools/list and passing each tool call to the window that has the
+folder, found at the call; the window answers on its UI thread (`window/agent.rs`) only while Settings > MCP Server >
+Enable MCP Server is on, and `--no-mcp` leaves a process's windows unlistening. The window answers `workspace`, `open_file`
+and `save_all` so far. Not yet: the rest of Passenger's tools (the editor, search, history, Problems and the settings;
+language, refactor, build, run and tests; debug, VCS, NuGet, terminal, profile, hot reload; the app tools through the
+window), the admission dialog with Always for a folder, starting RSharp when no window has the folder, and the
+setup commands on the Settings page. The hand-written JSON-RPC stays: `rmcp` is not needed for tools alone.
 - All of Passenger's MCP tools (the `rmcp` crate), each answering with its operation's own result.
 - An agent's socket, `--mcp`, `--mcp-attach`, admission and asking.
 - Settings' MCP Server page.
