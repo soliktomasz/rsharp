@@ -263,7 +263,7 @@ terminal and takes focus for a moment.
   and the chosen frame's values, watches answered as they are typed, and Stop/leave ending the session. A stop
   opens its file with the statement marked. `debug_view.rs` is Rider's Debug window: its step and run keys, Frames,
   Variables (members opened a level at a time), Watches and the debug console. The editor's gutter shows a
-  breakpoint dot per line and toggles one on a click in its column, and the buffer carries the stopped line's band.
+  breakpoint dot per line and toggles one on a click in its column or on the line's number (Rider's New UI), and the buffer carries the stopped line's band.
   `breakpoint_popup.rs` is Rider's breakpoint popup over the editor (Alt+F9, a right-click on a breakpoint): its
   condition, hit count and log message, each change applied at once. `run_dialog.rs` is Rider's Run/Debug
   Configurations dialog over the window: Add, Copy and Remove of the folder's own, the chosen one's fields, OK,

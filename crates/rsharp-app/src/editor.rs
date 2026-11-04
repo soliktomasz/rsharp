@@ -309,6 +309,8 @@ struct Layout {
     swatches: Vec<(Bounds<Pixels>, usize)>,
     /// Code Vision's lenses, each with the place of the member it counts.
     lenses: Vec<(Bounds<Pixels>, usize)>,
+    /// How far from the gutter's left edge a click sets a breakpoint: the breakpoint column and the line numbers.
+    breakpoint_area: Pixels,
 }
 
 impl CodeEditor {
@@ -915,10 +917,18 @@ impl CodeEditor {
             .then(|| point(layout.viewport.origin.x + px(10.), layout.viewport.origin.y + y))
     }
 
-    /// The line whose breakpoint column the pointer is in, if it is in it.
+    /// The middle of a line's number, where a click sets its breakpoint, in the window's coordinates as last laid out.
+    pub fn line_number_point(&self, line: usize) -> Option<Point<Pixels>> {
+        let layout = self.layout.as_ref()?;
+        let at = self.gutter_point(line)?;
+        Some(point(layout.viewport.origin.x + layout.breakpoint_area - px(12.), at.y))
+    }
+
+    /// The line whose breakpoint area the pointer is in, if it is in it: the column left of the numbers and the numbers
+    /// themselves, as Rider's New UI sets a breakpoint on a click on the line number.
     fn gutter_line(&self, position: Point<Pixels>) -> Option<usize> {
         let layout = self.layout.as_ref().filter(|_| self.console.is_none())?;
-        if !layout.viewport.contains(&position) || position.x >= layout.viewport.origin.x + px(20.) {
+        if !layout.viewport.contains(&position) || position.x >= layout.viewport.origin.x + layout.breakpoint_area {
             return None;
         }
         let rows = self.rows.len(&self.text);
@@ -2188,6 +2198,8 @@ impl Element for EditorElement {
 
         let lines = std::mem::take(&mut state.lines);
         let (first_row, text_origin, char_width) = (state.first_row, state.text_origin, state.char_width);
+        // Up to the numbers' right edge, never under the bookmark, swatch and fold columns beside the code.
+        let breakpoint_area = (state.gutter_width - px(20.) - state.swatch_column - state.bookmark_column).max(px(20.));
         self.editor.update(cx, |editor, _| {
             editor.layout = Some(Layout {
                 text_origin,
@@ -2200,6 +2212,7 @@ impl Element for EditorElement {
                 git_changes,
                 swatches,
                 lenses,
+                breakpoint_area,
             })
         });
     }

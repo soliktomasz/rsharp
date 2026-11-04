@@ -121,3 +121,30 @@ fn each_caret_of_a_column_dragged_upward_keeps_its_own_column_going_down(cx: &mu
         "a caret took another caret's column on its way down"
     );
 }
+
+#[gpui::test]
+fn a_click_on_a_line_number_toggles_its_breakpoint(cx: &mut TestAppContext) {
+    let run = Run::new("number-breakpoint", &[("Program.cs", "class C\n{\n    void M() { }\n}\n")]);
+    let source = rsharp_core::paths::canonical(&run.folder.join("Program.cs"));
+    let (main, cx) = run.window(cx);
+    main.update_in(cx, |main, window, cx| {
+        main.open_workspace(&run.folder, window, cx);
+        main.open_file(&source, Some((0, 0)), window, cx);
+    });
+    cx.run_until_parked();
+    let editor = main.read_with(cx, |m, _| m.editor().unwrap());
+    // Rider's New UI: the line number is where a breakpoint is set, as well as the column left of it.
+    let number = editor.read_with(cx, |e, _| e.line_number_point(2)).expect("line 3's number was not drawn");
+    cx.simulate_click(number, gpui::Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(
+        main.read_with(cx, |m, _| m.breakpoints().lines(&source)),
+        [2],
+        "a click on the number set no breakpoint"
+    );
+    let caret = editor.read_with(cx, |e, _| e.caret());
+    assert_eq!((caret.line, caret.column), (0, 0), "the click on the number moved the caret as well");
+    cx.simulate_click(number, gpui::Modifiers::default());
+    cx.run_until_parked();
+    assert!(main.read_with(cx, |m, _| m.breakpoints().lines(&source)).is_empty(), "a second click left the breakpoint");
+}
