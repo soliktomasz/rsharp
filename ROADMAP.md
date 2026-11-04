@@ -580,8 +580,9 @@ Enable MCP Server is on, and `--no-mcp` leaves a process's windows unlistening. 
 text with ASCII case ignored and a file mask, no regex or scopes), `settings` and `settings_set` (values only, no kinds
 or ranges), `problems`, `build_output` and `local_history`/`local_history_revert` (by version, not Passenger's change
 sets; no label), and the language tools from the window's own Roslyn over its editors' texts (`diagnostics`, `find_symbol`,
-`outline`, `usages`, `definition`, `implementations`, `symbol_info`, `rename` with a type's files) so far. Not yet: the rest of
-Passenger's tools (`hierarchy`, `code_actions`, `apply_code_action`, `format`, the web, XAML and MSBuild languages' own
+`outline`, `usages`, `definition`, `implementations`, `symbol_info`, `hierarchy`, `rename` with a type's files,
+`code_actions`, `apply_code_action` and `format`, which saves) so far. Not yet: the rest of
+Passenger's tools (the web, XAML and MSBuild languages' own
 answers, refactor, build, run and tests; debug, VCS, NuGet, terminal, profile, hot reload; the app tools through the
 window), the admission dialog with Always for a folder, starting RSharp when no window has the folder, and the
 setup commands on the Settings page. The hand-written JSON-RPC stays: `rmcp` is not needed for tools alone.

@@ -130,6 +130,24 @@ fn window_tools() -> Value {
           "description": "What Roslyn's hover says of the symbol at a place: its kind, type and documentation.",
           "inputSchema": { "type": "object", "properties": {
               "file": { "type": "string" }, "line": { "type": "integer" }, "column": { "type": "integer" }, "symbol": { "type": "string" } } } },
+        { "name": "hierarchy", "annotations": { "readOnlyHint": true },
+          "description": "A type's supertypes and subtypes (what it extends or implements, and what extends or implements it), each with where it is declared.",
+          "inputSchema": { "type": "object", "properties": {
+              "file": { "type": "string" }, "line": { "type": "integer" }, "column": { "type": "integer" }, "symbol": { "type": "string" } } } },
+        { "name": "code_actions", "annotations": { "readOnlyHint": true },
+          "description": "The quick fixes and refactorings Roslyn offers at a place, or over a range with endLine and endColumn, numbered from 1, fixes first. apply_code_action makes one.",
+          "inputSchema": { "type": "object", "properties": {
+              "file": { "type": "string" }, "line": { "type": "integer" }, "column": { "type": "integer" },
+              "endLine": { "type": "integer" }, "endColumn": { "type": "integer" } }, "required": ["file", "line", "column"] } },
+        { "name": "apply_code_action", "annotations": { "readOnlyHint": false, "destructiveHint": true },
+          "description": "Makes one of code_actions' actions, by its title or its number, at the same place or range, as the editor makes it: its changes to every file one undoable step.",
+          "inputSchema": { "type": "object", "properties": {
+              "file": { "type": "string" }, "line": { "type": "integer" }, "column": { "type": "integer" },
+              "endLine": { "type": "integer" }, "endColumn": { "type": "integer" },
+              "title": { "type": "string" }, "index": { "type": "integer" } }, "required": ["file", "line", "column"] } },
+        { "name": "format", "annotations": { "readOnlyHint": false, "destructiveHint": true },
+          "description": "Lays a C# file out as Roslyn formats it, with the file's indent; one undoable change in the editor, saved.",
+          "inputSchema": { "type": "object", "properties": { "file": { "type": "string" } }, "required": ["file"] } },
         { "name": "editor_text", "annotations": { "readOnlyHint": true },
           "description": "A file's text as the editor has it (unsaved changes included), its lines numbered from 1, from and to being lines.",
           "inputSchema": { "type": "object", "properties": {

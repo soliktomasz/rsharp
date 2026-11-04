@@ -207,3 +207,51 @@ fn an_agent_asks_the_windows_roslyn_for_problems_symbols_usages_and_a_rename(cx:
         replies[6]
     );
 }
+
+#[gpui::test]
+fn an_agent_formats_walks_a_hierarchy_and_asks_for_code_actions(cx: &mut TestAppContext) {
+    if rsharp_lsp::roslyn_server().is_none() {
+        eprintln!("skipped: Roslyn's language server is not installed");
+        return;
+    }
+    let run = Run::new(
+        "agents-actions",
+        &[
+            ("Demo.csproj", PROJECT),
+            ("Shapes.cs", "namespace Demo;\n\npublic abstract class Shape { }\n\npublic class Circle : Shape { }\n"),
+            ("Loose.cs", "namespace Demo;\nclass Loose\n{\nint   x;\n}\n"),
+        ],
+    );
+    unsafe { std::env::set_var("RSHARP_AGENTS", std::env::temp_dir().join(format!("rsa-{}", std::process::id()))) };
+    let (main, cx) = run.window(cx);
+    cx.update(|_, cx| {
+        cx.global_mut::<rsharp_app::state::Ide>().servers = true;
+        let mut on = rsharp_app::settings::settings(cx).clone();
+        on.agents_enabled = true;
+        rsharp_app::settings::apply(on, cx);
+    });
+    main.update_in(cx, |main, window, cx| {
+        main.open_workspace(&run.folder, window, cx);
+        main.open_agent_socket(cx);
+    });
+    let replies = agent(
+        cx,
+        &run.folder,
+        &[
+            call(1, "hierarchy", json!({ "file": "Shapes.cs", "line": 3, "column": 23 })),
+            call(2, "format", json!({ "file": "Loose.cs" })),
+            call(3, "editor_text", json!({ "file": "Loose.cs" })),
+            call(4, "code_actions", json!({ "file": "Shapes.cs", "line": 5, "column": 15 })),
+            call(
+                5,
+                "apply_code_action",
+                json!({ "file": "Shapes.cs", "line": 5, "column": 15, "title": "No such action" }),
+            ),
+        ],
+    );
+    assert!(text(&replies[0]).contains("Circle"), "Shape's subtypes miss Circle: {}", replies[0]);
+    assert!(text(&replies[1]).contains("Formatted"), "format: {}", replies[1]);
+    assert!(text(&replies[2]).contains("5:     int x;"), "the file was not laid out: {}", replies[2]);
+    assert_eq!(replies[3]["result"]["isError"], false, "code_actions: {}", replies[3]);
+    assert_eq!(replies[4]["result"]["isError"], true, "an action that is not offered was made: {}", replies[4]);
+}

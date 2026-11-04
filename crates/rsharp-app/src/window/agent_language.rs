@@ -36,6 +36,10 @@ impl MainWindow {
                 | "implementations"
                 | "symbol_info"
                 | "rename"
+                | "hierarchy"
+                | "code_actions"
+                | "apply_code_action"
+                | "format"
         ) {
             return None;
         }
@@ -64,6 +68,10 @@ impl MainWindow {
                 "definition" => definition(&this, &server, &arguments, cx).await,
                 "implementations" => implementations(&this, &server, &arguments, cx).await,
                 "symbol_info" => symbol_info(&this, &server, &arguments, cx).await,
+                "hierarchy" => hierarchy(&this, &server, &arguments, cx).await,
+                "code_actions" => code_actions(&this, &server, &arguments, cx, false).await,
+                "apply_code_action" => code_actions(&this, &server, &arguments, cx, true).await,
+                "format" => format(&this, &server, &arguments, cx).await,
                 _ => rename(&this, &server, &arguments, cx).await,
             };
             said_it.map(said)
@@ -337,4 +345,129 @@ async fn rename(this: &Window_, server: &Arc<LanguageServer>, arguments: &Value,
     let server = server.clone();
     this.update(cx, |_, cx| crate::language::apply_workspace_edit(&edit, Some(&server), cx)).map_err(failed)??;
     Ok(format!("Renamed {old} to {new_name} in {files} file{}", if files == 1 { "" } else { "s" }))
+}
+
+/// The types a type extends or implements and those that extend or implement it, each walked outward, at most fifty.
+async fn hierarchy(this: &Window_, server: &Arc<LanguageServer>, arguments: &Value, cx: &mut AsyncApp) -> Said {
+    let (_, at, buffer, uri) = place(this, server, arguments, cx).await?;
+    let name = buffer
+        .read_with(cx, |b, _| {
+            let text = b.document.text();
+            text.byte_slice(
+                rsharp_text::word_at(text, rsharp_text::offset_of_utf16(text, at.line, at.character)).range(),
+            )
+            .to_string()
+        })
+        .map_err(failed)?;
+    let start = lsp::hierarchy_items(&ask(server, "textDocument/prepareTypeHierarchy", lsp::at(&uri, at)).await?);
+    let Some(start) = start.first().filter(|t| t.name == name || t.name.starts_with(&format!("{name}<"))).cloned()
+    else {
+        return Err(format!("{name} is not a type: hierarchy takes a type's place"));
+    };
+    let mut said = Vec::new();
+    for (title, method) in [("Supertypes", "typeHierarchy/supertypes"), ("Subtypes", "typeHierarchy/subtypes")] {
+        let mut found = Vec::new();
+        let mut waiting = vec![start.clone()];
+        let mut seen = vec![(start.path.clone(), start.selection.start)];
+        while let Some(item) = waiting.pop().filter(|_| found.len() < 50) {
+            for next in lsp::hierarchy_items(&ask(server, method, json!({ "item": item.raw })).await?) {
+                if !seen.contains(&(next.path.clone(), next.selection.start)) {
+                    seen.push((next.path.clone(), next.selection.start));
+                    found.push(format!("{}: {}", next.name, shown(this, &next.path, next.selection.start, cx)));
+                    waiting.insert(0, next);
+                }
+            }
+        }
+        said.push(format!(
+            "{title}: {}",
+            if found.is_empty() { "none".to_string() } else { format!("\n  {}", found.join("\n  ")) }
+        ));
+    }
+    Ok(said.join("\n"))
+}
+
+/// The actions Roslyn offers at a place or a range (quick fixes first, as the editor lists them), or, with `apply`, the one
+/// named by `title` or `index` made as the editor makes it: resolved, and its edits one change.
+async fn code_actions(
+    this: &Window_,
+    server: &Arc<LanguageServer>,
+    arguments: &Value,
+    cx: &mut AsyncApp,
+    apply: bool,
+) -> Said {
+    let (_, from, _buffer, uri) = place(this, server, arguments, cx).await?;
+    let to = match (arguments["endLine"].as_u64(), arguments["endColumn"].as_u64()) {
+        (Some(line), Some(column)) if line >= 1 && column >= 1 => {
+            let end = json!({ "file": arguments["file"], "line": line, "column": column });
+            if arguments["file"].is_null() { from } else { place(this, server, &end, cx).await?.1 }
+        }
+        _ => from,
+    };
+    let span = lsp::Span { start: from, end: to };
+    let params =
+        json!({ "textDocument": lsp::document(&uri), "range": span.to_json(), "context": { "diagnostics": [] } });
+    let mut actions = lsp::code_actions(&ask(server, "textDocument/codeAction", params).await?);
+    actions.sort_by_key(|a| !a.quick_fix);
+    if !apply {
+        if actions.is_empty() {
+            return Ok("No code actions here.".into());
+        }
+        return Ok(actions
+            .iter()
+            .enumerate()
+            .map(|(i, a)| format!("{}. {}{}", i + 1, if a.quick_fix { "fix: " } else { "" }, a.title))
+            .collect::<Vec<_>>()
+            .join("\n"));
+    }
+    let chosen = match (arguments["title"].as_str(), arguments["index"].as_u64()) {
+        (Some(title), _) => actions.iter().find(|a| a.title.eq_ignore_ascii_case(title)),
+        (None, Some(n)) => (n as usize).checked_sub(1).and_then(|i| actions.get(i)),
+        _ => return Err("apply_code_action needs the action's title or its index from code_actions".into()),
+    }
+    .ok_or("No such code action here: code_actions lists those there are")?
+    .clone();
+    let mut resolved = chosen.raw.clone();
+    if !resolved["edit"].is_object() {
+        resolved = ask(server, "codeAction/resolve", chosen.raw.clone()).await?;
+    }
+    if let Some(nested) = resolved["command"]["arguments"][0]["NestedCodeActions"].as_array() {
+        let titles: Vec<String> = lsp::code_actions(&json!(nested)).iter().map(|a| a.title.clone()).collect();
+        return Err(format!("{} holds more actions: {}", chosen.title, titles.join("; ")));
+    }
+    let edit = lsp::workspace_edit(&resolved["edit"]);
+    if edit.is_empty() {
+        return Err(format!("{} cannot be made here", chosen.title));
+    }
+    let files = edit.files.len();
+    let server = server.clone();
+    this.update(cx, |_, cx| crate::language::apply_workspace_edit(&edit, Some(&server), cx)).map_err(failed)??;
+    Ok(format!("Made {}: {files} file{} changed", chosen.title, if files == 1 { "" } else { "s" }))
+}
+
+/// A file laid out as Roslyn formats it, with the file's indent, one undoable change.
+async fn format(this: &Window_, server: &Arc<LanguageServer>, arguments: &Value, cx: &mut AsyncApp) -> Said {
+    let file = arguments["file"].as_str().ok_or("format needs file")?;
+    let (_, _, buffer, uri) = place(this, server, &json!({ "file": file, "line": 1, "column": 1 }), cx).await?;
+    let indent = buffer.read_with(cx, |b, _| b.indent).map_err(failed)?;
+    let options = json!({ "tabSize": indent.size, "insertSpaces": !indent.tabs });
+    let answer =
+        ask(server, "textDocument/formatting", json!({ "textDocument": lsp::document(&uri), "options": options }))
+            .await?;
+    let made = buffer
+        .update(cx, |b, cx| {
+            let edits = crate::language::edits(b.document.text(), &lsp::text_edits(&answer));
+            let n = edits.len();
+            if n > 0 {
+                b.apply_edits(edits, cx);
+                // A buffer only an agent opened is gone when the call ends, so the change is saved, as `edit`'s is.
+                b.save(cx).map_err(|e| format!("{file} could not be written: {e}"))?;
+            }
+            Ok::<usize, String>(n)
+        })
+        .map_err(failed)??;
+    Ok(if made == 0 {
+        format!("{file} is formatted already")
+    } else {
+        format!("Formatted {file} ({made} changes), saved")
+    })
 }
