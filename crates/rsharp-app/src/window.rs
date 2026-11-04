@@ -136,6 +136,7 @@ actions!(
 );
 
 pub mod agent;
+mod agent_apps;
 mod agent_language;
 mod agent_tools;
 mod agent_vcs;

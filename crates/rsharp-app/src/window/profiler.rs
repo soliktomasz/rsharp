@@ -236,7 +236,7 @@ impl MainWindow {
 
     /// Stop in the Profiler: a run this window started ends with its program, as Run's Stop does; one attached to ends
     /// with its snapshot taken and the program left running.
-    fn stop_profile(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn stop_profile(&mut self, cx: &mut Context<Self>) {
         if self.is_running() {
             return self.stop_run(cx);
         }
@@ -308,6 +308,32 @@ impl MainWindow {
             .flatten()
             .map(|h| format!("{} {}", h["self"], h["name"].as_str().unwrap_or_default()))
             .collect()
+    }
+
+    /// Whether the profile shown has its snapshot (the run ended or was stopped).
+    pub(super) fn profile_snapshot_ready(&self) -> bool {
+        self.profile.as_ref().is_some_and(|p| !p.snapshot.is_null())
+    }
+
+    /// The hot spots of the snapshot shown: each method's own time in milliseconds and its share of the run, heaviest first.
+    pub(super) fn profile_summary(&self, top: usize) -> Value {
+        let Some(profile) = &self.profile else { return Value::Null };
+        let (samples, each) = (
+            profile.snapshot["samples"].as_f64().unwrap_or(1.).max(1.),
+            profile.snapshot["sampleMs"].as_f64().unwrap_or(1.),
+        );
+        let spots: Vec<Value> = profile.snapshot["hotSpots"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(top)
+            .map(|h| {
+                let own = h["self"].as_f64().unwrap_or(0.);
+                serde_json::json!({ "method": h["name"], "ownMs": (own * each).round(), "ownPercent": (own / samples * 1000.).round() / 10.,
+                    "totalPercent": (h["total"].as_f64().unwrap_or(0.) / samples * 1000.).round() / 10. })
+            })
+            .collect();
+        serde_json::json!({ "samples": profile.snapshot["samples"], "durationMs": profile.snapshot["durationMs"], "hotSpots": spots })
     }
 
     pub fn profile_subtitle(&self) -> Option<String> {

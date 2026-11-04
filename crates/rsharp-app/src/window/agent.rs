@@ -107,6 +107,9 @@ impl MainWindow {
         if let Some(reply) = self.agent_vcs_tool(tool, arguments, cx) {
             return reply;
         }
+        if let Some(reply) = self.agent_apps_tool(tool, arguments, cx) {
+            return reply;
+        }
         let place = |file: &str| {
             let path = PathBuf::from(file);
             match (&self.workspace, path.is_absolute()) {

@@ -574,6 +574,16 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// The inspector of the debugged Avalonia app, once it has shown its UI.
+    pub(super) fn live_app(&self) -> Option<Arc<LiveApp>> {
+        self.live.as_ref().filter(|l| l.connected).map(|l| l.app.clone())
+    }
+
+    /// Each failed binding the app told of.
+    pub(super) fn live_failures(&self) -> Vec<Value> {
+        self.live.as_ref().map(|l| l.failures.clone()).unwrap_or_default()
+    }
+
     /// How many failed bindings Problems' Bindings tab lists.
     pub(super) fn binding_failure_count(&self) -> usize {
         self.live.as_ref().map_or(0, |l| l.failures.len())

@@ -9,6 +9,7 @@ mod app;
 mod query;
 
 pub use agents::{AgentSocket, Ide, attach, socket_folder};
+pub use app::drive as drive_app;
 
 use rsharp_core::encodings::{Charset, decode, encode};
 use rsharp_core::paths;
@@ -236,6 +237,21 @@ fn window_tools() -> Value {
         { "name": "nuget_remove", "annotations": { "readOnlyHint": false, "destructiveHint": true },
           "description": "Removes a package from a project as `dotnet remove package` does. Answers the files that changed.",
           "inputSchema": { "type": "object", "properties": { "project": { "type": "string" }, "package": { "type": "string" } }, "required": ["project", "package"] } },
+        { "name": "terminal_run", "annotations": { "readOnlyHint": false, "destructiveHint": true },
+          "description": "Runs a shell command in a Terminal tab of the window (in the folder), and answers the tab's number, whether it ended, its exit code and its screen once it ended or waitMs (3000 by default) passed; terminal_screen reads it again.",
+          "inputSchema": { "type": "object", "properties": { "command": { "type": "string" }, "name": { "type": "string" }, "waitMs": { "type": "integer" } }, "required": ["command"] } },
+        { "name": "terminal_screen", "annotations": { "readOnlyHint": true },
+          "description": "A Terminal tab's screen and scrollback as text, with whether its program ended and its exit code.",
+          "inputSchema": { "type": "object", "properties": { "tab": { "type": "integer" } }, "required": ["tab"] } },
+        { "name": "profile", "annotations": { "readOnlyHint": false, "destructiveHint": false },
+          "description": "Profiles the chosen run configuration's program for `seconds` (5 by default, 300 at most) or until it ends, and answers its hot spots: each method's own milliseconds and share of the run.",
+          "inputSchema": { "type": "object", "properties": { "seconds": { "type": "number" } } } },
+        { "name": "hot_reload", "annotations": { "readOnlyHint": false, "destructiveHint": false },
+          "description": "Apply Hot Reload Changes: the debugged program takes the editors' text, or dotnet watch's run has its files saved; answers what the window says of it.",
+          "inputSchema": { "type": "object", "properties": {} } },
+        { "name": "app_binding_errors", "annotations": { "readOnlyHint": true },
+          "description": "The bindings that have failed in the debugged Avalonia app, each with its XAML place and how many times.",
+          "inputSchema": { "type": "object", "properties": {} } },
         { "name": "editor_text", "annotations": { "readOnlyHint": true },
           "description": "A file's text as the editor has it (unsaved changes included), its lines numbered from 1, from and to being lines.",
           "inputSchema": { "type": "object", "properties": {
