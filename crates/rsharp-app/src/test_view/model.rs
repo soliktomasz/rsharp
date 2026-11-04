@@ -312,6 +312,16 @@ impl TestModel {
         tests.sort_by_key(identity);
         tests
     }
+    /// Each test with its last result, none when it has not been run.
+    pub fn listing(&self) -> Vec<(TestItem, Option<TestOutcome>)> {
+        self.tests()
+            .into_iter()
+            .map(|t| {
+                let result = self.results.get(&identity(&t)).cloned();
+                (t, result)
+            })
+            .collect()
+    }
     pub fn failed_tests(&self) -> Vec<TestItem> {
         self.tests()
             .into_iter()

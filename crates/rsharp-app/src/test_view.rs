@@ -186,6 +186,10 @@ impl TestView {
     pub fn failed_tests(&self) -> Vec<TestItem> {
         self.model.failed_tests()
     }
+    /// Every test with its last result.
+    pub fn listing(&self) -> Vec<(TestItem, Option<TestOutcome>)> {
+        self.model.listing()
+    }
     pub fn state(&self) -> UnitTestsState {
         self.state.clone()
     }

@@ -235,7 +235,11 @@ impl MainWindow {
     /// A Git request made by the window's controller, so its views follow, answered once it has ended: with what the
     /// status bar says of it, which is the error when it failed. A refresh the controller is in the middle of is waited
     /// out first, as a person's click would meet it already done.
-    fn agent_git(&mut self, cx: &mut Context<Self>, request: impl FnOnce(&Self) -> GitRequest + 'static) -> Reply {
+    pub(super) fn agent_git(
+        &mut self,
+        cx: &mut Context<Self>,
+        request: impl FnOnce(&Self) -> GitRequest + 'static,
+    ) -> Reply {
         cx.spawn(async move |this, cx| {
             let mut request = Some(request);
             let mut started = false;

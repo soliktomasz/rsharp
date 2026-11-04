@@ -189,7 +189,7 @@ impl MainWindow {
         self.run(cx);
     }
 
-    fn launch(&mut self, configuration: RunConfiguration, cx: &mut Context<Self>) {
+    pub(super) fn launch(&mut self, configuration: RunConfiguration, cx: &mut Context<Self>) {
         if self.run_cancel.is_some() {
             self.refuse_run("Another run is in progress", cx);
             return;

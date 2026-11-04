@@ -90,6 +90,11 @@ impl MainWindow {
         self.tests.cancel.is_some()
     }
 
+    /// Whether the folder has test projects the window has found.
+    pub(super) fn tests_available(&self) -> bool {
+        self.tests.available
+    }
+
     pub(super) fn sync_tests(&mut self, cx: &mut Context<Self>) {
         self.tests.projects = Arc::new(self.run_projects.clone());
         let available = self.tests.projects.iter().any(holds_tests);

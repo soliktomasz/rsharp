@@ -637,6 +637,26 @@ impl Repository {
     pub fn delete_branch(&self, name: &str, force: bool) -> Result<(), String> {
         self.command(&["branch", if force { "-D" } else { "-d" }, "--", name])
     }
+    /// Puts the working tree's changes (and the untracked files with `untracked`) away on the stash, under a message.
+    pub fn stash_push(&self, message: Option<&str>, untracked: bool) -> Result<(), String> {
+        let mut args = vec!["stash", "push"];
+        if untracked {
+            args.push("--include-untracked");
+        }
+        if let Some(message) = message.filter(|m| !m.trim().is_empty()) {
+            args.extend(["--message", message]);
+        }
+        self.command(&args)
+    }
+    /// Brings the newest stash back and drops it, or leaves it where it conflicts.
+    pub fn stash_pop(&self) -> Result<(), String> {
+        self.command(&["stash", "pop"])
+    }
+    /// The stashes, newest first, each as Git lists it (`stash@{0}: On main: message`).
+    pub fn stash_list(&self) -> Result<Vec<String>, String> {
+        let listed = self.run(&words(&["stash", "list"]))?;
+        Ok(utf8(&listed)?.lines().map(str::to_string).collect())
+    }
     pub fn merge(&self, branch: &str) -> Result<(), String> {
         self.command(&["merge", "--no-edit", "--end-of-options", branch])
     }

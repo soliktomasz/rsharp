@@ -95,6 +95,33 @@ impl MainWindow {
                 self.stop_debug(cx);
                 done(Ok(said("Stopped")))
             }
+            "debug_run_to" => {
+                let (Some(file), Some(line)) =
+                    (text(arguments, "file"), arguments["line"].as_u64().filter(|l| *l >= 1))
+                else {
+                    return done(Err("debug_run_to needs file and line, from 1".into()));
+                };
+                if self.debug.phase != Phase::Paused {
+                    return done(Err("The program is not stopped: debug_state says where it is".into()));
+                }
+                let (path, line) = (self.agent_path(&file), line as usize - 1);
+                // A breakpoint the line did not have is the program's only until it next stops, wherever.
+                let temporary = !self.debug.breakpoints.has(&path, line);
+                if temporary {
+                    self.toggle_breakpoint_at(&path, line, cx);
+                }
+                self.resume_debug(cx);
+                let settled = self.agent_settled(wait, false, cx);
+                Some(cx.spawn(async move |this, cx| {
+                    let state = settled.await;
+                    let _ = this.update(cx, |w, cx| {
+                        if temporary && w.debug.breakpoints.has(&path, line) {
+                            w.toggle_breakpoint_at(&path, line, cx);
+                        }
+                    });
+                    state
+                }))
+            }
             "debug_continue" | "debug_step" | "debug_pause" | "debug_set_next_statement" => {
                 let paused = self.debug.phase == Phase::Paused;
                 match tool {

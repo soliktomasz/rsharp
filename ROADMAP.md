@@ -592,10 +592,11 @@ and log message, `breakpoint_remove`, `breakpoints`, `debug_start`, `debug_proce
 and Git and NuGet (`vcs_status`, `vcs_diff`, `vcs_log`, `vcs_commit`, `vcs_checkout` with create, `vcs_resolve` by side,
 continue or abort; `nuget_search`, `nuget_install`, `nuget_remove`), the terminal (`terminal_run`, `terminal_screen`), `profile` (the chosen configuration for some seconds,
 its hot spots), `hot_reload`, and the debugged Avalonia app's through its inspector (`app_windows`, `app_tree`,
-`app_details`, `app_capture`, `app_input`, `app_binding_errors`; the app is started with `debug_start`) so far. Not yet:
-the rest of Passenger's tools (`build`, `run`, `run_output`, `stop`, `tests_run`, `tests_list`, `vcs_stash`, `debug_run_to`, the web, XAML and MSBuild languages' own
-answers, refactor, build, run and tests; debug, VCS, NuGet, terminal, profile, hot reload; the app tools through the
-window), and Passenger's first-use question for a tool that changes something. The hand-written JSON-RPC stays: `rmcp` is not needed for tools alone.
+`app_details`, `app_capture`, `app_input`, `app_binding_errors`; the app is started with `debug_start`) so far. Also `build` (errors and warnings, the output's tail when it fails), `run`, `run_output`, `stop`, `tests_list`, `tests_run`
+and `debug_run_to`. Not yet: the web, XAML and MSBuild languages' own answers to the code tools, Passenger's first-use
+question for a tool that changes something, `tests_run`'s real run (tested to list and refuse, not against xUnit, which
+the machine does not cache), and Passenger's `McpTests` scenarios, which the phase's "done" asks for, run against it.
+The hand-written JSON-RPC stays: `rmcp` is not needed for tools alone.
 - All of Passenger's MCP tools (the `rmcp` crate), each answering with its operation's own result.
 - An agent's socket, `--mcp`, `--mcp-attach`, admission and asking.
 - Settings' MCP Server page.

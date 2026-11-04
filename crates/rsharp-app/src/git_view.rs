@@ -21,25 +21,51 @@ use std::path::PathBuf;
 #[derive(Clone, Debug)]
 pub enum GitRequest {
     Refresh,
-    Commit { paths: Vec<PathBuf>, message: String, amend: bool, push: bool },
+    Commit {
+        paths: Vec<PathBuf>,
+        message: String,
+        amend: bool,
+        push: bool,
+    },
     Push,
     Update,
     Fetch,
     Checkout(String),
-    NewBranch { name: String, from: Option<String> },
-    RenameBranch { from: String, to: String },
+    NewBranch {
+        name: String,
+        from: Option<String>,
+    },
+    RenameBranch {
+        from: String,
+        to: String,
+    },
     DeleteBranch(String),
     MergeBranch(String),
     Rebase(String),
     Diff(PathBuf),
-    CommitDiff { path: PathBuf, revision: String },
+    CommitDiff {
+        path: PathBuf,
+        revision: String,
+    },
     History(PathBuf),
-    Compare { path: PathBuf, revision: String },
+    Compare {
+        path: PathBuf,
+        revision: String,
+    },
     ShowCommit(String),
     Resolve(PathBuf),
-    Accept { path: PathBuf, yours: bool },
+    Accept {
+        path: PathBuf,
+        yours: bool,
+    },
     Continue,
     Abort,
+    /// Stash the changes away, or with `pop` bring the newest stash back.
+    Stash {
+        pop: bool,
+        message: Option<String>,
+        untracked: bool,
+    },
     Rollback(Vec<PathBuf>),
     Cancel,
 }

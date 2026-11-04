@@ -457,6 +457,7 @@ impl MainWindow {
                 | GitRequest::MergeBranch(_)
                 | GitRequest::Rebase(_)
                 | GitRequest::Accept { .. }
+                | GitRequest::Stash { .. }
                 | GitRequest::Abort
                 | GitRequest::Rollback(_)
         );
@@ -513,6 +514,8 @@ impl MainWindow {
                     GitRequest::Accept { path, yours } => {
                         repo.accept_side(&path, if yours { Side::Yours } else { Side::Theirs })
                     }
+                    GitRequest::Stash { pop: true, .. } => repo.stash_pop(),
+                    GitRequest::Stash { message, untracked, .. } => repo.stash_push(message.as_deref(), untracked),
                     GitRequest::Continue => repo.continue_operation(),
                     GitRequest::Abort => repo.abort_operation(),
                     GitRequest::Rollback(paths) => {
