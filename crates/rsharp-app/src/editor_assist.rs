@@ -1215,7 +1215,7 @@ impl CodeEditor {
     pub(super) fn popup_view(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let at = self.place_on_screen(self.assist.popup_at)?;
         let line_height = self.line_height;
-        let code = theme::CODE_FONT;
+        let code = theme::code_font();
         let frame = || {
             div()
                 .id("assist-popup")

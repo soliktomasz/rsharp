@@ -398,7 +398,7 @@ impl Render for RefactorDialog {
                         .justify_center()
                         .when(chosen, |d| d.bg(theme::accent()).child(icon("check", 12.))),
                 )
-                .child(div().font_family(theme::CODE_FONT).truncate().child(text.to_string()))
+                .child(div().font_family(theme::code_font()).truncate().child(text.to_string()))
         };
         let body: gpui::AnyElement =
             match &self.options {

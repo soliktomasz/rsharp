@@ -138,7 +138,7 @@ impl Render for EditorWindow {
             .flex_col()
             .bg(theme::island())
             .text_color(theme::text())
-            .font_family(theme::UI_FONT)
+            .font_family(theme::ui_font())
             .text_size(px(13.))
             .on_action(cx.listener(|w, _: &CloseTab, window, cx| {
                 if let Some(active) = w.area.group().active {

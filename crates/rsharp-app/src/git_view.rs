@@ -820,7 +820,7 @@ impl GitView {
                                             .child(
                                                 div()
                                                     .w(px(65.))
-                                                    .font_family(theme::CODE_FONT)
+                                                    .font_family(theme::code_font())
                                                     .text_color(theme::text_muted())
                                                     .child(commit.hash.chars().take(8).collect::<String>()),
                                             )
@@ -902,7 +902,7 @@ impl Render for GitView {
             .flex_col()
             .text_color(theme::text())
             .text_size(px(13.))
-            .font_family(theme::UI_FONT)
+            .font_family(theme::ui_font())
             .on_key_down(cx.listener(|v, event: &gpui::KeyDownEvent, window, cx| {
                 if !v.focus.is_focused(window) {
                     return;

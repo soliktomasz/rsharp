@@ -79,6 +79,12 @@ static FONTS: &[&[u8]] = &[
     include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf"),
     include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf"),
     include_bytes!("../assets/fonts/JetBrainsMono-Italic.ttf"),
+    // Zed's own pair, worn by the Zed design.
+    include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf"),
+    include_bytes!("../assets/fonts/IBMPlexSans-SemiBold.ttf"),
+    include_bytes!("../assets/fonts/Lilex-Regular.ttf"),
+    include_bytes!("../assets/fonts/Lilex-Bold.ttf"),
+    include_bytes!("../assets/fonts/Lilex-Italic.ttf"),
 ];
 
 pub struct Assets;

@@ -56,6 +56,10 @@ gpui brings about 550 crates of its own. Their notices are not yet written out: 
   Project Authors (https://github.com/rsms/inter). Copied from the JetBrains Runtime inside Rider.
 - **JetBrains Mono** (`crates/rsharp-app/assets/fonts/JetBrainsMono-*.ttf`): SIL Open Font License 1.1, Copyright
   2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono).
+- **IBM Plex Sans** (`crates/rsharp-app/assets/fonts/IBMPlexSans-*.ttf`): SIL Open Font License 1.1, Copyright 2017 IBM
+  Corp. with Reserved Font Name "Plex" (https://github.com/IBM/plex). Copied from Zed's `assets/fonts/ibm-plex-sans`.
+- **Lilex** (`crates/rsharp-app/assets/fonts/Lilex-*.ttf`): SIL Open Font License 1.1, Copyright 2019 The Lilex Project
+  Authors (https://github.com/mishamyrt/Lilex). Copied from Zed's `assets/fonts/lilex`.
 - **IntelliJ Platform icons** (`crates/rsharp-app/assets/icons/*.svg`): Apache-2.0, Copyright 2000-2024 JetBrains
   s.r.o. and contributors (https://github.com/JetBrains/intellij-community), the New UI ("expui") icons, taken from
   Rider's platform jar (`intellij.platform.ide.jar`), never from Rider's own (`intellij.rider.*`) jars.

@@ -377,7 +377,7 @@ impl Render for GoToPopup {
                         div()
                             .flex_1()
                             .truncate()
-                            .when(code, |d| d.font_family(theme::CODE_FONT))
+                            .when(code, |d| d.font_family(theme::code_font()))
                             .child(place.name.clone()),
                     )
                     .child(

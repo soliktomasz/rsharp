@@ -495,7 +495,7 @@ impl Element for GridElement {
         // The terminal's cells are the editor's: its font size, its line height, the same code font.
         let settings = crate::settings::settings(cx).clone();
         let line_height = px(settings.line_height());
-        let f = gpui::Font { features: gpui::FontFeatures::disable_ligatures(), ..font(theme::CODE_FONT) };
+        let f = gpui::Font { features: gpui::FontFeatures::disable_ligatures(), ..font(theme::code_font()) };
         let run = TextRun {
             len: 1,
             font: f,
@@ -569,8 +569,10 @@ impl Element for GridElement {
                         | (fg.a * 255.) as u32;
                     let key = (cell.text.clone(), cell.flags.bits(), color, f32::from(font_size).to_bits());
                     let shaped = v.cache.entry(key).or_insert_with(|| {
-                        let mut font =
-                            gpui::Font { features: gpui::FontFeatures::disable_ligatures(), ..font(theme::CODE_FONT) };
+                        let mut font = gpui::Font {
+                            features: gpui::FontFeatures::disable_ligatures(),
+                            ..font(theme::code_font())
+                        };
                         if bold {
                             font.weight = gpui::FontWeight::BOLD;
                         }

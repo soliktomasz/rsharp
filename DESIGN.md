@@ -311,6 +311,23 @@ Soft rounded rectangles at four radii: 10px for islands, 6px for tabs, toolbar w
 ### Empty Editor Hints
 - Two aligned columns 10px apart: instructions right-aligned in text-secondary, the keys left-aligned in the accent (an instruction that is not a key stays text-secondary).
 
+## Alternate Design: Zed
+
+Settings | Appearance & Behavior | Appearance | Design switches the whole shell to Zed's world (`theme::Design::Zed`), read
+from Zed's One Dark theme (`assets/themes/one/one.json`) and zed.dev: every token in theme.rs holds both values.
+
+- **Flat panes, not islands.** Radius 0, the 6px gap becomes a 1px line of the frame (#3B414D, One Dark's title and
+  status bar ground); panels on #2F343E, the editor a step darker on #282C33. Splitters keep a 7px grab area.
+- **Square tabs.** A 32px bar of full-height cells split by 1px border.variant (#363C46) lines; the shown tab takes
+  the editor's ground and breaks the bar's bottom line, so it opens into the text.
+- **Denser shell.** 34px toolbar, 36px stripe with 28px buttons and 16px icons, 28px status bar. A shown tool
+  window's button is element.selected (#454A56), not the accent.
+- **Colour.** Accent #74ADE8 with dark text on it; modified and warning #DEC184, error #D07277. Syntax is One Dark's:
+  keywords violet #B477CF, strings green #A1C181, types teal #6EB4BF, functions blue #73ADE9, properties #D07277,
+  numbers #BF956A, comments #5D636F. The terminal takes One Dark's ANSI 16.
+- **Fonts.** Zed's own pair, carried in the executable: IBM Plex Sans (Regular, SemiBold) for chrome and Lilex
+  (Regular, Bold, Italic) for code, ligatures still off. Sizes stay the person's.
+
 ## Do's and Don'ts
 
 ### Do:

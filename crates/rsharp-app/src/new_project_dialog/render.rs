@@ -438,7 +438,7 @@ impl Render for NewProjectDialog {
             .flex()
             .flex_col()
             .bg(theme::island())
-            .font_family(theme::UI_FONT)
+            .font_family(theme::ui_font())
             .text_size(px(13.))
             .text_color(theme::text())
             .on_action(cx.listener(|d, _: &Dismiss, w, cx| d.escape(w, cx)))

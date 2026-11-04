@@ -658,7 +658,7 @@ impl Render for SettingsDialog {
                                 .bg(theme::island())
                                 .border_1()
                                 .border_color(theme::control_border())
-                                .font_family(theme::CODE_FONT)
+                                .font_family(theme::code_font())
                                 .text_size(px(12.))
                                 .whitespace_normal()
                                 .child(shown.clone()),
@@ -730,7 +730,7 @@ impl Render for SettingsDialog {
             .flex_col()
             .bg(theme::island())
             .text_color(theme::text())
-            .font_family(theme::UI_FONT)
+            .font_family(theme::ui_font())
             .text_size(px(13.))
             .on_action(cx.listener(|_, _: &Dismiss, window, _| window.remove_window()))
             .on_action(cx.listener(|d, _: &Choose, window, cx| d.ok(window, cx)))

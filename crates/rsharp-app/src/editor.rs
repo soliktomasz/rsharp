@@ -1183,7 +1183,7 @@ impl CodeEditor {
                                 div()
                                     .h(px(20.))
                                     .px(px(8.))
-                                    .font_family(theme::CODE_FONT)
+                                    .font_family(theme::code_font())
                                     .whitespace_nowrap()
                                     .overflow_hidden()
                                     .debug_selector(move || format!("git {side}: {text}"))
@@ -1431,7 +1431,7 @@ impl Render for CodeEditor {
             .size_full()
             .relative()
             .cursor(CursorStyle::IBeam)
-            .bg(theme::island())
+            .bg(theme::editor::background())
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_down(
@@ -1669,7 +1669,7 @@ impl Element for EditorElement {
         let line_height = px(settings.line_height());
         let font_size = px(settings.editor_font_size);
         // Rider draws code without ligatures until a person turns them on.
-        let code_font = gpui::Font { features: gpui::FontFeatures::disable_ligatures(), ..font(theme::CODE_FONT) };
+        let code_font = gpui::Font { features: gpui::FontFeatures::disable_ligatures(), ..font(theme::code_font()) };
         self.editor.update(cx, |editor, cx| {
             editor.line_height = line_height;
             let digits = editor.text.len_lines().to_string().len().max(3);

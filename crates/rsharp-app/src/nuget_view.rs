@@ -1016,7 +1016,7 @@ impl Render for NuGetView {
                 .min_h_0()
                 .overflow_y_scroll()
                 .px(px(8.))
-                .font_family("JetBrains Mono")
+                .font_family(theme::code_font())
                 .text_size(px(12.))
                 .text_color(theme::text_secondary())
                 .child(if self.log.is_empty() { "Nothing has run yet".to_string() } else { self.log.clone() })

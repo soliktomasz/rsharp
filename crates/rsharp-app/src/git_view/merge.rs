@@ -183,7 +183,7 @@ impl Render for MergeView {
             .flex_col()
             .bg(theme::island())
             .text_color(theme::text())
-            .font_family(theme::UI_FONT)
+            .font_family(theme::ui_font())
             .text_size(px(13.))
             .when_some(self.problem.clone(), |d, problem| {
                 d.child(div().px(px(8.)).py(px(5.)).text_color(theme::error()).child(problem))

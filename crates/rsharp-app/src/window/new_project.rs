@@ -162,7 +162,7 @@ impl MainWindow {
         div()
             .absolute()
             .left(px(if cfg!(target_os = "macos") { 84. } else { 48. }))
-            .top(px(TOOLBAR_HEIGHT))
+            .top(px(crate::theme::layout::toolbar_height()))
             .w(px(220.))
             .py(px(6.))
             .rounded(px(6.))

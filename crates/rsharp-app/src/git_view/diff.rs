@@ -191,7 +191,7 @@ impl Render for DiffView {
             .flex_col()
             .bg(theme::island())
             .text_color(theme::text())
-            .font_family(theme::UI_FONT)
+            .font_family(theme::ui_font())
             .text_size(px(13.))
             .child(
                 div()
@@ -236,7 +236,7 @@ impl Render for DiffView {
                                 div()
                                     .h(px(22.))
                                     .flex()
-                                    .font_family(theme::CODE_FONT)
+                                    .font_family(theme::code_font())
                                     .whitespace_nowrap()
                                     .on_scroll_wheel(cx.listener(|v, event: &gpui::ScrollWheelEvent, _, cx| {
                                         let delta = event.delta.pixel_delta(px(22.));

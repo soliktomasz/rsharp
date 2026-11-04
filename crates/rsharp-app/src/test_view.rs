@@ -570,7 +570,7 @@ impl TestView {
             .gap(px(6.));
         if self.show_log {
             return body
-                .font_family("JetBrains Mono")
+                .font_family(theme::code_font())
                 .child(if self.log.is_empty() { "No runner output yet".into() } else { self.log.clone() })
                 .into_any_element();
         }
@@ -626,7 +626,7 @@ impl TestView {
                     body = body.child(
                         div()
                             .id(SharedString::from(format!("tests stack {i} {j}")))
-                            .font_family("JetBrains Mono")
+                            .font_family(theme::code_font())
                             .child(text)
                             .when_some(link, |d, (path, line)| {
                                 d.text_color(theme::accent()).on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
@@ -639,7 +639,7 @@ impl TestView {
             if let Some(output) = &result.output {
                 body = body
                     .child(div().text_color(theme::text_muted()).child("Output"))
-                    .child(div().font_family("JetBrains Mono").child(output.clone()));
+                    .child(div().font_family(theme::code_font()).child(output.clone()));
             }
             for (j, attachment) in result.attachments.iter().enumerate() {
                 let path = attachment.path.clone();

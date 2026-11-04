@@ -415,8 +415,16 @@ pub fn semantic(kind: &str) -> Option<Hsla> {
 /// One Dark's colours for Roslyn's identifier kinds; the markup kinds fall through to the syntax's, which already follow.
 fn zed_semantic(kind: &str) -> Option<u32> {
     Some(match kind {
-        "class" | "recordClass" | "interface" | "typeParameter" | "struct" | "recordStruct" | "enum" | "delegate"
-        | "razorComponentElement" | "razorTagHelperElement" => 0x6EB4BF,
+        "class"
+        | "recordClass"
+        | "interface"
+        | "typeParameter"
+        | "struct"
+        | "recordStruct"
+        | "enum"
+        | "delegate"
+        | "razorComponentElement"
+        | "razorTagHelperElement" => 0x6EB4BF,
         "method" | "extensionMethod" | "function" => 0x73ADE9,
         "property" | "field" | "event" | "razorComponentAttribute" | "razorTagHelperAttribute" => 0xD07277,
         "constant" | "enumMember" => 0xDFC184,
@@ -432,5 +440,26 @@ pub fn toggled() -> Rgba {
     pick(0x3871E1, 0x454A56)
 }
 
-pub const UI_FONT: &str = "Inter";
-pub const CODE_FONT: &str = "JetBrains Mono";
+/// Rider's pair, Inter and JetBrains Mono; Zed's, IBM Plex Sans and Lilex (its `.ZedSans` and `.ZedMono`).
+pub fn ui_font() -> &'static str {
+    if is_zed() { "IBM Plex Sans" } else { "Inter" }
+}
+pub fn code_font() -> &'static str {
+    if is_zed() { "Lilex" } else { "JetBrains Mono" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_zed_design_flattens_the_islands_and_wears_one_dark() {
+        set_design(Design::Zed);
+        assert_eq!(island(), rgb(0x2F343E), "Zed's panels should take One Dark's panel ground");
+        assert_eq!(layout::island_radius(), 0., "Zed's panes should be square, not rounded islands");
+        assert_eq!(layout::gap(), 1., "Zed's panes should be split by a 1px line, not a 6px gap");
+        assert_eq!((ui_font(), code_font()), ("IBM Plex Sans", "Lilex"), "Zed's design should wear Zed's fonts");
+        set_design(Design::Islands);
+        assert_eq!(island(), rgb(0x191A1C), "switching back should restore Rider's island ground");
+    }
+}

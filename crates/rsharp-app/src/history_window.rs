@@ -200,7 +200,7 @@ impl Render for HistoryWindow {
             .flex_col()
             .bg(theme::island())
             .text_color(theme::text())
-            .font_family(theme::UI_FONT)
+            .font_family(theme::ui_font())
             .text_size(px(13.))
             .child(
                 div()
@@ -265,7 +265,7 @@ impl Render for HistoryWindow {
                                         .flex()
                                         .gap(px(10.))
                                         .whitespace_nowrap()
-                                        .font_family(theme::CODE_FONT)
+                                        .font_family(theme::code_font())
                                         .when_some(background, |d, bg| d.bg(bg))
                                         .child(div().w(px(10.)).text_color(theme::text_secondary()).child(mark))
                                         .child(text.clone())

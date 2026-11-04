@@ -1662,7 +1662,7 @@ impl MainWindow {
                     .hover(|d| d.bg(theme::row_hover()))
                     .child(icon(file_icon(&shown), 16.))
                     .child(div().flex_none().text_color(theme::text_secondary()).child(format!("{shown}:{}", line + 1)))
-                    .child(div().truncate().font_family(theme::CODE_FONT).child(place.text.clone()))
+                    .child(div().truncate().font_family(theme::code_font()).child(place.text.clone()))
                     .on_click(cx.listener(move |w, _: &ClickEvent, window, cx| {
                         w.open_file(&path, Some((line, column)), window, cx)
                     }))
@@ -2225,7 +2225,7 @@ impl Render for MainWindow {
             .flex_col()
             .bg(theme::frame())
             .text_color(theme::text())
-            .font_family(theme::UI_FONT)
+            .font_family(theme::ui_font())
             .text_size(px(13.))
             .relative()
             .track_focus(&self.root_focus)
@@ -2455,42 +2455,112 @@ impl Render for MainWindow {
             .children(self.tab_menu.map(|at| self.tab_menu_view(at, window, cx)))
             .children(self.status_menu.map(|kind| self.status_menu_view(kind, cx)))
             .children(self.refactoring.clone().map(|dialog| {
-                div().absolute().top(px(theme::layout::toolbar_height() + 60.)).left_0().right_0().flex().justify_center().child(dialog)
+                div()
+                    .absolute()
+                    .top(px(theme::layout::toolbar_height() + 60.))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(dialog)
             }))
             .children(self.extracting.clone().map(|dialog| {
-                div().absolute().top(px(theme::layout::toolbar_height() + 60.)).left_0().right_0().flex().justify_center().child(dialog)
+                div()
+                    .absolute()
+                    .top(px(theme::layout::toolbar_height() + 60.))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(dialog)
             }))
             .children(self.run_dialog.clone().map(|dialog| {
-                div().absolute().top(px(theme::layout::toolbar_height() + 40.)).left_0().right_0().flex().justify_center().child(dialog)
+                div()
+                    .absolute()
+                    .top(px(theme::layout::toolbar_height() + 40.))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(dialog)
             }))
             .children(self.breakpoint_popup.clone().map(|(popup, _, _)| {
-                div().absolute().top(px(theme::layout::toolbar_height() + 80.)).left_0().right_0().flex().justify_center().child(popup)
+                div()
+                    .absolute()
+                    .top(px(theme::layout::toolbar_height() + 80.))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(popup)
             }))
             .children(self.breakpoints_dialog.clone().map(|dialog| {
-                div().absolute().top(px(theme::layout::toolbar_height() + 20.)).left_0().right_0().flex().justify_center().child(dialog)
+                div()
+                    .absolute()
+                    .top(px(theme::layout::toolbar_height() + 20.))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(dialog)
             }))
             .children(self.attach_dialog.clone().map(|dialog| {
-                div().absolute().top(px(theme::layout::toolbar_height() + 20.)).left_0().right_0().flex().justify_center().child(dialog)
+                div()
+                    .absolute()
+                    .top(px(theme::layout::toolbar_height() + 20.))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(dialog)
             }))
             .children(self.evaluate_dialog.clone().map(|dialog| {
-                div().absolute().top(px(theme::layout::toolbar_height() + 80.)).left_0().right_0().flex().justify_center().child(dialog)
+                div()
+                    .absolute()
+                    .top(px(theme::layout::toolbar_height() + 80.))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(dialog)
             }))
             .children(self.step_dialog.clone().map(|dialog| {
-                div().absolute().top(px(theme::layout::toolbar_height() + 80.)).left_0().right_0().flex().justify_center().child(dialog)
+                div()
+                    .absolute()
+                    .top(px(theme::layout::toolbar_height() + 80.))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(dialog)
             }))
             .children(self.choice_dialog.clone().map(|dialog| {
-                div().absolute().top(px(theme::layout::toolbar_height() + 80.)).left_0().right_0().flex().justify_center().child(dialog)
+                div()
+                    .absolute()
+                    .top(px(theme::layout::toolbar_height() + 80.))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(dialog)
             }))
             .children(self.go_to.clone().map(|popup| {
-                div().absolute().top(px(theme::layout::toolbar_height() + 60.)).left_0().right_0().flex().justify_center().child(
-                    div()
-                        .on_mouse_down_out(cx.listener(|w, _, window, cx| {
-                            if w.go_to.take().is_some() {
-                                w.focus_editor(window, cx);
-                            }
-                        }))
-                        .child(popup),
-                )
+                div()
+                    .absolute()
+                    .top(px(theme::layout::toolbar_height() + 60.))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(
+                        div()
+                            .on_mouse_down_out(cx.listener(|w, _, window, cx| {
+                                if w.go_to.take().is_some() {
+                                    w.focus_editor(window, cx);
+                                }
+                            }))
+                            .child(popup),
+                    )
             }))
             .children(self.solution_menu_view(cx))
             .children(self.reference_dialog.as_ref().map(|(dialog, _)| {
@@ -2514,17 +2584,24 @@ impl Render for MainWindow {
                     .child(popup.clone())
             }))
             .children(self.find_action.clone().map(|popup| {
-                div().absolute().top(px(theme::layout::toolbar_height() + 60.)).left_0().right_0().flex().justify_center().child(
-                    div()
-                        .on_mouse_down_out(cx.listener(|w, _, window, cx| {
-                            if let Some(popup) = w.find_action.take() {
-                                drop(popup);
-                                window.focus(&w.root_focus);
-                                cx.notify();
-                            }
-                        }))
-                        .child(popup),
-                )
+                div()
+                    .absolute()
+                    .top(px(theme::layout::toolbar_height() + 60.))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(
+                        div()
+                            .on_mouse_down_out(cx.listener(|w, _, window, cx| {
+                                if let Some(popup) = w.find_action.take() {
+                                    drop(popup);
+                                    window.focus(&w.root_focus);
+                                    cx.notify();
+                                }
+                            }))
+                            .child(popup),
+                    )
             }))
     }
 }
@@ -2653,12 +2730,20 @@ impl MainWindow {
         let bottom = (!bottom.is_empty()).then(|| {
             // The band is the height a person dragged it to, so a tool's content stays inside it: the island takes
             // the band's height and its window scrolls what does not fit, instead of drawing past the status bar.
-            div().h(px(dock.bottom_height)).flex_none().flex().gap(px(theme::layout::gap())).pb(px(theme::layout::gap())).children(
-                bottom
-                    .into_iter()
-                    .map(|t| self.tool_island(t, window, cx).h_full().min_h_0().flex_1().min_w_0().into_any_element())
-                    .collect::<Vec<_>>(),
-            )
+            div()
+                .h(px(dock.bottom_height))
+                .flex_none()
+                .flex()
+                .gap(px(theme::layout::gap()))
+                .pb(px(theme::layout::gap()))
+                .children(
+                    bottom
+                        .into_iter()
+                        .map(|t| {
+                            self.tool_island(t, window, cx).h_full().min_h_0().flex_1().min_w_0().into_any_element()
+                        })
+                        .collect::<Vec<_>>(),
+                )
         });
         div()
             .id("body")
@@ -2668,9 +2753,17 @@ impl MainWindow {
             .on_drag_move(cx.listener(|w, event: &gpui::DragMoveEvent<Resize>, _, cx| {
                 let (bounds, at) = (event.bounds, event.event.position);
                 match event.drag(cx) {
-                    Resize::Left => w.dock.left_width = f32::from(at.x - bounds.left()) - theme::layout::stripe_width() - theme::layout::gap() / 2.,
-                    Resize::Right => w.dock.right_width = f32::from(bounds.right() - at.x) - theme::layout::stripe_width() - theme::layout::gap() / 2.,
-                    Resize::Bottom => w.dock.bottom_height = f32::from(bounds.bottom() - at.y) - theme::layout::gap() / 2.,
+                    Resize::Left => {
+                        w.dock.left_width =
+                            f32::from(at.x - bounds.left()) - theme::layout::stripe_width() - theme::layout::gap() / 2.
+                    }
+                    Resize::Right => {
+                        w.dock.right_width =
+                            f32::from(bounds.right() - at.x) - theme::layout::stripe_width() - theme::layout::gap() / 2.
+                    }
+                    Resize::Bottom => {
+                        w.dock.bottom_height = f32::from(bounds.bottom() - at.y) - theme::layout::gap() / 2.
+                    }
                 }
                 w.dock = w.dock.clone().clamped();
                 w.save_state(cx);
@@ -2759,15 +2852,15 @@ impl MainWindow {
         div()
             .id(tool.title())
             .debug_selector(move || format!("stripe: {}", tool.title()))
-            .size(px(32.))
+            .size(px(if theme::is_zed() { 28. } else { 32. }))
             .flex_none()
-            .rounded(px(6.))
+            .rounded(px(if theme::is_zed() { 4. } else { 6. }))
             .flex()
             .items_center()
             .justify_center()
             .when(open, |d| d.bg(theme::toggled()))
             .when(!open, |d| d.hover(|d| d.bg(theme::button_hover())).active(|d| d.bg(theme::button_pressed())))
-            .child(icon(tool.icon(), 20.))
+            .child(icon(tool.icon(), if theme::is_zed() { 16. } else { 20. }))
             .on_click(cx.listener(move |w, _: &ClickEvent, window, cx| w.toggle_tool(tool, window, cx)))
             .on_drag(DraggedTool(tool), |dragged, _, _, cx| cx.new(|_| dragged.clone()))
             .into_any_element()
@@ -3382,7 +3475,7 @@ impl MainWindow {
 
     fn editor_island(&self, cx: &mut Context<Self>) -> gpui::Div {
         let open = self.area.groups.iter().any(|g| !g.tabs.is_empty());
-        island().min_w_0().child(if open {
+        island().bg(theme::editor::background()).min_w_0().child(if open {
             self.split_view(&self.area.layout.clone(), cx)
         } else {
             empty_editor().into_any_element()
@@ -3442,16 +3535,26 @@ impl MainWindow {
             .child(
                 div()
                     .id(("tabs", group))
-                    .h(px(40.))
+                    .h(px(theme::layout::tab_strip_height()))
                     .flex_none()
                     .flex()
-                    .items_center()
-                    .gap(px(2.))
-                    .px(px(6.))
-                    .border_b_1()
-                    .border_color(theme::frame())
                     .overflow_x_scroll()
-                    .children(tabs),
+                    .map(|d| {
+                        if theme::is_zed() {
+                            // Zed's tab bar: square cells on the panel ground, the bar's bottom line broken under the
+                            // shown tab, so it opens into the editor below.
+                            d.bg(theme::island())
+                                .children(tabs)
+                                .child(div().flex_1().h_full().border_b_1().border_color(theme::tab_selected_border()))
+                        } else {
+                            d.items_center()
+                                .gap(px(2.))
+                                .px(px(6.))
+                                .border_b_1()
+                                .border_color(theme::frame())
+                                .children(tabs)
+                        }
+                    }),
             )
             .when(group == self.area.current, |d| d.children(self.find_bar.clone()))
             .child(match g.active_editor() {
@@ -3477,23 +3580,41 @@ impl MainWindow {
             .id(id("tab"))
             .debug_selector(move || selector.clone())
             .group(hover.clone())
-            .h(px(28.))
             .flex_none()
             .flex()
             .items_center()
             .gap(px(6.))
-            .pl(px(8.))
-            .pr(px(4.))
-            .rounded(px(6.))
-            .border_1()
-            .when(selected && current, |d| d.bg(theme::tab_selected()).border_color(theme::tab_selected_border()))
-            .when(selected && !current, |d| {
-                d.bg(theme::tab_selected_inactive()).border_color(gpui::transparent_black())
-            })
-            .when(!selected, |d| {
-                d.border_color(gpui::transparent_black())
-                    .text_color(theme::text_muted())
-                    .hover(|d| d.bg(theme::button_hover()))
+            .map(|d| {
+                if theme::is_zed() {
+                    d.h_full()
+                        .pl(px(12.))
+                        .pr(px(8.))
+                        .border_r_1()
+                        .border_color(theme::tab_selected_border())
+                        .when(selected, |d| {
+                            d.bg(if current { theme::tab_selected() } else { theme::tab_selected_inactive() })
+                        })
+                        .when(!selected, |d| {
+                            d.border_b_1().text_color(theme::text_muted()).hover(|d| d.bg(theme::button_hover()))
+                        })
+                } else {
+                    d.h(px(28.))
+                        .pl(px(8.))
+                        .pr(px(4.))
+                        .rounded(px(6.))
+                        .border_1()
+                        .when(selected && current, |d| {
+                            d.bg(theme::tab_selected()).border_color(theme::tab_selected_border())
+                        })
+                        .when(selected && !current, |d| {
+                            d.bg(theme::tab_selected_inactive()).border_color(gpui::transparent_black())
+                        })
+                        .when(!selected, |d| {
+                            d.border_color(gpui::transparent_black())
+                                .text_color(theme::text_muted())
+                                .hover(|d| d.bg(theme::button_hover()))
+                        })
+                }
             })
             .child(icon(file_icon(&name), 16.))
             .child(name)
@@ -3859,7 +3980,7 @@ impl MainWindow {
                 .map(|said| (said, if self.server_failed().is_some() { theme::error() } else { theme::text_muted() })),
         );
         div()
-            .h(px(30.))
+            .h(px(theme::layout::status_bar_height()))
             .flex_none()
             .flex()
             .items_center()
@@ -4099,6 +4220,7 @@ impl Render for Resize {
 /// The gap between islands, which resizes them as it is dragged.
 fn splitter(edge: Resize) -> impl IntoElement {
     let horizontal = matches!(edge, Resize::Bottom);
+    let grab = if theme::is_zed() { 3. } else { 0. };
     div()
         .id(match edge {
             Resize::Left => "split-left",
@@ -4118,8 +4240,8 @@ fn splitter(edge: Resize) -> impl IntoElement {
             )
         })
         .flex_none()
-        .when(horizontal, |d| d.h(px(theme::layout::gap())).w_full().cursor_row_resize())
-        .when(!horizontal, |d| d.w(px(theme::layout::gap())).h_full().cursor_col_resize())
+        .when(horizontal, |d| d.h(px(theme::layout::gap() + 2. * grab)).my(px(-grab)).w_full().cursor_row_resize())
+        .when(!horizontal, |d| d.w(px(theme::layout::gap() + 2. * grab)).mx(px(-grab)).h_full().cursor_col_resize())
         .on_drag(edge, |edge, _, _, cx| cx.new(|_| *edge))
 }
 
@@ -4151,7 +4273,7 @@ impl Render for Tip {
             .border_1()
             .border_color(theme::popup_border())
             .text_color(theme::text())
-            .font_family(theme::UI_FONT)
+            .font_family(theme::ui_font())
             .text_size(px(13.))
             .child(self.0.clone())
     }
@@ -4186,7 +4308,7 @@ impl Render for TabDrag {
             .border_1()
             .border_color(theme::tab_selected_border())
             .text_color(theme::text())
-            .font_family(theme::UI_FONT)
+            .font_family(theme::ui_font())
             .text_size(px(13.))
             .child(icon(file_icon(&self.name), 16.))
             .child(self.name.clone())
@@ -4209,7 +4331,7 @@ impl Render for DraggedTool {
             .border_1()
             .border_color(theme::popup_border())
             .text_color(theme::text())
-            .font_family(theme::UI_FONT)
+            .font_family(theme::ui_font())
             .text_size(px(13.))
             .child(icon(self.0.icon(), 16.))
             .child(self.0.title())

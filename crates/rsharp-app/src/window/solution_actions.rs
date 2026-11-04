@@ -93,7 +93,7 @@ impl MainWindow {
         else {
             return;
         };
-        let at = point(px(40.), px(TOOLBAR_HEIGHT + 80. + row as f32 * ROW_HEIGHT));
+        let at = point(px(40.), px(crate::theme::layout::toolbar_height() + 80. + row as f32 * ROW_HEIGHT));
         self.solution_menu_open = Some(SolutionMenu { row, at, items: add, submenu: None });
         cx.notify();
     }
