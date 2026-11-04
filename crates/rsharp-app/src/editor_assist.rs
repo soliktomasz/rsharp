@@ -784,7 +784,7 @@ impl CodeEditor {
         if !rsharp_lsp::web::prettier_covers(&self.path) {
             return None;
         }
-        Some((crate::settings::node(cx).ok()?, rsharp_lsp::web::installed(&self.path, "prettier")?))
+        Some((crate::settings::node(cx).ok()?, crate::settings::package(cx, &self.path, "prettier")?))
     }
 
     /// A save as Settings ask it be made: what the project's ESLint can fix fixed, then the file laid out by its
@@ -842,7 +842,7 @@ impl CodeEditor {
         }
         // Rider's Prettier "Run on 'Reformat Code' action": the files it covers, where the project has prettier.
         if rsharp_lsp::web::prettier_covers(&self.path)
-            && let Some(package) = rsharp_lsp::web::installed(&self.path, "prettier")
+            && let Some(package) = crate::settings::package(cx, &self.path, "prettier")
             && let Ok(node) = crate::settings::node(cx)
         {
             self.prettify(node, package, false, cx);

@@ -4,7 +4,7 @@
 //! eslint checks. Without Node.js or the servers a file keeps its colours, and the status bar says why.
 
 use super::*;
-use rsharp_lsp::web::{WebServer, eslint_covers, installed, start_web, web_language};
+use rsharp_lsp::web::{WebServer, eslint_covers, start_web, web_language};
 use std::collections::HashMap;
 
 /// A web server of the folder: being started, running, or unable to run.
@@ -19,7 +19,13 @@ pub(super) enum WebSlot {
 pub(super) struct WebServers {
     slots: HashMap<WebServer, WebSlot>,
     listening: HashMap<WebServer, Task<()>>,
+    /// How many times each ended server was started again, and when it last started: one that lived a minute has paid
+    /// for its restarts.
+    restarts: HashMap<WebServer, (u32, std::time::Instant)>,
 }
+
+/// A server that keeps ending is left alone after this many starts in quick succession.
+const RESTARTS: u32 = 3;
 
 impl MainWindow {
     /// Gives a web file's buffer its server, and ESLint's where the project's eslint checks it; each starts with the
@@ -37,7 +43,7 @@ impl MainWindow {
         if !cx.global::<crate::state::Ide>().servers {
             return;
         }
-        let lint = eslint_covers(&path) && installed(&path, "eslint").is_some();
+        let lint = eslint_covers(&path) && crate::settings::package(cx, &path, "eslint").is_some();
         for wanted in [kind].into_iter().chain(lint.then_some(WebServer::Eslint)) {
             match self.web.slots.get(&wanted) {
                 Some(WebSlot::Running(server)) => {
@@ -101,6 +107,23 @@ impl MainWindow {
         }
     }
 
+    /// A server that ended is started again, its files given the new one, up to [`RESTARTS`] times in a row; then its files
+    /// keep their colours and the status bar says it ended.
+    fn restart_web(&mut self, kind: WebServer, ended: &Arc<LanguageServer>, cx: &mut Context<Self>) {
+        let (count, since) = self.web.restarts.get(&kind).copied().unwrap_or((0, std::time::Instant::now()));
+        let count = if since.elapsed() > std::time::Duration::from_secs(60) { 0 } else { count };
+        if count >= RESTARTS {
+            return self.web_unavailable(kind, format!("the {} language server ended", kind.name()), cx);
+        }
+        log::warn!(target: "web", "the {} language server ended; starting it again", kind.name());
+        self.web.restarts.insert(kind, (count + 1, std::time::Instant::now()));
+        for buffer in self.workspace_buffers(cx) {
+            buffer.update(cx, |b, cx| b.drop_ended_server(ended, cx));
+        }
+        self.web.slots.remove(&kind);
+        self.start_web(kind, cx);
+    }
+
     /// A server that cannot run: its files keep their colours, and the status bar says why.
     fn web_unavailable(&mut self, kind: WebServer, why: String, cx: &mut Context<Self>) {
         log::warn!(target: "web", "the {} language server cannot run: {why}", kind.name());
@@ -145,7 +168,7 @@ impl MainWindow {
             ServerEvent::Ended => {
                 if self.web.slots.get(&kind).is_some_and(|s| matches!(s, WebSlot::Running(r) if Arc::ptr_eq(r, server)))
                 {
-                    self.web_unavailable(kind, format!("the {} language server ended", kind.name()), cx);
+                    self.restart_web(kind, server, cx);
                 }
             }
         }

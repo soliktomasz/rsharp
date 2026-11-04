@@ -41,6 +41,12 @@ pub struct AppSettings {
     /// Languages & Frameworks | Node.js | Node interpreter: the `node` the web servers, ESLint and Prettier run on;
     /// empty for the one found as a login shell would.
     pub node_interpreter: String,
+    /// Languages & Frameworks | JavaScript | Code Quality Tools | ESLint | Manual configuration: the eslint package's
+    /// folder, or empty for Rider's Automatic configuration (the project's own, found from each file).
+    pub eslint_package: String,
+    /// Languages & Frameworks | JavaScript | Prettier | Manual configuration: the prettier package's folder, or empty
+    /// for the project's own.
+    pub prettier_package: String,
     /// Languages & Frameworks | Schemas and DTDs | Remote JSON Schemas: a JSON file's own `$schema` on the web is
     /// downloaded to check and complete it; those carried never are.
     pub download_json_schemas: bool,
@@ -167,6 +173,8 @@ impl Default for AppSettings {
             eslint_fix_on_save: false,
             prettier_on_save: false,
             node_interpreter: String::new(),
+            eslint_package: String::new(),
+            prettier_package: String::new(),
             download_json_schemas: true,
         }
     }
@@ -219,6 +227,20 @@ pub fn node(cx: &gpui::App) -> Result<std::path::PathBuf, String> {
     if path.is_file() { Ok(path) } else { Err(format!("Settings name {named} as Node.js, which is not there")) }
 }
 
+/// The ESLint or Prettier package (`name`) for a file: the folder Settings name when they do, else the project's own found
+/// from the file up. None when there is none, or Settings name a folder that is not that package.
+pub fn package(cx: &gpui::App, file: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    let named = match name {
+        "eslint" => settings(cx).eslint_package.trim(),
+        _ => settings(cx).prettier_package.trim(),
+    };
+    if named.is_empty() {
+        return rsharp_lsp::web::installed(file, name);
+    }
+    let path = std::path::PathBuf::from(named);
+    path.join("package.json").is_file().then_some(path)
+}
+
 /// Puts `new` in force and keeps it; every view observing [`Settings`] draws again.
 pub fn apply(new: AppSettings, cx: &mut gpui::App) {
     let new = new.clamped();
@@ -229,5 +251,8 @@ pub fn apply(new: AppSettings, cx: &mut gpui::App) {
 
 /// What the non-UI crates read of the settings, told them as they come into force.
 pub fn follow(settings: &AppSettings) {
+    if let Ok(mut named) = rsharp_lsp::web::ESLINT_PACKAGE.lock() {
+        *named = settings.eslint_package.trim().to_string();
+    }
     rsharp_lsp::web::REMOTE_SCHEMAS.store(settings.download_json_schemas, std::sync::atomic::Ordering::Relaxed);
 }

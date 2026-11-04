@@ -210,20 +210,34 @@ static PAGES: &[Page] = &[
     Page {
         group: "Languages & Frameworks",
         name: "ESLint",
-        options: &[Opt::Check {
-            label: "Run eslint --fix on save",
-            get: |s| s.eslint_fix_on_save,
-            set: |s, value| s.eslint_fix_on_save = value,
-        }],
+        options: &[
+            Opt::Text {
+                label: "ESLint package (empty for the project's own; read when ESLint starts)",
+                get: |s| &s.eslint_package,
+                set: |s, path| s.eslint_package = path,
+            },
+            Opt::Check {
+                label: "Run eslint --fix on save",
+                get: |s| s.eslint_fix_on_save,
+                set: |s, value| s.eslint_fix_on_save = value,
+            },
+        ],
     },
     Page {
         group: "Languages & Frameworks",
         name: "Prettier",
-        options: &[Opt::Check {
-            label: "Run on save",
-            get: |s| s.prettier_on_save,
-            set: |s, value| s.prettier_on_save = value,
-        }],
+        options: &[
+            Opt::Text {
+                label: "Prettier package (empty for the project's own)",
+                get: |s| &s.prettier_package,
+                set: |s, path| s.prettier_package = path,
+            },
+            Opt::Check {
+                label: "Run on save",
+                get: |s| s.prettier_on_save,
+                set: |s, value| s.prettier_on_save = value,
+            },
+        ],
     },
     Page {
         group: "Editor",

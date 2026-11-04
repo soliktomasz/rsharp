@@ -672,6 +672,20 @@ impl Buffer {
         self.check_lint(Duration::ZERO, cx);
     }
 
+    /// A server that ended is let go of, its problems cleared, so the file can be given the one started in its place.
+    pub fn drop_ended_server(&mut self, ended: &Arc<LanguageServer>, cx: &mut Context<Self>) {
+        let was = self.server.is_some() || self.lint.is_some();
+        if self.server.as_ref().is_some_and(|(s, _)| Arc::ptr_eq(s, ended)) {
+            self.server = None;
+        }
+        if self.lint.as_ref().is_some_and(|(s, _)| Arc::ptr_eq(s, ended)) {
+            self.lint = None;
+        }
+        if was && self.server.is_none() && self.lint.is_none() {
+            cx.notify();
+        }
+    }
+
     /// Asks ESLint for the file's problems once typing has paused: its server answers pulls only.
     fn check_lint(&mut self, after: Duration, cx: &mut Context<Self>) {
         let Some((server, uri)) = self.lint.clone() else { return };

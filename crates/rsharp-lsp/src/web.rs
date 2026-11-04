@@ -204,6 +204,10 @@ fn carried_schema(uri: &str) -> Option<String> {
     std::fs::read_to_string(PathBuf::from(env!("RSHARP_WEB")).join("schemas").join(file)).ok()
 }
 
+/// The ESLint package Settings name (its folder), or empty for the project's own found from each file: the server's
+/// `nodePath` is the node_modules folder holding it, read when ESLint's server starts.
+pub static ESLINT_PACKAGE: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
 /// Whether a schema a JSON file names on the web is downloaded: Settings' Remote JSON Schemas, which the app keeps
 /// this told of.
 pub static REMOTE_SCHEMAS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
@@ -267,7 +271,11 @@ fn section(kind: WebServer, section: Option<&str>, workspace: &Value) -> Value {
             "rulesCustomizations": [],
             "run": "onType",
             "problems": { "shortenToSingleLine": false },
-            "nodePath": null,
+            "nodePath": ESLINT_PACKAGE
+                .lock()
+                .ok()
+                .and_then(|named| Path::new(named.as_str()).parent().map(|p| p.display().to_string()))
+                .filter(|p| !p.is_empty()),
             "workspaceFolder": workspace,
         }),
         (WebServer::Css, Some("css" | "scss" | "less")) | (WebServer::Html, Some("css")) => json!({ "validate": true }),

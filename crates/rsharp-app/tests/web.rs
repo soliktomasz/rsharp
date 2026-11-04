@@ -100,3 +100,66 @@ fn a_node_interpreter_settings_name_that_is_not_there_is_said_and_the_file_keeps
         "the status bar did not say why TypeScript's server could not start"
     );
 }
+
+/// The pids under this process whose command line has `needle`, from `ps`'s own table of parents.
+#[cfg(unix)]
+fn descendants_running(needle: &str) -> Vec<u32> {
+    let table = std::process::Command::new("ps").args(["-A", "-o", "pid=,ppid=,command="]).output().unwrap().stdout;
+    let rows: Vec<(u32, u32, String)> = String::from_utf8_lossy(&table)
+        .lines()
+        .filter_map(|l| {
+            let mut parts = l.trim().splitn(3, ' ');
+            Some((parts.next()?.parse().ok()?, parts.next()?.trim().parse().ok()?, parts.next()?.to_string()))
+        })
+        .collect();
+    let mut family = vec![std::process::id()];
+    loop {
+        let more: Vec<u32> =
+            rows.iter().filter(|(p, parent, _)| family.contains(parent) && !family.contains(p)).map(|r| r.0).collect();
+        if more.is_empty() {
+            break;
+        }
+        family.extend(more);
+    }
+    rows.iter().filter(|(p, _, c)| family.contains(p) && c.contains(needle)).map(|r| r.0).collect()
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn a_web_server_that_ends_is_started_again_and_marks_the_file_once_more(cx: &mut TestAppContext) {
+    if rsharp_core::programs::node().is_none() {
+        eprintln!("skipped: Node.js was not found");
+        return;
+    }
+    if let Err(why) = rsharp_lsp::web::web_servers() {
+        eprintln!("skipped: {why}");
+        return;
+    }
+    let run = Run::new("web-restart", &[("site.ts", SITE)]);
+    let (main, cx) = run.window(cx);
+    cx.update(|_, cx| cx.global_mut::<rsharp_app::state::Ide>().servers = true);
+    main.update_in(cx, |main, window, cx| {
+        main.open_workspace(&run.folder, window, cx);
+        main.open_file(&run.folder.join("site.ts"), Some((1, 8)), window, cx);
+    });
+    let editor = main.read_with(cx, |m, _| m.editor().unwrap());
+    let problems = |cx: &mut VisualTestContext| {
+        editor
+            .read_with(cx, |e, cx| e.buffer.read(cx).diagnostics.iter().map(|d| d.message.clone()).collect::<Vec<_>>())
+    };
+    assert!(wait_for(cx, |cx| !problems(cx).is_empty()), "the first server never marked the file");
+
+    let servers = descendants_running("typescript-language-server");
+    assert!(!servers.is_empty(), "no typescript-language-server runs under the test");
+    for pid in servers {
+        let _ = std::process::Command::new("kill").args(["-9", &pid.to_string()]).status();
+    }
+    // A new mistake, which only a server that runs again can mark.
+    cx.simulate_input("flag: boolean");
+    assert!(
+        wait_for(cx, |cx| problems(cx).iter().any(|p| p.contains("'boolean' only refers to a type"))),
+        "the language server that was killed was not started again; the file shows {:?} and the status bar says {:?}",
+        problems(cx),
+        main.read_with(cx, |m, _| m.said().map(str::to_string))
+    );
+}
