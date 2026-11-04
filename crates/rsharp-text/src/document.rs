@@ -76,6 +76,20 @@ struct Step {
     at: Instant,
 }
 
+/// `map_line` for a mark that belongs to its line's text (a bookmark): none once an edit has removed the whole line,
+/// its line break included, rather than leaving it where the deletion began.
+pub fn map_line_kept(changes: &[Change], line: usize) -> Option<usize> {
+    let mut line = line;
+    for change in changes {
+        let from_its_start = change.start.line < line || (change.start.line == line && change.start.column == 0);
+        if from_its_start && change.old_end.line > line {
+            return None;
+        }
+        line = map_line(std::slice::from_ref(change), line);
+    }
+    Some(line)
+}
+
 /// A line carried through edits to the text, in their application order: the line its text stands on now. A line the
 /// edits delete goes to where the edit began; one whose line start is inserted above moves down with its code.
 pub fn map_line(changes: &[Change], line: usize) -> usize {

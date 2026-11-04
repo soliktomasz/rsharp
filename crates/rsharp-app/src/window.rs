@@ -133,6 +133,10 @@ actions!(
         FileStructure,
         CallHierarchy,
         TypeHierarchy,
+        ToggleBookmark,
+        NextBookmark,
+        PreviousBookmark,
+        ShowBookmarks,
         FindInFiles,
         SearchEverywhere,
         RecentLocations,
@@ -146,6 +150,7 @@ mod agent_language;
 mod agent_tools;
 mod agent_vcs;
 mod agent_workflow;
+mod bookmarks;
 mod build;
 mod debug;
 mod file_moves;
@@ -332,6 +337,9 @@ pub struct MainWindow {
     _nuget_subscription: gpui::Subscription,
     /// Call Hierarchy and Type Hierarchy.
     hierarchy: Entity<crate::hierarchy_view::HierarchyView>,
+    /// The folder's bookmarks, by absolute path.
+    bookmarks: rsharp_core::bookmarks::Bookmarks,
+    bookmarks_focus: FocusHandle,
     build: Entity<crate::console::ConsoleView>,
     build_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     build_generation: u64,
@@ -565,6 +573,8 @@ impl MainWindow {
             nuget,
             _nuget_subscription,
             hierarchy,
+            bookmarks: Default::default(),
+            bookmarks_focus: cx.focus_handle(),
             root_focus,
             workspace: None,
             branch: None,
@@ -664,6 +674,7 @@ impl MainWindow {
         self.expanded = std::iter::once(folder.clone()).chain(kept.expanded.iter().map(|p| folder.join(p))).collect();
         self.dock = kept.dock.clone().unwrap_or_else(|| store.read::<DockLayout>()).complete().clamped();
         self.solution_wide = kept.solution_wide;
+        self.load_bookmarks(&workspace.folder.clone(), &kept.bookmarks);
         self.tree = workspace.solution.as_deref().and_then(rsharp_core::solution::read).map(|solution| {
             let cached: rsharp_core::project::Evaluations = store.read_for(&folder);
             let evaluated = cached.projects.into_iter().map(|p| (p.path.clone(), p)).collect();
@@ -742,6 +753,7 @@ impl MainWindow {
                 dock: Some(self.dock.clone()),
                 solution_wide: self.solution_wide,
                 show_hidden: self.shows_hidden(),
+                bookmarks: self.kept_bookmarks(folder),
             },
         );
         store.write(&self.dock);
@@ -1742,6 +1754,7 @@ impl MainWindow {
                 self.attach_git_buffer(&buffer, cx);
                 self.note_hot_reload_original(&buffer, cx);
                 self.show_breakpoints(&path, cx);
+                self.show_bookmarks(&path, cx);
                 let editor = self.new_editor(buffer, window, cx);
                 self.area.add(editor, false)
             }
@@ -2513,6 +2526,7 @@ impl Render for MainWindow {
             .map(|d| self.run_actions(d, cx))
             .map(|d| self.debug_actions(d, cx))
             .map(|d| self.test_actions(d, cx))
+            .map(|d| self.bookmark_actions(d, cx))
             .when(self.workspace.is_some(), |d| {
                 use crate::goto::Kind;
                 d.on_action(cx.listener(|w, _: &GoToFile, window, cx| w.open_go_to(Kind::File, window, cx)))
@@ -3105,6 +3119,7 @@ impl MainWindow {
             Tool::XamlPreview => self.preview_content(cx).into_any_element(),
             Tool::LiveTree => self.live_tree_content(cx).into_any_element(),
             Tool::Hierarchy => self.hierarchy.clone().into_any_element(),
+            Tool::Bookmarks => self.bookmarks_content(cx),
             Tool::Profiler => self.profiler_content(cx).into_any_element(),
             Tool::Terminal => {
                 self.ensure_terminal(cx);
@@ -3129,6 +3144,7 @@ impl MainWindow {
             Tool::XamlPreview => self.preview_subtitle(),
             Tool::LiveTree => None,
             Tool::Hierarchy => self.hierarchy.read(cx).title(),
+            Tool::Bookmarks => None,
             Tool::Profiler => self.profile_subtitle(),
             Tool::Terminal | Tool::Commit | Tool::Git => None,
         }
@@ -3235,6 +3251,7 @@ impl MainWindow {
             Tool::XamlPreview => self.preview_focus.clone(),
             Tool::LiveTree => self.live_focus.clone(),
             Tool::Hierarchy => self.hierarchy.focus_handle(cx),
+            Tool::Bookmarks => self.bookmarks_focus.clone(),
             Tool::Profiler => self.live_focus.clone(),
         }
     }

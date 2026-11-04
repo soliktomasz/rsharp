@@ -33,7 +33,7 @@ use crate::window::{
 };
 use crate::window::{
     Back, CallHierarchy, FileStructure, FindInFiles, Forward, GoToFile, GoToSymbol, GoToType, LastEditLocation,
-    RecentFiles, TypeHierarchy,
+    NextBookmark, PreviousBookmark, RecentFiles, ShowBookmarks, ToggleBookmark, TypeHierarchy,
 };
 use crate::window::{
     CloseAllButPinned, CloseAllTabs, CloseOtherTabs, CloseTabsToLeft, CloseTabsToRight, FileEncoding, LineSeparators,
@@ -175,6 +175,10 @@ pub static ALL: &[IdeAction] = &[
     ide!("File Structure", "Navigate", ["structure", "outline", "members of file"], FileStructure),
     ide!("Call Hierarchy", "Navigate", ["callers", "callees", "incoming calls", "outgoing calls"], CallHierarchy),
     ide!("Type Hierarchy", "Navigate", ["supertypes", "subtypes", "base types", "derived types"], TypeHierarchy),
+    ide!("Toggle Bookmark", "Navigate", ["bookmark", "mark line"], ToggleBookmark),
+    ide!("Next Bookmark", "Navigate", ["bookmark"], NextBookmark),
+    ide!("Previous Bookmark", "Navigate", ["bookmark"], PreviousBookmark),
+    ide!("Bookmarks", "Navigate", ["show bookmarks", "bookmarks window"], ShowBookmarks),
     ide!("Find in Files…", "Edit", ["search in files", "find in path", "grep"], FindInFiles),
     ide!("Replace in Files…", "Edit", ["replace in path", "find and replace in files"], ReplaceInFiles),
     ide!("Search Everywhere", "Navigate", ["go to everything", "search all"], SearchEverywhere),

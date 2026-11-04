@@ -242,6 +242,10 @@ pub fn bind(cx: &mut App) {
             // Passenger's Call Hierarchy; Rider's macOS keymap's Type Hierarchy.
             KeyBinding::new("ctrl-alt-h", CallHierarchy, None),
             KeyBinding::new("ctrl-h", TypeHierarchy, None),
+            // Rider's macOS bookmark keys, and Passenger's Cmd+F2.
+            KeyBinding::new("f3", ToggleBookmark, None),
+            KeyBinding::new("cmd-f2", ToggleBookmark, None),
+            KeyBinding::new("cmd-f3", ShowBookmarks, None),
             KeyBinding::new("cmd-shift-f", FindInFiles, None),
             KeyBinding::new("cmd-shift-r", ReplaceInFiles, None),
             KeyBinding::new("cmd-shift-e", RecentLocations, None),
@@ -334,6 +338,16 @@ pub fn bind(cx: &mut App) {
             KeyBinding::new("ctrl-alt-h", CallHierarchy, None),
             KeyBinding::new("ctrl-e h", TypeHierarchy, None),
             KeyBinding::new("ctrl-e ctrl-h", TypeHierarchy, None),
+            // Passenger's bookmark chords on the Visual Studio keymap.
+            KeyBinding::new("ctrl-k k", ToggleBookmark, None),
+            KeyBinding::new("ctrl-k ctrl-k", ToggleBookmark, None),
+            KeyBinding::new("ctrl-k n", NextBookmark, None),
+            KeyBinding::new("ctrl-k ctrl-n", NextBookmark, None),
+            KeyBinding::new("ctrl-k p", PreviousBookmark, None),
+            KeyBinding::new("ctrl-k ctrl-p", PreviousBookmark, None),
+            KeyBinding::new("ctrl-k w", ShowBookmarks, None),
+            KeyBinding::new("ctrl-k ctrl-w", ShowBookmarks, None),
+            KeyBinding::new("ctrl-`", ShowBookmarks, None),
             KeyBinding::new("ctrl-shift-f", FindInFiles, None),
             KeyBinding::new("alt-f4", Quit, None),
             KeyBinding::new("ctrl-alt-s", OpenSettings, None),

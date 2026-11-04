@@ -2274,6 +2274,8 @@ impl MainWindow {
             return;
         }
         self.followed_edit = Some(edit);
+        // Bookmarks follow the same edit, once, as breakpoints do.
+        self.follow_bookmarks(&path, changes, cx);
         let moved = self.debug.breakpoints.follow(&path, |line| rsharp_text::map_line(changes, line));
         if moved.is_empty() {
             return;

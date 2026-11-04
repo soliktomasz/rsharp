@@ -1635,6 +1635,9 @@ struct Prepainted {
     /// gutter's column for their swatches, none in a file without colours.
     swatches: Vec<(usize, Hsla, usize)>,
     swatch_column: Pixels,
+    /// The bookmarked lines, and their column's width (none without bookmarks).
+    bookmarks: Vec<usize>,
+    bookmark_column: Pixels,
     /// The member each row's Code Vision lens counts, its last hint, for rows that have one.
     lens_rows: Vec<Option<usize>>,
 }
@@ -1705,13 +1708,17 @@ impl Element for EditorElement {
             // Rider's colour swatches, in a column of their own beside the numbers while the file has colours.
             let swatch_column =
                 if editor.console.is_none() && !editor.buffer.read(cx).colours.is_empty() { px(16.) } else { px(0.) };
+            // Bookmarks, in a column of their own before the swatches while the file has any.
+            let bookmark_column =
+                if editor.console.is_none() && !editor.buffer.read(cx).bookmarks.is_empty() { px(16.) } else { px(0.) };
             let gutter_width = if editor.console.is_some() || editor.prose {
                 px(8.)
             } else if show_numbers {
                 char_width * digits as f32 + px(32.)
             } else {
                 px(24.)
-            } + swatch_column;
+            } + swatch_column
+                + bookmark_column;
             let text_left = bounds.origin.x + gutter_width + px(TEXT_PAD) - px(16.);
             editor.columns = Some(((bounds.right() - text_left - px(TEXT_PAD)) / char_width).floor().max(8.) as usize);
             editor.reveal_carets();
@@ -1889,6 +1896,8 @@ impl Element for EditorElement {
                 execution_line,
                 swatches,
                 swatch_column,
+                bookmarks: buffer.bookmarks.clone(),
+                bookmark_column,
                 lens_rows,
             }
         })
@@ -2067,7 +2076,14 @@ impl Element for EditorElement {
                 }
                 if let Some(Some(number)) = state.line_numbers.get(i) {
                     let _ = number.paint(
-                        point(bounds.origin.x + state.gutter_width - number.width - px(20.) - state.swatch_column, top),
+                        point(
+                            bounds.origin.x + state.gutter_width
+                                - number.width
+                                - px(20.)
+                                - state.swatch_column
+                                - state.bookmark_column,
+                            top,
+                        ),
                         line_height,
                         window,
                         cx,
@@ -2087,6 +2103,22 @@ impl Element for EditorElement {
                             .border_color(theme::control_border()),
                     );
                     swatches.push((swatch, index));
+                }
+                if span.first && state.bookmarks.contains(&span.line) {
+                    let at = Bounds::new(
+                        point(
+                            bounds.origin.x + state.gutter_width - px(34.) - state.swatch_column,
+                            top + (line_height - px(14.)) / 2.,
+                        ),
+                        size(px(14.), px(14.)),
+                    );
+                    let _ = window.paint_svg(
+                        at,
+                        "icons/gutter-bookmark.svg".into(),
+                        Default::default(),
+                        theme::bookmark().into(),
+                        cx,
+                    );
                 }
                 if let Some(Some((fold, folded))) = state.fold_marks.get(i).filter(|_| span.first) {
                     let fold = fold.clone();

@@ -66,6 +66,8 @@ pub struct FolderState {
     pub solution_wide: bool,
     /// Whether the Solution view shows hidden folders (dot folders, bin, obj) and dot files, as Rider can.
     pub show_hidden: bool,
+    /// The folder's bookmarks, their paths from the folder.
+    pub bookmarks: rsharp_core::bookmarks::Bookmarks,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]

@@ -276,6 +276,8 @@ terminal and takes focus for a moment.
   one; quit keeps them all (`session.json`). `actions.rs` is every action by name for the main menu and
   `find_action.rs`. `hierarchy_view.rs` is the Hierarchy window (`Tool::Hierarchy`): Call Hierarchy (Ctrl+Alt+H) and Type
   Hierarchy on the caret's symbol, each level's callers, callees, supertypes or subtypes asked of Roslyn as it opens.
+  `window/bookmarks.rs` is Bookmarks (`rsharp_core::bookmarks`, kept in `FolderState`, carried through edits by
+  `rsharp_text::map_line_kept`), the gutter's bookmark column and the Bookmarks window.
   File Structure (Alt+\\, Cmd+F12 on macOS) is `goto.rs`' `Kind::FileStructure`, given the shown C#
   file's `textDocument/documentSymbol` outline (`rsharp_lsp::outline_spans`) and filtered by `file_structure::filter`,
   which keeps each match's containers as Passenger's FilterOutline does.

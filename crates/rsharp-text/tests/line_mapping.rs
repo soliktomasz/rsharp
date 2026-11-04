@@ -50,3 +50,21 @@ fn a_replacement_at_a_lines_start_keeps_the_breakpoint_on_that_line() {
     let (_, changes) = edited("foo\n", vec![(0..3, "x\ny")]);
     assert_eq!(map_line(&changes, 0), 0, "the replaced line's breakpoint stays on that line");
 }
+
+#[test]
+fn a_bookmark_follows_its_line_and_goes_with_it() {
+    use rsharp_text::map_line_kept;
+    // Two lines inserted above: the bookmark on "three" moves down two.
+    let (_, changes) = edited("one\ntwo\nthree\n", vec![(0..0, "a\nb\n")]);
+    assert_eq!(map_line_kept(&changes, 2), Some(4), "a bookmark did not follow its line down");
+    // "two" deleted whole, its line break with it: its bookmark goes, the next line's moves up.
+    let (_, changes) = edited("one\ntwo\nthree\n", vec![(4..8, "")]);
+    assert_eq!(map_line_kept(&changes, 1), None, "a bookmark outlived its deleted line");
+    assert_eq!(map_line_kept(&changes, 2), Some(1));
+    // Part of a line deleted: its bookmark stays on what is left of it.
+    let (_, changes) = edited("one\ntwo\nthree\n", vec![(5..6, "")]);
+    assert_eq!(map_line_kept(&changes, 1), Some(1), "a bookmark went though its line is still there");
+    // Lines joined: the second line's text is now on the first, and so is its bookmark.
+    let (_, changes) = edited("one\ntwo\n", vec![(3..4, "")]);
+    assert_eq!(map_line_kept(&changes, 1), Some(0), "a joined line's bookmark did not go with its text");
+}

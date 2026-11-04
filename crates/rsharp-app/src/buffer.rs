@@ -72,6 +72,8 @@ pub struct Buffer {
     pub git_hunks: Arc<Vec<rsharp_text::DiffHunk>>,
     /// The breakpoints of the file, as the folder has them and the debugger last bound them.
     pub breakpoints: Vec<BreakpointMark>,
+    /// The bookmarked lines, from 0, for the gutter's bookmark column.
+    pub bookmarks: Vec<usize>,
     /// The line the debugger is stopped at, if it is stopped in this file.
     pub execution_line: Option<usize>,
     /// The frame's values, set in at the end of the stopped line as Rider's inline values are.
@@ -257,6 +259,7 @@ impl Buffer {
             git_base: None,
             git_hunks: Arc::new(Vec::new()),
             breakpoints: Vec::new(),
+            bookmarks: Vec::new(),
             execution_line: None,
             inline_values: None,
             binding_values: Vec::new(),
@@ -425,6 +428,13 @@ impl Buffer {
     }
 
     /// A file's breakpoints as the folder has them: the gutter shows a dot at each.
+    pub fn set_bookmarks(&mut self, lines: Vec<usize>, cx: &mut Context<Self>) {
+        if self.bookmarks != lines {
+            self.bookmarks = lines;
+            cx.notify();
+        }
+    }
+
     pub fn set_breakpoints(&mut self, lines: Vec<BreakpointMark>, cx: &mut Context<Self>) {
         if self.breakpoints != lines {
             self.breakpoints = lines;

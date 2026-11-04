@@ -220,6 +220,10 @@ pub fn warning() -> Rgba {
 pub fn passed() -> Rgba {
     pick(0x57965C, 0xA1C181)
 }
+/// A bookmark's yellow: the fill of expui's `gutter/bookmark_dark.svg`.
+pub fn bookmark() -> Rgba {
+    rgb(0xF2C55C)
+}
 /// A failed test's red: the fill of expui's `run/testError_dark.svg` and `general/error_dark.svg`.
 pub fn failed() -> Rgba {
     pick(0xDB5C5C, 0xD07277)

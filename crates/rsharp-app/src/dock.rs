@@ -55,10 +55,11 @@ pub enum Tool {
     Profiler,
     /// Call Hierarchy and Type Hierarchy.
     Hierarchy,
+    Bookmarks,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 15] = [
+    pub const ALL: [Tool; 16] = [
         Tool::Solution,
         Tool::Problems,
         Tool::Find,
@@ -74,6 +75,7 @@ impl Tool {
         Tool::LiveTree,
         Tool::Profiler,
         Tool::Hierarchy,
+        Tool::Bookmarks,
     ];
 
     pub fn title(self) -> &'static str {
@@ -93,6 +95,7 @@ impl Tool {
             Tool::LiveTree => "Live Visual Tree",
             Tool::Profiler => "Profiler",
             Tool::Hierarchy => "Hierarchy",
+            Tool::Bookmarks => "Bookmarks",
         }
     }
 
@@ -113,6 +116,7 @@ impl Tool {
             Tool::LiveTree => "tw-components",
             Tool::Profiler => "tw-profiler",
             Tool::Hierarchy => "tw-hierarchy",
+            Tool::Bookmarks => "tw-bookmarks",
         }
     }
 
@@ -134,6 +138,7 @@ impl Tool {
             Tool::LiveTree => Place::RightBottom,
             Tool::Profiler => Place::BottomLeft,
             Tool::Hierarchy => Place::RightTop,
+            Tool::Bookmarks => Place::LeftBottom,
         }
     }
 }

@@ -314,6 +314,11 @@ Soft rounded rectangles at four radii: 10px for islands, 6px for tabs, toolbar w
   node-class icon, the symbol's short name (`B()`, not `Shop.Calls.B()`), and file:line in text-secondary. A
   double-click goes to a caller's call, else the symbol's name.
 
+### Bookmarks
+- A 16px gutter column between the numbers and the swatches, there only while the file has bookmarks, holding expui's
+  `gutter/bookmark` in bookmark (#F2C55C). The Bookmarks window (LeftBottom, `tw-bookmarks`) lists 24px rows: the
+  icon, file:line in text-secondary, then the line's text in the code font.
+
 ### Code Vision
 - Rider's Code Vision at its "Right" position: each member's usage count ("2 usages", "1 usage", "no usages") three
   spaces after its line's end, in the inlay-hint colour with no chip; a click lists the usages in Find. Settings'
