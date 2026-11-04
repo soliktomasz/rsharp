@@ -17,3 +17,7 @@ release:
 # The main window captured to OUT after it settles (macOS only): just screenshot out.png PATH --file F --caret L:C
 screenshot out *args: build
     tools/screenshot.sh {{out}} {{args}}
+
+# RSharp as a macOS app bundle, its sidecars carried beside the binary: just package-macos [OUT.app]
+package-macos out="dist/RSharp.app":
+    tools/package-macos.sh {{out}}

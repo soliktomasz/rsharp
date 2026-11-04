@@ -1,4 +1,6 @@
 target/
+# The macOS app bundle tools/package-macos.sh makes.
+dist/
 # Screenshots of a build, retaken by tools/screenshot.sh.
 .impeccable/review/
 # macOS writes one of these into every folder it opens.

@@ -17,15 +17,9 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-/// The adapter Passenger built from vendor/passenger, at build time; beside the executable when it was not built.
+/// The adapter Passenger built from vendor/passenger, at build time; beside the executable in a shipped app.
 pub fn adapter() -> Option<PathBuf> {
-    let built = env!("RSHARP_DEBUG_ADAPTER");
-    let path = if built.is_empty() {
-        std::env::current_exe().ok()?.parent()?.join("debugger").join("Passenger.DebugAdapter.dll")
-    } else {
-        PathBuf::from(built)
-    };
-    path.is_file().then_some(path)
+    rsharp_core::paths::carried("debugger/Passenger.DebugAdapter.dll", Path::new(env!("RSHARP_DEBUG_ADAPTER")))
 }
 
 pub use protocol::RunInTerminal;

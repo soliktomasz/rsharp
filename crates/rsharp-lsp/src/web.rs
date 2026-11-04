@@ -1,6 +1,7 @@
 //! The web language servers, as Passenger's WebLanguages runs them: typescript-language-server over TypeScript's own
 //! tsserver for TypeScript and JavaScript, and VS Code's HTML, CSS and JSON servers (vscode-langservers-extracted), the
-//! npm packages the build put under `sidecars/web` (RSHARP_WEB), each run on the machine's Node.js.
+//! npm packages the build put under `sidecars/web` (RSHARP_WEB) and a shipped app carries in its Resources, each run on
+//! the machine's Node.js.
 
 use crate::roslyn::client_capabilities;
 use crate::{Answers, LanguageServer, ServerEvent, ServerFailed};
@@ -73,12 +74,17 @@ pub fn web_language(path: &Path) -> Option<(WebServer, &'static str)> {
     })
 }
 
+/// Where the web servers' packages are: those a shipped app carries in its Resources, else where this build put them;
+/// none for a build without them.
+fn web_root() -> Option<PathBuf> {
+    paths::carried("web", Path::new(env!("RSHARP_WEB")))
+}
+
 /// Where the build put the servers' packages; none for a build without them.
 pub fn web_servers() -> Result<PathBuf, String> {
-    let folder = PathBuf::from(env!("RSHARP_WEB"));
-    if env!("RSHARP_WEB").is_empty() {
-        return Err("this build carries no web language servers (npm was not found when it was built)".into());
-    }
+    let folder = web_root().ok_or_else(|| {
+        "this build carries no web language servers (npm was not found when it was built)".to_string()
+    })?;
     let modules = folder.join("node_modules");
     if modules.is_dir() {
         Ok(modules)
@@ -201,7 +207,7 @@ fn carried_schema(uri: &str) -> Option<String> {
     }
     let name = path.rsplit('/').next().filter(|n| !n.is_empty())?;
     let file = if name.ends_with(".json") { name.to_string() } else { format!("{name}.json") };
-    std::fs::read_to_string(PathBuf::from(env!("RSHARP_WEB")).join("schemas").join(file)).ok()
+    std::fs::read_to_string(web_root()?.join("schemas").join(file)).ok()
 }
 
 /// The ESLint package Settings name (its folder), or empty for the project's own found from each file: the server's
@@ -346,10 +352,8 @@ pub fn prettify(
         *runner = None;
     }
     if runner.is_none() {
-        let script = PathBuf::from(env!("RSHARP_WEB")).join("prettier.cjs");
-        if env!("RSHARP_WEB").is_empty() || !script.is_file() {
-            return Err("this build carries no Prettier runner".into());
-        }
+        let script = web_root().map(|web| web.join("prettier.cjs")).filter(|path| path.is_file());
+        let Some(script) = script else { return Err("this build carries no Prettier runner".into()) };
         let mut command = Command::new(node);
         command.arg(&script).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped());
         let mut child = rsharp_core::process::spawn(command).map_err(|e| format!("Prettier did not start: {e}"))?;

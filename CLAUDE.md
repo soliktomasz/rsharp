@@ -28,6 +28,8 @@ tools/bench.sh             # the release build on 1, 3 and 10 projects: start, l
                            # appends bench/results.csv by commit (keep its window in front)
 tools/clean.sh             # what builds and test runs leave behind: a dry run unless --yes; --deep is cargo
                            # clean, --temp the stale test folders, --worktrees the agent's git worktrees
+tools/package-macos.sh [OUT.app]   # RSharp as a macOS app bundle (dist/RSharp.app, release) with the sidecars carried
+                           # in its Resources; PROFILE=debug builds debug, CODESIGN_IDENTITY signs with a Developer ID
 ```
 
 `--key` and `--type` are steps through the window's real input once it has opened, in order, each waiting for

@@ -118,6 +118,14 @@ fn main() {
     );
     println!("cargo:rustc-env=RSHARP_SIDECARS={}", sidecars.display());
     println!("cargo:rustc-env=RSHARP_ROSLYN_SERVER={server}");
+    // Roslyn's server itself, which the extension was compiled against, under `sidecars/roslyn` so that a shipped app
+    // takes it beside the rest: the NuGet package it lives in is not part of what ships. A link where the file system
+    // has them, so a build copies nothing.
+    let carried = sidecars.join("roslyn");
+    let _ = std::fs::remove_file(&carried);
+    let _ = std::fs::remove_dir_all(&carried);
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&server, &carried).expect("Roslyn's server was not linked into sidecars");
 }
 
 /// The language servers for TypeScript and JavaScript, HTML, CSS and JSON, as Passenger's WebServers.targets carries

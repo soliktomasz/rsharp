@@ -38,12 +38,12 @@ pub enum Told {
 
 /// The inspector RSharp's build carries, if it does.
 pub fn carried() -> Option<PathBuf> {
-    Some(PathBuf::from(env!("RSHARP_INSPECTOR"))).filter(|path| path.is_file())
+    rsharp_core::paths::carried("inspector/Passenger.Inspector.dll", Path::new(env!("RSHARP_INSPECTOR")))
 }
 
 /// The WPF inspector RSharp's build carries, if it does: only Windows builds do, where WPF runs.
 pub fn carried_wpf() -> Option<PathBuf> {
-    Some(PathBuf::from(env!("RSHARP_INSPECTOR_WPF"))).filter(|path| path.is_file())
+    rsharp_core::paths::carried("inspector/wpf/Passenger.Inspector.Wpf.dll", Path::new(env!("RSHARP_INSPECTOR_WPF")))
 }
 
 /// The UI framework of an app the inspector serves; each has an inspector of its own speaking the same protocol.

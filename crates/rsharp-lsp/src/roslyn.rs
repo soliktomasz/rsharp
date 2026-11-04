@@ -6,9 +6,8 @@ use std::process::Command;
 use std::time::Duration;
 
 /// Passenger's sidecars as RSharp's build made them (build.rs): the Roslyn server version Passenger pins, its extension
-/// compiled against that server, and its project Host.
-// shortcut: found where the build put them (compiled in), so a copy of the executable elsewhere runs the installed tool
-// instead; carry them beside the app when it ships (phase 13).
+/// compiled against that server, and its project Host. A shipped app carries them in its Resources (`paths::carried`);
+/// a build reads them where it put them.
 struct Carried {
     server: PathBuf,
     extension: PathBuf,
@@ -22,22 +21,26 @@ pub(crate) fn carried_host() -> Option<PathBuf> {
 
 /// RSharp's XAML host (Passenger.Xaml behind JSON lines) as the build published it, when it did.
 pub(crate) fn carried_xaml_host() -> Option<PathBuf> {
-    let sidecars = env!("RSHARP_SIDECARS");
-    let host = Path::new(sidecars).join("xaml").join("RSharp.XamlHost.dll");
-    (!sidecars.is_empty() && host.is_file()).then_some(host)
+    let path = "xaml/RSharp.XamlHost.dll";
+    paths::carried(path, &paths::under(env!("RSHARP_SIDECARS"), path))
 }
 
 fn carried() -> Option<Carried> {
-    let (sidecars, server) = (env!("RSHARP_SIDECARS"), env!("RSHARP_ROSLYN_SERVER"));
-    if sidecars.is_empty() {
-        return None;
-    }
     let carried = Carried {
-        server: Path::new(server).join("Microsoft.CodeAnalysis.LanguageServer.dll"),
-        extension: Path::new(sidecars).join("roslyn-extension").join("Passenger.Roslyn.Extension.dll"),
-        host: Path::new(sidecars).join("host").join("Passenger.Host.dll"),
+        server: paths::carried(
+            "roslyn/Microsoft.CodeAnalysis.LanguageServer.dll",
+            &paths::under(env!("RSHARP_ROSLYN_SERVER"), "Microsoft.CodeAnalysis.LanguageServer.dll"),
+        )?,
+        extension: paths::carried(
+            "roslyn-extension/Passenger.Roslyn.Extension.dll",
+            &paths::under(env!("RSHARP_SIDECARS"), "roslyn-extension/Passenger.Roslyn.Extension.dll"),
+        )?,
+        host: paths::carried(
+            "host/Passenger.Host.dll",
+            &paths::under(env!("RSHARP_SIDECARS"), "host/Passenger.Host.dll"),
+        )?,
     };
-    (carried.server.is_file() && carried.extension.is_file() && carried.host.is_file()).then_some(carried)
+    Some(carried)
 }
 
 /// Roslyn's language server: the one Passenger pins, built with its sidecars, else the person's own

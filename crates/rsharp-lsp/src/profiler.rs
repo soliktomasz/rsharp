@@ -44,9 +44,8 @@ pub struct Profiler {
 
 /// The host RSharp's build publishes, if it did.
 fn carried() -> Option<PathBuf> {
-    let sidecars = env!("RSHARP_SIDECARS");
-    let host = Path::new(sidecars).join("profiler").join("RSharp.ProfilerHost.dll");
-    (!sidecars.is_empty() && host.is_file()).then_some(host)
+    let host = "profiler/RSharp.ProfilerHost.dll";
+    rsharp_core::paths::carried(host, &rsharp_core::paths::under(env!("RSHARP_SIDECARS"), host))
 }
 
 impl Profiler {
