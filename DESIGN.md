@@ -249,7 +249,9 @@ Soft rounded rectangles at four radii: 10px for islands, 6px for tabs, toolbar w
   as the primary button beside Commit and Push.
 
 ### Status Bar
-- Widgets are 22px, 6px side padding, 4px radius, text-muted. Breadcrumbs join with a 12px chevron at 60% opacity. The language server's failure and error messages take error, warnings take warning.
+- Widgets are 22px, 6px side padding, 4px radius, text-muted. While a build, a test run or Roslyn's load is under way, Rider's indeterminate progress bar
+  follows its text: a 120×4px track in progress-track (gray-50) with a 40px segment, a gradient from progress-start
+  (blue-110) to the accent, sweeping across every 1.2s; one bar at a time, the build's or tests' before Roslyn's. Breadcrumbs join with a 12px chevron at 60% opacity. The language server's failure and error messages take error, warnings take warning.
 
 ### Primary Button
 - 28px, 14px side padding, 4px radius, accent fill with white text. Used on the welcome screen.

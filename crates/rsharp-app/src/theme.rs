@@ -69,6 +69,14 @@ pub fn text_secondary() -> Rgba {
 pub fn accent() -> Rgba {
     rgb(0x3871E1)
 }
+/// ProgressBar.trackColor: Islands Dark's control-bg-small (gray-50).
+pub fn progress_track() -> Rgba {
+    rgb(0x40434A)
+}
+/// ProgressBar.indeterminateStartColor: Islands Dark's blue-110; it ends in progressColor, the accent.
+pub fn progress_start() -> Rgba {
+    rgb(0x92B7FF)
+}
 pub fn on_accent() -> Rgba {
     rgb(0xFFFFFF)
 }

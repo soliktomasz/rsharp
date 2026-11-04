@@ -2111,7 +2111,8 @@ impl MainWindow {
         match &self.server_state {
             ServerState::None => None,
             ServerState::Starting => Some("Starting Roslyn…".into()),
-            ServerState::Loading(what) => Some(format!("{what}…")),
+            // Roslyn's own text may already end in dots ("Loading 32 project(s)..."): one ellipsis, not two.
+            ServerState::Loading(what) => Some(format!("{}…", what.trim_end_matches(['.', '…']))),
             ServerState::Ready => Some("Roslyn".into()),
             ServerState::Failed(why) => Some(why.clone()),
         }
@@ -3831,6 +3832,7 @@ impl MainWindow {
             ))
             .child(div().flex_1())
             .children(self.said.clone().map(|said| {
+                let busy = self.is_building() || self.is_testing();
                 let result = self.build_outcome.as_ref().filter(|outcome| outcome.message == said.as_ref());
                 let ran = self.run_outcome.as_ref().filter(|outcome| outcome.message == said.as_ref());
                 let error = match (result, ran) {
@@ -3841,33 +3843,41 @@ impl MainWindow {
                     // A debug session's own progress ("Debugging X…") is news, not a failure.
                     (None, None) => !self.is_building() && !self.is_debugging(),
                 };
-                status_widget(said.to_string())
-                    .id("status-message")
-                    .debug_selector(|| "status message".to_string())
-                    .text_color(if error { theme::error() } else { theme::text_muted() })
-                    .when(result.is_some() || ran.is_some(), |d| {
-                        d.hover(|d| d.bg(theme::button_hover())).on_click(cx.listener(
-                            |m, _: &ClickEvent, window, cx| {
-                                // A run's message opens the Run window; a build's opens what says what it found.
-                                let tool = if m.said.clone().is_some_and(|said| {
-                                    m.run_outcome.as_ref().is_some_and(|outcome| outcome.message == said.as_ref())
-                                }) {
-                                    Tool::Run
-                                } else if m.build_problems.is_empty() {
-                                    Tool::Build
-                                } else {
-                                    m.problems_tab = ProblemsTab::Build;
-                                    Tool::Problems
-                                };
-                                if !m.dock.is_open(tool) {
-                                    m.dock.show(tool);
-                                }
-                                m.save_state(cx);
-                                window.focus(&m.tool_focus(tool, cx));
-                                cx.notify();
-                            },
-                        ))
-                    })
+                div()
+                    .flex()
+                    .items_center()
+                    .child(
+                        status_widget(said.to_string())
+                            .id("status-message")
+                            .debug_selector(|| "status message".to_string())
+                            .text_color(if error { theme::error() } else { theme::text_muted() })
+                            .when(result.is_some() || ran.is_some(), |d| {
+                                d.hover(|d| d.bg(theme::button_hover())).on_click(cx.listener(
+                                    |m, _: &ClickEvent, window, cx| {
+                                        // A run's message opens the Run window; a build's opens what says what it found.
+                                        let tool = if m.said.clone().is_some_and(|said| {
+                                            m.run_outcome
+                                                .as_ref()
+                                                .is_some_and(|outcome| outcome.message == said.as_ref())
+                                        }) {
+                                            Tool::Run
+                                        } else if m.build_problems.is_empty() {
+                                            Tool::Build
+                                        } else {
+                                            m.problems_tab = ProblemsTab::Build;
+                                            Tool::Problems
+                                        };
+                                        if !m.dock.is_open(tool) {
+                                            m.dock.show(tool);
+                                        }
+                                        m.save_state(cx);
+                                        window.focus(&m.tool_focus(tool, cx));
+                                        cx.notify();
+                                    },
+                                ))
+                            }),
+                    )
+                    .when(busy, |d| d.child(progress_bar("work-progress")))
             }))
             .children(problems.filter(|(e, w)| e + w > 0).map(|(errors, warnings)| {
                 status_widget(format!("{}, {}", count(errors, "error"), count(warnings, "warning")))
@@ -3887,6 +3897,10 @@ impl MainWindow {
                     }))
             }))
             .children(server.map(|(text, colour)| status_widget(text).text_color(colour)))
+            // One bar for the background work, as Rider's status bar has: a build's or a test run's comes first.
+            .when(self.server_busy() && !(self.said.is_some() && (self.is_building() || self.is_testing())), |d| {
+                d.child(progress_bar("server-progress"))
+            })
             .children(editor.map(|e| {
                 let caret = e.caret();
                 let buffer = e.buffer.clone();
@@ -4192,6 +4206,40 @@ fn toolbar_button(
         .tooltip(move |_, cx| cx.new(|_| Tip(tip.into())).into())
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
+}
+
+/// Rider's indeterminate status bar progress: a 4px track with a segment sweeping across it while work runs.
+fn progress_bar(id: &'static str) -> impl IntoElement {
+    use gpui::{Animation, AnimationExt, linear_color_stop, linear_gradient};
+    const TRACK: f32 = 120.;
+    const SEGMENT: f32 = 40.;
+    div()
+        .debug_selector(move || id.into())
+        .mx(px(6.))
+        .w(px(TRACK))
+        .h(px(4.))
+        .flex_none()
+        .rounded(px(2.))
+        .overflow_hidden()
+        .bg(theme::progress_track())
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .h_full()
+                .w(px(SEGMENT))
+                .rounded(px(2.))
+                .bg(linear_gradient(
+                    90.,
+                    linear_color_stop(theme::progress_start(), 0.),
+                    linear_color_stop(theme::accent(), 1.),
+                ))
+                .with_animation(
+                    id,
+                    Animation::new(std::time::Duration::from_millis(1200)).repeat(),
+                    |segment, delta| segment.left(px(-SEGMENT + delta * (TRACK + SEGMENT))),
+                ),
+        )
 }
 
 fn status_widget(text: String) -> gpui::Div {
