@@ -38,7 +38,7 @@ use crate::window::{
 };
 use crate::window::{
     CloseSolution, CloseTab, FindAction, FloatToolWindow, HideToolWindow, OpenFolder, RestoreDefaultLayout,
-    ToggleNuGet, ToggleProblems, ToggleSolution, ToggleTerminal,
+    ShowHiddenFiles, ToggleNuGet, ToggleProblems, ToggleSolution, ToggleTerminal,
 };
 use crate::window::{NewProject, NewSolution};
 use crate::window::{RecentLocations, ReplaceInFiles, SearchEverywhere};
@@ -214,6 +214,12 @@ pub static ALL: &[IdeAction] = &[
     ide!("Decrease Font Size in All Editors", "View", ["zoom out", "smaller"], DecreaseFontSize),
     ide!("Reset Font Size", "View", ["zoom", "default size"], ResetFontSize),
     ide!("Solution", "View", ["project", "explorer", "tool window"], ToggleSolution),
+    ide!(
+        "Show Hidden Files",
+        "View",
+        ["dot files", "bin", "obj", "show all files", "solution explorer"],
+        ShowHiddenFiles
+    ),
     ide!("Problems", "View", ["errors", "warnings", "tool window"], ToggleProblems),
     ide!("NuGet", "Tools", ["packages", "package manager", "tool window"], ToggleNuGet),
     ide!("Hide Active Tool Window", "Window", ["close tool window"], HideToolWindow),

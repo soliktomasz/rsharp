@@ -10,6 +10,8 @@ pub struct Workspace {
     pub folder: PathBuf,
     pub solution: Option<PathBuf>,
     listings: HashMap<PathBuf, Vec<Entry>>,
+    /// Rider's Show Hidden Files: the folders left out are listed too, dimmed.
+    show_hidden: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -17,6 +19,8 @@ pub struct Entry {
     pub path: PathBuf,
     pub name: String,
     pub is_folder: bool,
+    /// One of the folders left out, listed because hidden files are shown.
+    pub hidden: bool,
 }
 
 impl Workspace {
@@ -29,7 +33,7 @@ impl Workspace {
             (path, None)
         };
         let solution = named.or_else(|| rsharp_core::solution::find(&folder));
-        Self { folder, solution, listings: HashMap::new() }
+        Self { folder, solution, listings: HashMap::new(), show_hidden: false }
     }
 
     /// The name the window and the Solution view's root take: the solution's, else the folder's.
@@ -42,6 +46,7 @@ impl Workspace {
     // shortcut: read once and kept; a file added on disk shows after the folder is collapsed and opened again
     // only once a watcher (Passenger's FolderWatcher) drops the listing.
     pub fn entries(&mut self, folder: &Path) -> &[Entry] {
+        let show_hidden = self.show_hidden;
         self.listings.entry(folder.to_path_buf()).or_insert_with(|| {
             let mut entries: Vec<Entry> = std::fs::read_dir(folder)
                 .into_iter()
@@ -50,10 +55,12 @@ impl Workspace {
                 .filter_map(|e| {
                     let name = e.file_name().to_string_lossy().into_owned();
                     let is_folder = e.file_type().ok()?.is_dir();
-                    (!(is_folder && LEFT_OUT.contains(&name.as_str())) && name != ".DS_Store").then(|| Entry {
+                    let hidden = is_folder && LEFT_OUT.contains(&name.as_str());
+                    ((show_hidden || !hidden) && name != ".DS_Store").then(|| Entry {
                         path: e.path(),
                         name,
                         is_folder,
+                        hidden,
                     })
                 })
                 .collect();
@@ -62,6 +69,15 @@ impl Workspace {
             });
             entries
         })
+    }
+
+    pub fn shows_hidden(&self) -> bool {
+        self.show_hidden
+    }
+
+    pub fn set_show_hidden(&mut self, on: bool) {
+        self.show_hidden = on;
+        self.listings.clear();
     }
 
     pub fn forget(&mut self, folder: &Path) {

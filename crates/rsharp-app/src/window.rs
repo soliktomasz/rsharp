@@ -35,6 +35,7 @@ actions!(
         NewSolution,
         NewProject,
         ToggleSolution,
+        ShowHiddenFiles,
         ToggleProblems,
         ToggleNuGet,
         ToggleBuild,
@@ -665,6 +666,9 @@ impl MainWindow {
             cx.global::<crate::state::Ide>().servers.then(|| rsharp_lsp::SharedHost::carried(&folder)).flatten();
         self.load_breakpoints(&folder, cx);
         self.workspace = Some(workspace);
+        if kept.show_hidden {
+            self.set_show_hidden(true);
+        }
         self.describe_agents();
         self.open_git(cx);
         let test_state = store.read_for::<crate::test_view::UnitTestsState>(&folder);
@@ -728,6 +732,7 @@ impl MainWindow {
                 open: self.tree.as_ref().map(SolutionTree::open_keys).unwrap_or_default(),
                 dock: Some(self.dock.clone()),
                 solution_wide: self.solution_wide,
+                show_hidden: self.shows_hidden(),
             },
         );
         store.write(&self.dock);
@@ -999,6 +1004,22 @@ impl MainWindow {
         .detach();
     }
 
+    /// Whether the Solution view lists hidden folders and files.
+    pub fn shows_hidden(&self) -> bool {
+        self.workspace.as_ref().is_some_and(Workspace::shows_hidden)
+    }
+
+    /// Rider's Show Hidden Files in the Solution view, for a solution's tree and a plain folder's alike.
+    pub fn set_show_hidden(&mut self, on: bool) {
+        if let Some(workspace) = &mut self.workspace {
+            workspace.set_show_hidden(on);
+        }
+        if let Some(tree) = &mut self.tree {
+            tree.set_show_hidden(on);
+        }
+        self.rebuild_rows();
+    }
+
     /// Turns solution-wide analysis on or off: Roslyn told, and the Solution tab asked again or emptied.
     pub fn set_solution_wide(&mut self, on: bool, cx: &mut Context<Self>) {
         self.solution_wide = on;
@@ -1102,30 +1123,30 @@ impl MainWindow {
     fn rebuild_folder_rows(&mut self) {
         let Some(workspace) = &mut self.workspace else { return };
         let root = workspace.folder.clone();
-        let row = |path: PathBuf, name: String, is_folder: bool, depth: usize, expanded: bool| TreeRow {
+        let row = |path: PathBuf, name: String, is_folder: bool, depth: usize, expanded: bool, hidden: bool| TreeRow {
             kind: if is_folder { NodeKind::Folder } else { NodeKind::File },
             name,
             detail: None,
             depth,
             expandable: is_folder,
             expanded,
-            dimmed: false,
+            dimmed: hidden,
             tip: None,
             key: path.display().to_string(),
             path: Some(path),
         };
-        let mut rows = vec![row(root.clone(), workspace.name(), true, 0, self.expanded.contains(&root))];
+        let mut rows = vec![row(root.clone(), workspace.name(), true, 0, self.expanded.contains(&root), false)];
         fn walk(
             workspace: &mut Workspace,
             expanded: &HashSet<PathBuf>,
             folder: &Path,
             depth: usize,
             rows: &mut Vec<TreeRow>,
-            row: &dyn Fn(PathBuf, String, bool, usize, bool) -> TreeRow,
+            row: &dyn Fn(PathBuf, String, bool, usize, bool, bool) -> TreeRow,
         ) {
             for entry in workspace.entries(folder).to_vec() {
                 let open = entry.is_folder && expanded.contains(&entry.path);
-                rows.push(row(entry.path.clone(), entry.name, entry.is_folder, depth, open));
+                rows.push(row(entry.path.clone(), entry.name, entry.is_folder, depth, open, entry.hidden));
                 if open {
                     walk(workspace, expanded, &entry.path, depth + 1, rows, row);
                 }
@@ -2279,6 +2300,11 @@ impl Render for MainWindow {
                     .on_action(
                         cx.listener(|w, _: &ToggleSolution, window, cx| w.toggle_tool(Tool::Solution, window, cx)),
                     )
+                    .on_action(cx.listener(|w, _: &ShowHiddenFiles, _, cx| {
+                        w.set_show_hidden(!w.shows_hidden());
+                        w.save_state(cx);
+                        cx.notify();
+                    }))
                     .on_action(
                         cx.listener(|w, _: &ToggleProblems, window, cx| w.toggle_tool(Tool::Problems, window, cx)),
                     )
@@ -2774,6 +2800,28 @@ impl MainWindow {
                 self.tool_subtitle(tool, cx).map(|s| div().truncate().text_color(theme::text_secondary()).child(s)),
             )
             .child(div().flex_1())
+            .when(tool == Tool::Solution, |d| {
+                let on = self.shows_hidden();
+                d.child(
+                    div()
+                        .id("show-hidden")
+                        .debug_selector(|| "solution: show hidden files".into())
+                        .size(px(24.))
+                        .rounded(px(4.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .when(on, |d| d.bg(theme::button_pressed()))
+                        .when(!on, |d| d.hover(|d| d.bg(theme::button_hover())))
+                        .child(icon("show", 16.))
+                        .tooltip(move |_, cx| {
+                            cx.new(|_| Tip(if on { "Hide Hidden Files" } else { "Show Hidden Files" }.into())).into()
+                        })
+                        .on_click(cx.listener(|_, _: &ClickEvent, window, cx| {
+                            window.dispatch_action(Box::new(ShowHiddenFiles), cx)
+                        })),
+                )
+            })
             .child(
                 div()
                     .id(("hide", tool as usize))

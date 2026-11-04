@@ -400,3 +400,37 @@ fn a_host_that_cannot_load_an_sdk_says_why_on_the_solution(cx: &mut TestAppConte
     let tip = main.read_with(cx, |main, _| main.solution_row_tip(0));
     assert!(tip.as_deref().is_some_and(|t| t.contains("SDK")), "the reason would not be given: {tip:?}");
 }
+
+#[gpui::test]
+fn show_hidden_files_lists_dot_folders_build_output_and_dot_files(cx: &mut TestAppContext) {
+    let mut files = files();
+    files.push(("Api/.config/dotnet-tools.json", "{}\n"));
+    files.push(("Api/.env", "KEY=1\n"));
+    let run = Run::new("sv-hidden", &files);
+    let (main, cx) = open(&run, cx, vec![api(&run.folder)]);
+    open_row(&main, cx, "Api (net10.0)");
+    let hidden = ["    .config", "    bin", "    .env"];
+    let shown = rows(&main, cx);
+    assert!(
+        hidden.iter().all(|h| !shown.iter().any(|r| r == h)),
+        "hidden folders and dot files would show before Show Hidden Files is on: {shown:?}"
+    );
+
+    main.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    let toggle = cx.debug_bounds("solution: show hidden files").expect("the Solution header has no Show Hidden Files");
+    cx.simulate_click(toggle.center(), gpui::Modifiers::default());
+    cx.run_until_parked();
+    let shown = rows(&main, cx);
+    assert!(
+        hidden.iter().all(|h| shown.iter().any(|r| r == h)),
+        "Show Hidden Files would not list .config, bin and .env: {shown:?}"
+    );
+    assert!(!shown.iter().any(|r| r.trim() == ".DS_Store"), "the system's folder metadata would show");
+
+    open_row(&main, cx, ".config");
+    assert!(
+        rows(&main, cx).iter().any(|r| r == "      dotnet-tools.json"),
+        "a hidden folder would not open to its files"
+    );
+}

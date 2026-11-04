@@ -64,6 +64,8 @@ pub struct FolderState {
     pub dock: Option<crate::dock::DockLayout>,
     /// Whether Roslyn analyses every file, not only the open ones, for Problems' Solution tab.
     pub solution_wide: bool,
+    /// Whether the Solution view shows hidden folders (dot folders, bin, obj) and dot files, as Rider can.
+    pub show_hidden: bool,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]

@@ -240,6 +240,9 @@ Soft rounded rectangles at four radii: 10px for islands, 6px for tabs, toolbar w
 ### Tree Rows
 - 24px, 4px radius, 4px between chevron, icon and name; a 16px blank stands in for a leaf's chevron. Hover veil; selection is selection with focus and selection-inactive without.
 
+- The Solution island's header carries Show Hidden Files (a 24px eye button before Hide, button-pressed while on):
+  dot folders, bin and obj, and a project's dot files it does not hold, listed dimmed; kept with the folder.
+
 ### Editor Tabs
 - 28px tabs in a 40px strip, 2px apart, 6px radius, a 1px border transparent unless selected. Unselected: text-muted, hover veil. Selected: tab-selected fill, tab-selected-border edge, text colour. A 16px close button (3px radius) at the end, replaced by the modified dot while unsaved.
 

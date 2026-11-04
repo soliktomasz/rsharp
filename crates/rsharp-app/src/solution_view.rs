@@ -39,11 +39,14 @@ pub struct TreeRow {
     pub key: String,
 }
 
-/// Never shown from disk: build output, tools' own folders and the system's folder metadata.
+/// Left out from disk unless hidden files are shown: build output and tools' own folders.
 fn hidden_on_disk(name: &str, folder: bool) -> bool {
-    (folder && (name.starts_with('.') || matches!(name, "bin" | "obj")))
-        || name.eq_ignore_ascii_case(".ds_store")
-        || name.eq_ignore_ascii_case("thumbs.db")
+    folder && (name.starts_with('.') || matches!(name, "bin" | "obj"))
+}
+
+/// Never shown: the system's folder metadata.
+fn system_file(name: &str) -> bool {
+    name.eq_ignore_ascii_case(".ds_store") || name.eq_ignore_ascii_case("thumbs.db")
 }
 
 fn by_name(name: &str) -> String {
@@ -56,6 +59,9 @@ fn by_name(name: &str) -> String {
 struct Level {
     folders: Vec<(String, PathBuf, String)>,
     files: Vec<(String, PathBuf, Vec<(String, PathBuf)>)>,
+    /// With hidden files shown, what is on disk at a project's place and not in the project: drawn dimmed.
+    hidden_folders: Vec<(String, PathBuf)>,
+    hidden_files: HashSet<PathBuf>,
 }
 
 pub struct SolutionTree {
@@ -69,6 +75,8 @@ pub struct SolutionTree {
     rows: Vec<TreeRow>,
     /// Why no project could be evaluated, said on the solution's row.
     problem: Option<String>,
+    /// Rider's Show Hidden Files: dot folders, bin and obj listed, dimmed.
+    show_hidden: bool,
 }
 
 impl SolutionTree {
@@ -84,10 +92,21 @@ impl SolutionTree {
             open,
             rows: Vec::new(),
             problem: None,
+            show_hidden: false,
         };
         tree.open.insert("solution".into());
         tree.rebuild();
         tree
+    }
+
+    pub fn shows_hidden(&self) -> bool {
+        self.show_hidden
+    }
+
+    pub fn set_show_hidden(&mut self, on: bool) {
+        self.show_hidden = on;
+        self.levels.borrow_mut().clear();
+        self.rebuild();
     }
 
     pub fn solution(&self) -> &Solution {
@@ -448,7 +467,11 @@ impl SolutionTree {
             let held = files.files_in(relative);
             let paths: Vec<PathBuf> = held.iter().map(|(_, p)| p.clone()).collect();
             let parents = nesting::parents(&paths, |f| files.dependent_upon(f), true);
-            Level { folders, files: with_dependents(held, &parents) }
+            let mut level = Level { folders, files: with_dependents(held, &parents), ..Level::default() };
+            if self.show_hidden {
+                self.hidden_at(&files.path_of(relative), &mut level);
+            }
+            level
         });
         for (name, path, inner) in &level.folders {
             let key = format!("pf:{base}|{inner}");
@@ -458,7 +481,41 @@ impl SolutionTree {
                 self.held(base, files, inner, depth + 1, rows);
             }
         }
+        for (name, path) in &level.hidden_folders {
+            let key = format!("df:{}", self.relative(path));
+            let expanded = self.open.contains(&key);
+            let mut row = self.row(NodeKind::Folder, name, Some(path.clone()), depth, true, expanded, key);
+            row.dimmed = true;
+            rows.push(row);
+            if expanded {
+                self.on_disk(base, path, None, depth + 1, rows);
+            }
+        }
         self.file_rows(base, &level, depth, rows);
+    }
+
+    /// What a folder holds on disk that a project leaves out and only Show Hidden Files lists: its hidden folders,
+    /// and its dot files the project does not hold.
+    fn hidden_at(&self, folder: &Path, level: &mut Level) {
+        let held: HashSet<PathBuf> = level.files.iter().map(|(_, p, _)| p.clone()).collect();
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(folder).into_iter().flatten().flatten() {
+            let (path, name) = (entry.path(), entry.file_name().to_string_lossy().into_owned());
+            if system_file(&name) {
+                continue;
+            }
+            if path.is_dir() {
+                if hidden_on_disk(&name, true) {
+                    level.hidden_folders.push((name, path));
+                }
+            } else if name.starts_with('.') && !held.contains(&path) {
+                level.hidden_files.insert(path.clone());
+                files.push((name, path, Vec::new()));
+            }
+        }
+        level.hidden_folders.sort_by_key(|(n, _)| by_name(n));
+        level.files.extend(files);
+        level.files.sort_by_key(|(n, _, _)| by_name(n));
     }
 
     /// The files in a folder on disk: a project's until MSBuild has evaluated it, or when it could not.
@@ -469,7 +526,10 @@ impl SolutionTree {
             for entry in std::fs::read_dir(folder).into_iter().flatten().flatten() {
                 let (path, name) = (entry.path(), entry.file_name().to_string_lossy().into_owned());
                 let is_folder = path.is_dir();
-                if hidden_on_disk(&name, is_folder) || Some(path.as_path()) == project_file {
+                if system_file(&name)
+                    || (hidden_on_disk(&name, is_folder) && !self.show_hidden)
+                    || Some(path.as_path()) == project_file
+                {
                     continue;
                 }
                 if is_folder { folders.push((name, path, String::new())) } else { files.push((name, path)) }
@@ -478,12 +538,14 @@ impl SolutionTree {
             files.sort_by_key(|(n, _)| by_name(n));
             let paths: Vec<PathBuf> = files.iter().map(|(_, p)| p.clone()).collect();
             let parents = nesting::parents(&paths, |_| None, true);
-            Level { folders, files: with_dependents(files, &parents) }
+            Level { folders, files: with_dependents(files, &parents), ..Level::default() }
         });
         for (name, path, _) in &level.folders {
             let key = format!("df:{}", self.relative(path));
             let expanded = self.open.contains(&key);
-            rows.push(self.row(NodeKind::Folder, name, Some(path.clone()), depth, true, expanded, key));
+            let mut row = self.row(NodeKind::Folder, name, Some(path.clone()), depth, true, expanded, key);
+            row.dimmed = hidden_on_disk(name, true);
+            rows.push(row);
             if expanded {
                 self.on_disk(base, path, None, depth + 1, rows);
             }
@@ -497,7 +559,9 @@ impl SolutionTree {
         for (name, path, nested) in &level.files {
             let key = format!("n:{base}|{}", self.relative(path));
             let expanded = self.open.contains(&key);
-            rows.push(self.row(NodeKind::File, name, Some(path.clone()), depth, !nested.is_empty(), expanded, key));
+            let mut row = self.row(NodeKind::File, name, Some(path.clone()), depth, !nested.is_empty(), expanded, key);
+            row.dimmed = level.hidden_files.contains(path);
+            rows.push(row);
             if expanded {
                 for (name, path) in nested {
                     let key = format!("nc:{base}|{}", self.relative(path));
