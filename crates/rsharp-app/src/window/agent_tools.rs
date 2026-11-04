@@ -29,7 +29,7 @@ impl MainWindow {
     }
 
     /// A file's buffer as the editors share it, read from disk when no editor has it.
-    fn agent_buffer(&self, file: &str, cx: &mut Context<Self>) -> Result<Entity<Buffer>, String> {
+    pub(super) fn agent_buffer(&self, file: &str, cx: &mut Context<Self>) -> Result<Entity<Buffer>, String> {
         let path = self.agent_path(file);
         if let Some(open) = buffer::find(&path, cx) {
             return Ok(open);
@@ -40,7 +40,7 @@ impl MainWindow {
         buffer::open(path.clone(), cx).map_err(|e| format!("{} could not be read: {e}", path.display()))
     }
 
-    fn relative(&self, path: &Path) -> String {
+    pub(super) fn relative(&self, path: &Path) -> String {
         let folder = self.folder();
         folder.and_then(|f| path.strip_prefix(f).ok()).unwrap_or(path).display().to_string()
     }

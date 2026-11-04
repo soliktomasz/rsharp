@@ -118,6 +118,18 @@ fn window_tools() -> Value {
           "inputSchema": { "type": "object", "properties": {
               "file": { "type": "string" }, "line": { "type": "integer" }, "column": { "type": "integer" } },
             "required": ["file"] } },
+        { "name": "definition", "annotations": { "readOnlyHint": true },
+          "description": "Where a symbol is declared: file, line and column of each declaration.",
+          "inputSchema": { "type": "object", "properties": {
+              "file": { "type": "string" }, "line": { "type": "integer" }, "column": { "type": "integer" }, "symbol": { "type": "string" } } } },
+        { "name": "implementations", "annotations": { "readOnlyHint": true },
+          "description": "The types and members that implement or override a symbol, each with its line's text.",
+          "inputSchema": { "type": "object", "properties": {
+              "file": { "type": "string" }, "line": { "type": "integer" }, "column": { "type": "integer" }, "symbol": { "type": "string" } } } },
+        { "name": "symbol_info", "annotations": { "readOnlyHint": true },
+          "description": "What Roslyn's hover says of the symbol at a place: its kind, type and documentation.",
+          "inputSchema": { "type": "object", "properties": {
+              "file": { "type": "string" }, "line": { "type": "integer" }, "column": { "type": "integer" }, "symbol": { "type": "string" } } } },
         { "name": "editor_text", "annotations": { "readOnlyHint": true },
           "description": "A file's text as the editor has it (unsaved changes included), its lines numbered from 1, from and to being lines.",
           "inputSchema": { "type": "object", "properties": {

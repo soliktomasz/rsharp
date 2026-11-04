@@ -19,7 +19,7 @@ fn agent(cx: &mut VisualTestContext, folder: &std::path::Path, requests: &[Value
         rsharp_mcp::attach(&folder, Cursor::new(input), &mut output).unwrap();
         output
     });
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(240);
     while !session.is_finished() {
         assert!(Instant::now() < deadline, "the agent's session never ended");
         cx.executor().advance_clock(Duration::from_millis(50));
@@ -145,4 +145,65 @@ fn an_agent_reads_edits_and_searches_the_files_and_changes_a_setting(cx: &mut Te
     assert!(text(&replies[6]).contains("15"), "editorFontSize: {}", replies[6]);
     assert_eq!(replies[7]["result"]["isError"], true, "an agent turned off its own admission");
     assert_eq!(cx.update(|_, cx| rsharp_app::settings::settings(cx).editor_font_size), 15.0);
+}
+
+const PROJECT: &str = r#"<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><OutputType>Exe</OutputType></PropertyGroup></Project>"#;
+
+#[gpui::test]
+fn an_agent_asks_the_windows_roslyn_for_problems_symbols_usages_and_a_rename(cx: &mut TestAppContext) {
+    if rsharp_lsp::roslyn_server().is_none() {
+        eprintln!("skipped: Roslyn's language server is not installed");
+        return;
+    }
+    let run = Run::new(
+        "agents-language",
+        &[
+            ("Demo.csproj", PROJECT),
+            (
+                "Greeter.cs",
+                "namespace Demo;\n\npublic class Greeter\n{\n    public string Greet(string name) => \"Hello \" + name;\n}\n",
+            ),
+            (
+                "Program.cs",
+                "namespace Demo;\n\npublic static class Program\n{\n    public static void Main()\n    {\n        var greeter = new Greeter();\n        System.Console.WriteLine(greeter.Greet(\"you\"));\n    }\n}\n",
+            ),
+            ("Broken.cs", "namespace Demo;\n\nclass Broken\n{\n    int M() => \"no\";\n}\n"),
+        ],
+    );
+    unsafe { std::env::set_var("RSHARP_AGENTS", std::env::temp_dir().join(format!("rsa-{}", std::process::id()))) };
+    let (main, cx) = run.window(cx);
+    cx.update(|_, cx| {
+        cx.global_mut::<rsharp_app::state::Ide>().servers = true;
+        let mut on = rsharp_app::settings::settings(cx).clone();
+        on.agents_enabled = true;
+        rsharp_app::settings::apply(on, cx);
+    });
+    main.update_in(cx, |main, window, cx| {
+        main.open_workspace(&run.folder, window, cx);
+        main.open_agent_socket(cx);
+    });
+    let replies = agent(
+        cx,
+        &run.folder,
+        &[
+            call(1, "diagnostics", json!({ "file": "Broken.cs" })),
+            call(2, "find_symbol", json!({ "query": "Greeter" })),
+            call(3, "outline", json!({ "file": "Greeter.cs" })),
+            call(4, "usages", json!({ "file": "Greeter.cs", "line": 5, "column": 19 })),
+            call(5, "definition", json!({ "file": "Program.cs", "line": 7, "column": 28 })),
+            call(6, "rename", json!({ "file": "Greeter.cs", "line": 5, "column": 19, "newName": "Welcome" })),
+            call(7, "editor_text", json!({ "file": "Program.cs" })),
+        ],
+    );
+    assert!(text(&replies[0]).contains("error"), "Broken.cs has no error: {}", replies[0]);
+    assert!(text(&replies[1]).contains("Greeter.cs"), "find_symbol: {}", replies[1]);
+    assert!(text(&replies[2]).contains("Greet"), "outline: {}", replies[2]);
+    assert!(text(&replies[3]).contains("Program.cs"), "usages of Greet miss its call: {}", replies[3]);
+    assert!(text(&replies[4]).contains("Greeter.cs"), "definition: {}", replies[4]);
+    assert!(text(&replies[5]).contains("Renamed Greet to Welcome"), "rename: {}", replies[5]);
+    assert!(
+        text(&replies[6]).contains("greeter.Welcome("),
+        "the rename did not reach the editor's text: {}",
+        replies[6]
+    );
 }
