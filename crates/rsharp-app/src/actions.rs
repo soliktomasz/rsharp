@@ -32,7 +32,8 @@ use crate::window::{
     ToggleBuild, ToggleDebug, ToggleRun,
 };
 use crate::window::{
-    Back, FileStructure, FindInFiles, Forward, GoToFile, GoToSymbol, GoToType, LastEditLocation, RecentFiles,
+    Back, CallHierarchy, FileStructure, FindInFiles, Forward, GoToFile, GoToSymbol, GoToType, LastEditLocation,
+    RecentFiles, TypeHierarchy,
 };
 use crate::window::{
     CloseAllButPinned, CloseAllTabs, CloseOtherTabs, CloseTabsToLeft, CloseTabsToRight, FileEncoding, LineSeparators,
@@ -172,6 +173,8 @@ pub static ALL: &[IdeAction] = &[
     ide!("Class…", "Navigate", ["go to type", "go to class", "find type"], GoToType),
     ide!("Symbol…", "Navigate", ["go to symbol", "go to member", "find symbol"], GoToSymbol),
     ide!("File Structure", "Navigate", ["structure", "outline", "members of file"], FileStructure),
+    ide!("Call Hierarchy", "Navigate", ["callers", "callees", "incoming calls", "outgoing calls"], CallHierarchy),
+    ide!("Type Hierarchy", "Navigate", ["supertypes", "subtypes", "base types", "derived types"], TypeHierarchy),
     ide!("Find in Files…", "Edit", ["search in files", "find in path", "grep"], FindInFiles),
     ide!("Replace in Files…", "Edit", ["replace in path", "find and replace in files"], ReplaceInFiles),
     ide!("Search Everywhere", "Navigate", ["go to everything", "search all"], SearchEverywhere),

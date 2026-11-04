@@ -131,6 +131,8 @@ actions!(
         GoToType,
         GoToSymbol,
         FileStructure,
+        CallHierarchy,
+        TypeHierarchy,
         FindInFiles,
         SearchEverywhere,
         RecentLocations,
@@ -328,6 +330,8 @@ pub struct MainWindow {
     project_menu: bool,
     nuget: Entity<crate::nuget_view::NuGetView>,
     _nuget_subscription: gpui::Subscription,
+    /// Call Hierarchy and Type Hierarchy.
+    hierarchy: Entity<crate::hierarchy_view::HierarchyView>,
     build: Entity<crate::console::ConsoleView>,
     build_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     build_generation: u64,
@@ -497,6 +501,12 @@ impl MainWindow {
                 m.follow_written(path, cx);
             }
         });
+        let hierarchy = cx.new(crate::hierarchy_view::HierarchyView::new);
+        cx.subscribe_in(&hierarchy, window, |m, _, event: &crate::hierarchy_view::HierarchyEvent, window, cx| {
+            let crate::hierarchy_view::HierarchyEvent::Go { path, line, column } = event;
+            m.open_file(&path.clone(), Some((*line, *column)), window, cx);
+        })
+        .detach();
         let git = git::GitState::new(cx);
         for view in [&git.commit, &git.log] {
             cx.subscribe_in(view, window, |m, _, request: &crate::git_view::GitRequest, window, cx| {
@@ -554,6 +564,7 @@ impl MainWindow {
             implicit_build: false,
             nuget,
             _nuget_subscription,
+            hierarchy,
             root_focus,
             workspace: None,
             branch: None,
@@ -1519,6 +1530,71 @@ impl MainWindow {
         .detach();
     }
 
+    /// Call Hierarchy (Ctrl+Alt+H) or Type Hierarchy on the symbol at the caret, in the Hierarchy window, as Passenger's
+    /// ShowCallHierarchyAsync and ShowTypeHierarchyAsync.
+    fn open_hierarchy(&mut self, calls: bool, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::hierarchy_view::Direction;
+        let what = if calls { "Call Hierarchy" } else { "Type Hierarchy" };
+        let Some(editor) = self.active_editor() else { return };
+        let Some(server) = self.server.clone() else {
+            self.said = Some(format!("{what} needs Roslyn, which is not running").into());
+            cx.notify();
+            return;
+        };
+        if !self.server_ready() {
+            self.said = Some(format!("{what} needs Roslyn, which is still loading").into());
+            cx.notify();
+            return;
+        }
+        let here = {
+            let editor = editor.read(cx);
+            let head = editor.primary().head;
+            rsharp_lsp::at(
+                &rsharp_core::paths::to_uri(&editor.buffer.read(cx).path),
+                crate::language::point(editor.text(), head),
+            )
+        };
+        let method = if calls { "textDocument/prepareCallHierarchy" } else { "textDocument/prepareTypeHierarchy" };
+        let answer = crate::language::ask(&server, method, here, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let answer = answer.await;
+            let _ = this.update_in(cx, |w, window, cx| {
+                let Some(root) = answer.as_ref().and_then(|a| rsharp_lsp::hierarchy_items(a).into_iter().next()) else {
+                    w.said = Some(
+                        if calls { "No method, property or event at the caret" } else { "No type at the caret" }.into(),
+                    );
+                    cx.notify();
+                    return;
+                };
+                let (title, directions) = if calls {
+                    (
+                        format!("Calls of {}", crate::hierarchy_view::short_name(&root.name)),
+                        [Direction::Callers, Direction::Callees],
+                    )
+                } else {
+                    (
+                        format!("Hierarchy of {}", crate::hierarchy_view::short_name(&root.name)),
+                        [Direction::Supertypes, Direction::Subtypes],
+                    )
+                };
+                w.hierarchy.update(cx, |view, cx| view.show(server, title, root, directions, cx));
+                if !w.dock.is_open(Tool::Hierarchy) {
+                    w.toggle_tool(Tool::Hierarchy, window, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The Hierarchy window's rows as a person reads them, indented a level at a time.
+    pub fn hierarchy_rows(&self, cx: &App) -> Vec<String> {
+        self.hierarchy.read(cx).rows()
+    }
+
+    pub fn hierarchy_title(&self, cx: &App) -> Option<String> {
+        self.hierarchy.read(cx).title()
+    }
+
     /// Recent Locations' places: those left and edited, the latest first, one for each stretch of a file, each with its
     /// line's text.
     fn recent_locations(&self, cx: &App) -> Vec<crate::goto::Place> {
@@ -2444,6 +2520,12 @@ impl Render for MainWindow {
                     .on_action(cx.listener(|w, _: &GoToSymbol, window, cx| w.open_go_to(Kind::Symbol, window, cx)))
                     .when(self.shows_csharp(cx), |d| {
                         d.on_action(cx.listener(|w, _: &FileStructure, window, cx| w.open_file_structure(window, cx)))
+                            .on_action(
+                                cx.listener(|w, _: &CallHierarchy, window, cx| w.open_hierarchy(true, window, cx)),
+                            )
+                            .on_action(
+                                cx.listener(|w, _: &TypeHierarchy, window, cx| w.open_hierarchy(false, window, cx)),
+                            )
                     })
                     .on_action(
                         cx.listener(|w, _: &FindInFiles, window, cx| w.open_go_to(Kind::FindInFiles, window, cx)),
@@ -3022,6 +3104,7 @@ impl MainWindow {
             Tool::Git => self.git.log.clone().into_any_element(),
             Tool::XamlPreview => self.preview_content(cx).into_any_element(),
             Tool::LiveTree => self.live_tree_content(cx).into_any_element(),
+            Tool::Hierarchy => self.hierarchy.clone().into_any_element(),
             Tool::Profiler => self.profiler_content(cx).into_any_element(),
             Tool::Terminal => {
                 self.ensure_terminal(cx);
@@ -3045,6 +3128,7 @@ impl MainWindow {
             Tool::UnitTests => None,
             Tool::XamlPreview => self.preview_subtitle(),
             Tool::LiveTree => None,
+            Tool::Hierarchy => self.hierarchy.read(cx).title(),
             Tool::Profiler => self.profile_subtitle(),
             Tool::Terminal | Tool::Commit | Tool::Git => None,
         }
@@ -3150,6 +3234,7 @@ impl MainWindow {
             Tool::Git => self.git.log.focus_handle(cx),
             Tool::XamlPreview => self.preview_focus.clone(),
             Tool::LiveTree => self.live_focus.clone(),
+            Tool::Hierarchy => self.hierarchy.focus_handle(cx),
             Tool::Profiler => self.live_focus.clone(),
         }
     }

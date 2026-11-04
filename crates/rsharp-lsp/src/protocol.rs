@@ -178,6 +178,21 @@ pub fn outline_spans(answer: &Value) -> Vec<(usize, String, u64, Span, Span)> {
     out
 }
 
+/// An incomingCalls or outgoingCalls answer: each caller (`key` "from") or callee ("to") with where the calls are,
+/// in the caller's file.
+pub fn hierarchy_calls(answer: &Value, key: &str) -> Vec<(HierarchyItem, Vec<Span>)> {
+    answer
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|call| {
+            let item = hierarchy_items(&Value::Array(vec![call[key].clone()])).pop()?;
+            let ranges = call["fromRanges"].as_array().into_iter().flatten().map(Span::from).collect();
+            Some((item, ranges))
+        })
+        .collect()
+}
+
 /// A document's code lenses as the server lists them, unresolved: where each stands and the lens itself, to resolve.
 pub fn code_lenses(answer: &Value) -> Vec<(Span, Value)> {
     answer.as_array().into_iter().flatten().map(|lens| (Span::from(&lens["range"]), lens.clone())).collect()

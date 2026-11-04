@@ -239,6 +239,9 @@ pub fn bind(cx: &mut App) {
             // Passenger's File Structure key, and Rider's macOS keymap's.
             KeyBinding::new("alt-\\", FileStructure, None),
             KeyBinding::new("cmd-f12", FileStructure, None),
+            // Passenger's Call Hierarchy; Rider's macOS keymap's Type Hierarchy.
+            KeyBinding::new("ctrl-alt-h", CallHierarchy, None),
+            KeyBinding::new("ctrl-h", TypeHierarchy, None),
             KeyBinding::new("cmd-shift-f", FindInFiles, None),
             KeyBinding::new("cmd-shift-r", ReplaceInFiles, None),
             KeyBinding::new("cmd-shift-e", RecentLocations, None),
@@ -328,6 +331,9 @@ pub fn bind(cx: &mut App) {
             KeyBinding::new("ctrl-shift-e", RecentLocations, None),
             KeyBinding::new("ctrl-shift-alt-t", GoToSymbol, None),
             KeyBinding::new("alt-\\", FileStructure, None),
+            KeyBinding::new("ctrl-alt-h", CallHierarchy, None),
+            KeyBinding::new("ctrl-e h", TypeHierarchy, None),
+            KeyBinding::new("ctrl-e ctrl-h", TypeHierarchy, None),
             KeyBinding::new("ctrl-shift-f", FindInFiles, None),
             KeyBinding::new("alt-f4", Quit, None),
             KeyBinding::new("ctrl-alt-s", OpenSettings, None),

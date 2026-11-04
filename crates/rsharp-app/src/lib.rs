@@ -24,6 +24,7 @@ pub mod fuzzy;
 pub mod git_view;
 pub mod global_undo;
 pub mod goto;
+pub mod hierarchy_view;
 pub mod history_window;
 pub mod keymap;
 pub mod language;

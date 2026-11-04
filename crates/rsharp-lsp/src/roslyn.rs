@@ -309,6 +309,7 @@ pub(crate) fn client_capabilities() -> Value {
             "implementation": { "dynamicRegistration": true, "linkSupport": true },
             "references": { "dynamicRegistration": true,},
             "typeHierarchy": { "dynamicRegistration": true,},
+            "callHierarchy": { "dynamicRegistration": true,},
             "documentHighlight": { "dynamicRegistration": true,},
             "documentSymbol": { "dynamicRegistration": true, "hierarchicalDocumentSymbolSupport": true },
             "codeAction": { "dynamicRegistration": true,

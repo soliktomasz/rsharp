@@ -235,7 +235,7 @@ Soft rounded rectangles at four radii: 10px for islands, 6px for tabs, toolbar w
 - Toolbar icon buttons are 30px squares with a 16px icon and a tooltip naming the action, dimmed to 35% while the action has nothing to act on.
 
 ### Tool Window Stripe
-- 32px square buttons with a 20px icon and 6px radius, centred in the 40px stripe. The shown window's button fills with the accent; others take the hover and pressed veils. Each tool window has its own IntelliJ expui tool window icon (Commit, Git, Debug, Profiler and Live Visual Tree take `commit`, `vcs`, `debug`, `profiler` and `hierarchy`); no two windows share one.
+- 32px square buttons with a 20px icon and 6px radius, centred in the 40px stripe. The shown window's button fills with the accent; others take the hover and pressed veils. Each tool window has its own IntelliJ expui tool window icon (Commit, Git, Debug, Profiler, Hierarchy and Live Visual Tree take `commit`, `vcs`, `debug`, `profiler`, `hierarchy` and `toolWindowComponents`); no two windows share one.
 
 ### Tree Rows
 - 24px, 4px radius, 4px between chevron, icon and name; a 16px blank stands in for a leaf's chevron. Hover veil; selection is selection with focus and selection-inactive without.
@@ -307,6 +307,12 @@ Soft rounded rectangles at four radii: 10px for islands, 6px for tabs, toolbar w
 ### App Icon
 - `assets/icon/rsharp.svg`: a graphite squircle (the frame) holding a darker inset island, a bold R in light grey and
   a blue sharp (#5A8DF0 to the accent) at its shoulder. `RSharp.icns` is made from it and carried by the bundle.
+
+### Hierarchy Window
+- On the right (RightTop), `tw-hierarchy`. A 32px row of two 24px segments (Callers | Callees, or Supertypes |
+  Subtypes; the chosen one in tab-selected), then 24px rows indented 18px a level: chevron, a node-method or
+  node-class icon, the symbol's short name (`B()`, not `Shop.Calls.B()`), and file:line in text-secondary. A
+  double-click goes to a caller's call, else the symbol's name.
 
 ### Code Vision
 - Rider's Code Vision at its "Right" position: each member's usage count ("2 usages", "1 usage", "no usages") three

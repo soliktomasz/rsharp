@@ -274,7 +274,9 @@ terminal and takes focus for a moment.
   `projects.rs` is the process's windows: every open (command line, Open, the recent list) goes through
   `open_project`, which brings forward the window that has the folder, else fills a Welcome window, else opens
   one; quit keeps them all (`session.json`). `actions.rs` is every action by name for the main menu and
-  `find_action.rs`. File Structure (Alt+\\, Cmd+F12 on macOS) is `goto.rs`' `Kind::FileStructure`, given the shown C#
+  `find_action.rs`. `hierarchy_view.rs` is the Hierarchy window (`Tool::Hierarchy`): Call Hierarchy (Ctrl+Alt+H) and Type
+  Hierarchy on the caret's symbol, each level's callers, callees, supertypes or subtypes asked of Roslyn as it opens.
+  File Structure (Alt+\\, Cmd+F12 on macOS) is `goto.rs`' `Kind::FileStructure`, given the shown C#
   file's `textDocument/documentSymbol` outline (`rsharp_lsp::outline_spans`) and filtered by `file_structure::filter`,
   which keeps each match's containers as Passenger's FilterOutline does.
   `new_project_dialog.rs` is the owner-scoped New Solution / New Project window: `state.rs` keeps choices and

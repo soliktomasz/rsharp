@@ -79,7 +79,8 @@ gpui brings about 550 crates of its own. Their notices are not yet written out: 
   The Debug window's `debug-resume`, `debug-pause`, `debug-step-over`, `debug-step-into`, `debug-step-out` and
   `debug-mute` are `expui/run/resume`, `pause`, `stepOver`, `stepInto`, `stepOut` and `muteBreakpoints` (`_dark`);
   the stripe's `tw-debug`, `tw-commit`, `tw-git`, `tw-profiler` and `tw-hierarchy` are `expui/toolwindows/debug`,
-  `commit`, `vcs`, `profiler` and `hierarchy` (`@20x20_dark`), all from the same jar. The Solution view's Show
+  `commit`, `vcs`, `profiler` and `hierarchy` (`@20x20_dark`), all from the same jar; the Hierarchy window takes
+  `tw-hierarchy` and the Live Visual Tree `tw-components` (`expui/toolwindows/toolWindowComponents@20x20_dark.svg`). The Solution view's Show
   Hidden Files button is `expui/general/show_dark.svg` (`show.svg`), from the same jar.
 
 The colours in `crates/rsharp-app/src/theme.rs` are values read from Rider's Islands Dark and Rider Dark themes.

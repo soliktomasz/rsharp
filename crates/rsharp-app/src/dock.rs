@@ -53,10 +53,12 @@ pub enum Tool {
     LiveTree,
     /// A run's snapshot: hot spots, the call tree and the flame graph.
     Profiler,
+    /// Call Hierarchy and Type Hierarchy.
+    Hierarchy,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 14] = [
+    pub const ALL: [Tool; 15] = [
         Tool::Solution,
         Tool::Problems,
         Tool::Find,
@@ -71,6 +73,7 @@ impl Tool {
         Tool::XamlPreview,
         Tool::LiveTree,
         Tool::Profiler,
+        Tool::Hierarchy,
     ];
 
     pub fn title(self) -> &'static str {
@@ -89,6 +92,7 @@ impl Tool {
             Tool::XamlPreview => "XAML Preview",
             Tool::LiveTree => "Live Visual Tree",
             Tool::Profiler => "Profiler",
+            Tool::Hierarchy => "Hierarchy",
         }
     }
 
@@ -106,8 +110,9 @@ impl Tool {
             Tool::Commit => "tw-commit",
             Tool::Git => "tw-git",
             Tool::XamlPreview => "file-xml",
-            Tool::LiveTree => "tw-hierarchy",
+            Tool::LiveTree => "tw-components",
             Tool::Profiler => "tw-profiler",
+            Tool::Hierarchy => "tw-hierarchy",
         }
     }
 
@@ -128,6 +133,7 @@ impl Tool {
             Tool::XamlPreview => Place::RightTop,
             Tool::LiveTree => Place::RightBottom,
             Tool::Profiler => Place::BottomLeft,
+            Tool::Hierarchy => Place::RightTop,
         }
     }
 }
