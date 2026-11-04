@@ -20,7 +20,7 @@ type Reply = Task<Result<Value, String>>;
 
 impl MainWindow {
     /// The path an agent named: from the folder when relative.
-    fn agent_path(&self, file: &str) -> PathBuf {
+    pub(super) fn agent_path(&self, file: &str) -> PathBuf {
         let path = PathBuf::from(file);
         match (&self.workspace, path.is_absolute()) {
             (Some(workspace), false) => workspace.folder.join(path),

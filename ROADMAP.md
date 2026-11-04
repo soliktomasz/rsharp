@@ -581,8 +581,12 @@ text with ASCII case ignored and a file mask, no regex or scopes), `settings` an
 or ranges), `problems`, `build_output` and `local_history`/`local_history_revert` (by version, not Passenger's change
 sets; no label), and the language tools from the window's own Roslyn over its editors' texts (`diagnostics`, `find_symbol`,
 `outline`, `usages`, `definition`, `implementations`, `symbol_info`, `hierarchy`, `rename` with a type's files,
-`code_actions`, `apply_code_action` and `format`, which saves) so far. Not yet: the rest of
-Passenger's tools (the web, XAML and MSBuild languages' own
+`code_actions`, `apply_code_action` and `format`, which saves), and the debugger's (`breakpoint_set` with condition, hit count
+and log message, `breakpoint_remove`, `breakpoints`, `debug_start`, `debug_processes`, `debug_attach`, `debug_detach`,
+`debug_stop`, `debug_state`, `debug_variables`, `debug_continue`, `debug_step`, `debug_pause`, `debug_set_next_statement`,
+`debug_evaluate`, `debug_set_value`, `debug_input`, `debug_output`; each that moves the program answers where it stopped)
+so far. Not yet: the rest of
+Passenger's tools (`debug_run_to`, the web, XAML and MSBuild languages' own
 answers, refactor, build, run and tests; debug, VCS, NuGet, terminal, profile, hot reload; the app tools through the
 window), the admission dialog with Always for a folder, starting RSharp when no window has the folder, and the
 setup commands on the Settings page. The hand-written JSON-RPC stays: `rmcp` is not needed for tools alone.

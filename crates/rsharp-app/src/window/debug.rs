@@ -13,6 +13,7 @@ use rsharp_lsp::extension;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod agent;
 #[cfg(test)]
 mod tests;
 
