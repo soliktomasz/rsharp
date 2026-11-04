@@ -178,6 +178,24 @@ pub fn outline_spans(answer: &Value) -> Vec<(usize, String, u64, Span, Span)> {
     out
 }
 
+/// A document's code lenses as the server lists them, unresolved: where each stands and the lens itself, to resolve.
+pub fn code_lenses(answer: &Value) -> Vec<(Span, Value)> {
+    answer.as_array().into_iter().flatten().map(|lens| (Span::from(&lens["range"]), lens.clone())).collect()
+}
+
+/// A resolved lens's usage count in Rider's words ("2 usages", "1 usage", "no usages"), from Roslyn's "N references";
+/// none for any other lens (a test's Run).
+pub fn usages_title(resolved: &Value) -> Option<String> {
+    let title = resolved["command"]["title"].as_str()?;
+    let (count, word) = title.trim().split_once(' ')?;
+    let count: usize = count.parse().ok()?;
+    word.starts_with("reference").then(|| match count {
+        0 => "no usages".to_string(),
+        1 => "1 usage".to_string(),
+        n => format!("{n} usages"),
+    })
+}
+
 /// A symbol kind as a person names it (the protocol's numbers).
 pub fn kind_name(kind: u64) -> &'static str {
     match kind {

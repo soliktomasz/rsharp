@@ -308,6 +308,11 @@ Soft rounded rectangles at four radii: 10px for islands, 6px for tabs, toolbar w
 - `assets/icon/rsharp.svg`: a graphite squircle (the frame) holding a darker inset island, a bold R in light grey and
   a blue sharp (#5A8DF0 to the accent) at its shoulder. `RSharp.icns` is made from it and carried by the bundle.
 
+### Code Vision
+- Rider's Code Vision at its "Right" position: each member's usage count ("2 usages", "1 usage", "no usages") three
+  spaces after its line's end, in the inlay-hint colour with no chip; a click lists the usages in Find. Settings'
+  Show Code Vision turns it off. Squiggles, bands and selections end at the text, never under a lens or hint there.
+
 ### Empty Editor Hints
 - Two aligned columns 10px apart: instructions right-aligned in text-secondary, the keys left-aligned in the accent (an instruction that is not a key stays text-secondary).
 

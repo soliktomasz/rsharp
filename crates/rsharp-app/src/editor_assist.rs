@@ -79,6 +79,8 @@ pub struct Assist {
     pub tokens: Vec<(Range<usize>, Hsla)>,
     /// Roslyn's inlay hints for the same lines: each place, and the text set in before it there.
     pub hints: Vec<(usize, String)>,
+    /// Code Vision: each member's usage count, at the place of its name, for the lines asked.
+    pub lenses: Vec<(usize, String)>,
     /// A live template being filled in, its variables still to visit.
     pub template: Option<super::templates::Filling>,
     tokens_for: Option<(u64, Range<usize>)>,
@@ -108,6 +110,15 @@ impl Assist {
         }
         // A hint inside what changed goes until asked again; the rest move with the text.
         self.hints.retain_mut(|(at, _)| {
+            for change in changes {
+                if *at > change.start.offset && *at < change.old_end.offset {
+                    return false;
+                }
+                *at = map_through(*at, change);
+            }
+            true
+        });
+        self.lenses.retain_mut(|(at, _)| {
             for change in changes {
                 if *at > change.start.offset && *at < change.old_end.offset {
                     return false;
@@ -167,6 +178,11 @@ impl CodeEditor {
                 format!("{}:{} {}", place.line + 1, place.utf16_column + 1, label.trim())
             })
             .collect()
+    }
+
+    /// Code Vision as shown: each lens's line (from 0) and what it says.
+    pub fn code_vision(&self) -> Vec<(usize, String)> {
+        self.assist.lenses.iter().map(|(at, title)| (self.text.byte_to_line(*at), title.clone())).collect()
     }
 
     /// The context actions' titles while their list is open.
@@ -1126,6 +1142,15 @@ impl CodeEditor {
                 // A server that has neither (VS Code's HTML, CSS and JSON) is not asked.
                 let has = |name: &str| !server.capabilities[name].is_null();
                 let (hints, colours) = (has("inlayHintProvider"), has("semanticTokensProvider"));
+                let wants_lenses = this.update(cx, |_, cx| crate::settings::settings(cx).code_vision).unwrap_or(false);
+                let lensed = if wants_lenses && has("codeLensProvider") {
+                    this.update(cx, |_, cx| {
+                        ask(&server, "textDocument/codeLens", json!({ "textDocument": lsp::document(&uri) }), cx)
+                    })
+                    .ok()
+                } else {
+                    None
+                };
                 let Ok((answer, hinted)) = this.update(cx, |_, cx| {
                     let none = || Task::ready(None);
                     let hinted =
@@ -1165,6 +1190,32 @@ impl CodeEditor {
                         Some(hints)
                     })
                     .await;
+                // Each lens on the lines asked is resolved for its count; the rest wait until they are shown.
+                let mut lenses = None;
+                if let Some(lensed) = lensed
+                    && let Some(answer) = lensed.await
+                {
+                    let shown: Vec<_> = lsp::code_lenses(&answer)
+                        .into_iter()
+                        .filter(|(span, _)| wanted.contains(&span.start.line))
+                        .collect();
+                    let asked = this
+                        .update(cx, |_, cx| {
+                            shown
+                                .into_iter()
+                                .map(|(span, lens)| (span, ask(&server, "codeLens/resolve", lens, cx)))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    let mut found = Vec::new();
+                    for (span, answer) in asked {
+                        if let Some(title) = answer.await.as_ref().and_then(lsp::usages_title) {
+                            found.push((offset(&text, span.start), title));
+                        }
+                    }
+                    found.sort_by_key(|(at, _)| *at);
+                    lenses = Some(found);
+                }
                 let legend = if razor { server.razor.legend() } else { rsharp_lsp::token_legend(&server) };
                 let tokens = cx
                     .background_executor()
@@ -1190,6 +1241,9 @@ impl CodeEditor {
                     }
                     if let Some(hints) = hints {
                         e.assist.hints = hints;
+                    }
+                    if let Some(lenses) = lenses {
+                        e.assist.lenses = lenses;
                     }
                     cx.notify();
                 });

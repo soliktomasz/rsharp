@@ -307,6 +307,8 @@ struct Layout {
     git_changes: Vec<(Bounds<Pixels>, DiffHunk)>,
     /// The colour swatches, each with its colour's place in the buffer's list.
     swatches: Vec<(Bounds<Pixels>, usize)>,
+    /// Code Vision's lenses, each with the place of the member it counts.
+    lenses: Vec<(Bounds<Pixels>, usize)>,
 }
 
 impl CodeEditor {
@@ -991,6 +993,17 @@ impl CodeEditor {
             self.toggle_fold(fold, cx);
             return;
         }
+        // A lens lists the usages of its member, as Rider's Code Vision does.
+        if let Some(at) = self
+            .layout
+            .as_ref()
+            .and_then(|l| l.lenses.iter().find(|(b, _)| b.contains(&event.position)).map(|(_, at)| *at))
+        {
+            self.selecting = false;
+            self.set_selections(vec![Selection { anchor: at, head: at }]);
+            self.find_usages(cx);
+            return;
+        }
         if let Some(index) = self
             .layout
             .as_ref()
@@ -1622,6 +1635,16 @@ struct Prepainted {
     /// gutter's column for their swatches, none in a file without colours.
     swatches: Vec<(usize, Hsla, usize)>,
     swatch_column: Pixels,
+    /// The member each row's Code Vision lens counts, its last hint, for rows that have one.
+    lens_rows: Vec<Option<usize>>,
+}
+
+impl CodeEditor {
+    /// Where the last frame drew the Code Vision lens of a line (from 0), in window coordinates.
+    pub fn code_vision_bounds(&self, line: usize) -> Option<Bounds<Pixels>> {
+        let layout = self.layout.as_ref()?;
+        layout.lenses.iter().find(|(_, at)| self.text.byte_to_line(*at) == line).map(|(bounds, _)| *bounds)
+    }
 }
 
 impl IntoElement for EditorElement {
@@ -1732,6 +1755,14 @@ impl Element for EditorElement {
                 .collect();
             let inline_values = buffer.inline_values.clone();
             let binding_values = buffer.binding_values.clone();
+            let lenses: Vec<(usize, usize, String)> = editor
+                .assist
+                .lenses
+                .iter()
+                .filter(|_| settings.code_vision)
+                .map(|(at, title)| (text.byte_to_line(*at), *at, format!("   {title}")))
+                .collect();
+            let mut lens_rows = Vec::new();
             let exception = buffer.exception.clone();
             let parsed = buffer.grammar.zip(buffer.tree.as_ref());
             let syntax: Vec<Highlight> = parsed
@@ -1798,6 +1829,12 @@ impl Element for EditorElement {
                         hints.push((row.end - row.start, value.as_str()));
                     }
                 }
+                // Code Vision, Rider's "Right" position: the member's count after everything else on its line.
+                let lens = lenses.iter().find(|(line, ..)| row.last && *line == row.line);
+                if let Some((_, _, title)) = lens {
+                    hints.push((row.end - row.start, title.as_str()));
+                }
+                lens_rows.push(lens.map(|(_, at, _)| *at));
                 lines.push(Shaped::new(&content, runs, &hints, font_size, &code_font, window));
                 let number = (row.first && show_numbers).then(|| {
                     let number = (row.line + 1).to_string();
@@ -1852,6 +1889,7 @@ impl Element for EditorElement {
                 execution_line,
                 swatches,
                 swatch_column,
+                lens_rows,
             }
         })
     }
@@ -1889,6 +1927,7 @@ impl Element for EditorElement {
         let mut swatches = Vec::new();
         let mut placeholders = Vec::new();
         let mut git_changes = Vec::new();
+        let mut lenses = Vec::new();
 
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
             let shown = state.first_row..state.first_row + state.lines.len();
@@ -1916,22 +1955,33 @@ impl Element for EditorElement {
                         colour,
                     ));
                 };
-                for (x0, x1) in shaped.hint_spans() {
+                let spans = shaped.hint_spans();
+                // A lens is the row's last hint and stands as plain text after a gap, as Rider's Code Vision does.
+                let lensed = matches!(state.lens_rows.get(i), Some(Some(_)));
+                let chipped = if lensed { &spans[..spans.len().saturating_sub(1)] } else { &spans[..] };
+                for &(x0, x1) in chipped {
                     let chip = Bounds::from_corners(
                         point(left + x0 - px(1.), top + px(3.)),
                         point(left + x1 + px(1.), top + line_height - px(3.)),
                     );
                     window.paint_quad(fill(chip, theme::editor::inlay_hint_background()).corner_radii(px(3.)));
                 }
+                if let (Some(Some(at)), Some(&(x0, x1))) = (state.lens_rows.get(i), spans.last()) {
+                    let chip = Bounds::from_corners(point(left + x0, top), point(left + x1, top + line_height));
+                    // shortcut: no pointing hand over a lens, which needs a hitbox from prepaint; add it there if missed.
+                    lenses.push((chip, *at));
+                }
                 for m in matches.iter().filter(|m| m.start <= end && m.end >= start && !m.is_empty()) {
-                    let (x0, x1) =
-                        (shaped.x_for_index(m.start.max(start) - start), shaped.x_for_index(m.end.min(end) - start));
+                    let (x0, x1) = (
+                        shaped.x_for_index(m.start.max(start) - start),
+                        shaped.end_x_for_index(m.end.min(end) - start),
+                    );
                     band(window, x0, x1, theme::editor::search_result());
                 }
                 for (usage, write) in usages.iter().filter(|(u, _)| u.start <= end && u.end >= start && !u.is_empty()) {
                     let (x0, x1) = (
                         shaped.x_for_index(usage.start.max(start) - start),
-                        shaped.x_for_index(usage.end.min(end) - start),
+                        shaped.end_x_for_index(usage.end.min(end) - start),
                     );
                     band(
                         window,
@@ -1953,9 +2003,9 @@ impl Element for EditorElement {
                     }
                     let x0 = shaped.x_for_index(from - start);
                     let x1 = match (selection.end() > end, span.last) {
-                        (true, true) => shaped.width + px(7.),
-                        (true, false) => shaped.width,
-                        _ => shaped.x_for_index(to - start),
+                        (true, true) => shaped.end_x_for_index(end - start) + px(7.),
+                        (true, false) => shaped.end_x_for_index(end - start),
+                        _ => shaped.end_x_for_index(to - start),
                     };
                     band(window, x0, x1, theme::editor::selection());
                 }
@@ -2084,7 +2134,7 @@ impl Element for EditorElement {
                 }
                 for diagnostic in diagnostics.iter().filter(|d| d.range.start <= end && d.range.end >= start) {
                     let x0 = shaped.x_for_index(diagnostic.range.start.max(start) - start);
-                    let x1 = shaped.x_for_index(diagnostic.range.end.min(end) - start).max(x0 + px(6.));
+                    let x1 = shaped.end_x_for_index(diagnostic.range.end.min(end) - start).max(x0 + px(6.));
                     let colour: Hsla = if diagnostic.error { theme::error().into() } else { theme::warning().into() };
                     window.paint_underline(
                         point(left + x0, top + line_height - px(3.)),
@@ -2117,6 +2167,7 @@ impl Element for EditorElement {
                 placeholders,
                 git_changes,
                 swatches,
+                lenses,
             })
         });
     }
@@ -2189,8 +2240,20 @@ impl Shaped {
 
     /// Where a byte of the row is drawn: past every hint before it or at it.
     fn x_for_index(&self, index: usize) -> Pixels {
-        let past: usize = self.hints.iter().filter(|(at, _)| *at <= index).map(|(_, len)| len).sum();
-        self.line.x_for_index(index + past)
+        self.line.x_for_index(self.shown_index(index, false))
+    }
+
+    /// Where a range ending at a byte stops: before any hint set in at that byte, so a squiggle or a band ending at
+    /// a line's end stays off its lens.
+    fn end_x_for_index(&self, index: usize) -> Pixels {
+        self.line.x_for_index(self.shown_index(index, true))
+    }
+
+    /// A byte's place in the shown line: past the hints before it, and past those at it unless it ends a range.
+    fn shown_index(&self, index: usize, ending: bool) -> usize {
+        let past: usize =
+            self.hints.iter().filter(|(at, _)| *at < index || (*at == index && !ending)).map(|(_, len)| len).sum();
+        index + past
     }
 
     /// The byte of the row a place on the shaped line stands for; a place inside a hint is the hint's own byte.
@@ -2364,6 +2427,15 @@ mod tests {
         assert_eq!(shaped.text_index(2), 2, "a place before the hint moved");
         assert_eq!(shaped.text_index(6), 4, "a place inside the hint is not the hint's own byte");
         assert_eq!(shaped.text_index(12), 5, "a place past the hint is not shifted back by its length");
+    }
+
+    #[test]
+    fn a_range_ending_where_a_hint_stands_ends_before_it() {
+        // "Calculator" and a 12-byte lens after its end, at byte 10.
+        let shaped = Shaped { line: ShapedLine::default(), hints: vec![(10, 12)] };
+        assert_eq!(shaped.shown_index(10, false), 22, "a place at the hint is not drawn after it");
+        assert_eq!(shaped.shown_index(10, true), 10, "a squiggle ending at the line's end ran under its lens");
+        assert_eq!(shaped.shown_index(4, true), 4);
     }
 }
 

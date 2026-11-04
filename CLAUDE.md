@@ -337,7 +337,8 @@ terminal and takes focus for a moment.
   it records (a file as opened, an External change seen then, each save). Every buffer in the process is found by its file
   (`buffer::find`), so a file in two windows is one text; the last editor of a file gone, the server is told. `editor.rs` is the code editor (a gpui `Element` that shapes
   only the lines on screen; the parse runs on the background executor; Roslyn told every change and asked for
-  diagnostics once typing pauses; its gutter's Git bars come from the buffer's baseline, their popup shows both
+  diagnostics once typing pauses; Code Vision's usage counts are its `textDocument/codeLens`, resolved for the lines on
+  screen with the inlay hints (`assist.lenses`) and drawn after the line's end; its gutter's Git bars come from the buffer's baseline, their popup shows both
   texts and rolls back one hunk as one undoable edit), `theme.rs` every colour, `assets.rs` the carried fonts and icons,
   `keymap.rs` Rider's keys, `launch.rs` the command line, `workspace.rs` the folder and its solution, `bench.rs`
   what `--bench` measures. Roslyn's progress is followed by token, and a Restore counts only once it names a

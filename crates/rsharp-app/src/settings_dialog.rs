@@ -162,6 +162,11 @@ static PAGES: &[Page] = &[
                 set: |s, v| s.show_line_numbers = v,
             },
             Opt::Check { label: "Show whitespaces", get: |s| s.show_whitespace, set: |s, v| s.show_whitespace = v },
+            Opt::Check {
+                label: "Show Code Vision (usages after each member)",
+                get: |s| s.code_vision,
+                set: |s, v| s.code_vision = v,
+            },
         ],
     },
     Page {

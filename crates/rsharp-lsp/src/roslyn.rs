@@ -333,6 +333,7 @@ pub(crate) fn client_capabilities() -> Value {
                 "overlappingTokenSupport": false,
             },
             "inlayHint": {},
+            "codeLens": {},
             "diagnostic": {},
             "publishDiagnostics": {},
         },

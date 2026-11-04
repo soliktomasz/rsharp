@@ -17,6 +17,8 @@ pub struct AppSettings {
     pub show_line_numbers: bool,
     /// Editor | General | Appearance | Show whitespaces.
     pub show_whitespace: bool,
+    /// Editor | Inlay Hints | Code Vision: each member's usage count at the end of its line.
+    pub code_vision: bool,
     /// Editor | Font | Size.
     pub editor_font_size: f32,
     /// Editor | Font | Line height, as a multiple of the font's own.
@@ -172,6 +174,7 @@ impl Default for AppSettings {
             reopen_projects_on_startup: true,
             show_line_numbers: true,
             show_whitespace: false,
+            code_vision: true,
             editor_font_size: 13.,
             editor_line_spacing: 1.2,
             open_build_window: true,
